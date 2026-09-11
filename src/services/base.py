@@ -1,18 +1,28 @@
 import hashlib
+import logging
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import cache
 from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID
 
 import orjson
-from elasticsearch import AsyncElasticsearch, NotFoundError
-from pydantic import BaseModel, TypeAdapter
+from elasticsearch import AsyncElasticsearch, ConnectionTimeout, NotFoundError
+from elasticsearch import ConnectionError as ElasticConnectionError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from core.config import settings
 from services.cache import Cache
+from services.exceptions import StorageUnavailableError
+
+logger = logging.getLogger(__name__)
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
 ItemT = TypeVar('ItemT', bound=BaseModel)
+T = TypeVar('T')
+
+INDEX_NOT_FOUND = 'index_not_found_exception'
 
 
 @dataclass(frozen=True)
@@ -64,16 +74,17 @@ class BaseService(Generic[ModelT]):
     async def get_by_id(self, item_id: UUID) -> ModelT | None:
         """Возвращает документ по id или None, если его нет."""
         cache_key = f'{self.index}:id:{item_id}'
-        cached = await self.cache.get(cache_key)
+        cached = await self._cache_get(cache_key, self.model.model_validate_json)
         if cached is not None:
-            return self.model.model_validate_json(cached)
+            return cached
 
         try:
-            doc = await self.elastic.get(
-                index=self.index,
-                id=str(item_id),
-                source_includes=list(self.model.model_fields),
-            )
+            async with self._elastic_errors():
+                doc = await self.elastic.get(
+                    index=self.index,
+                    id=str(item_id),
+                    source_includes=list(self.model.model_fields),
+                )
         except NotFoundError:
             return None
 
@@ -104,15 +115,12 @@ class BaseService(Generic[ModelT]):
 
         adapter = _list_adapter(model)
         cache_key = self._search_cache_key(params)
-        cached = await self.cache.get(cache_key)
+        cached = await self._cache_get(cache_key, adapter.validate_json)
         if cached is not None:
-            return adapter.validate_json(cached)
+            return cached
 
-        try:
+        async with self._elastic_errors():
             response = await self.elastic.search(index=self.index, track_total_hits=False, **params)
-        except NotFoundError:
-            # Индекс ещё не создан ETL — это пустой результат, а не ошибка сервера.
-            return []
 
         items = [model.model_validate(hit['_source']) for hit in response['hits']['hits']]
         await self.cache.set(cache_key, adapter.dump_json(items), settings.cache_expire_in_seconds)
@@ -121,3 +129,38 @@ class BaseService(Generic[ModelT]):
     def _search_cache_key(self, params: dict[str, Any]) -> str:
         digest = hashlib.md5(orjson.dumps(params, option=orjson.OPT_SORT_KEYS)).hexdigest()
         return f'{self.index}:search:{digest}'
+
+    async def _cache_get(self, key: str, validate: Callable[[bytes], T]) -> T | None:
+        """Читает запись из кеша; повреждённую запись считает отсутствующей.
+
+        Запись может оказаться некорректным JSON или перестать соответствовать
+        модели после обновления приложения. Тогда данные читаются из
+        Elasticsearch, а запись в кеше перезаписывается свежей.
+        """
+        cached = await self.cache.get(key)
+        if cached is None:
+            return None
+        try:
+            return validate(cached)
+        except ValidationError as exc:
+            logger.warning('Запись %s в кеше не прошла проверку, читаем из Elasticsearch: %s', key, exc)
+            return None
+
+    @asynccontextmanager
+    async def _elastic_errors(self) -> AsyncIterator[None]:
+        """Переводит сбои Elasticsearch в StorageUnavailableError.
+
+        NotFoundError об отсутствии документа пропускается дальше как есть:
+        это обычный ответ, а не сбой. Отсутствие индекса, наоборот, значит,
+        что ETL ещё не загрузил данные или индекс удалён, — сервис не готов.
+        """
+        try:
+            yield
+        except NotFoundError as exc:
+            if exc.error != INDEX_NOT_FOUND:
+                raise
+            logger.error('Индекс %s не найден в Elasticsearch', self.index)
+            raise StorageUnavailableError from exc
+        except (ElasticConnectionError, ConnectionTimeout) as exc:
+            logger.error('Elasticsearch недоступен, индекс %s: %s', self.index, exc)
+            raise StorageUnavailableError from exc
