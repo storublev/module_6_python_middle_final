@@ -5,6 +5,8 @@ import uvicorn
 from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 
 from api.v1 import films, genres, persons
 from core.config import settings
@@ -17,13 +19,15 @@ logging.config.dictConfig(LOGGING)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Короткие таймауты: при недоступном Redis запрос должен быстро уйти
-    # в Elasticsearch, а не ждать кеш.
+    # Короткие таймауты и без повторов: при недоступном Redis запрос должен
+    # быстро уйти в Elasticsearch, а не ждать кеш. По умолчанию redis-py
+    # повторяет операцию до 10 раз с паузами, и запрос висит секундами.
     redis.redis = Redis(
         host=settings.redis_host,
         port=settings.redis_port,
         socket_connect_timeout=1,
         socket_timeout=1,
+        retry=Retry(NoBackoff(), retries=0),
     )
     elastic.es = AsyncElasticsearch(hosts=[settings.elastic_url])
     yield
