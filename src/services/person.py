@@ -2,10 +2,13 @@ from functools import lru_cache
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
+from redis.asyncio import Redis
 
 from db.elastic import get_elastic
+from db.redis import get_redis
 from models.person import Person
 from services.base import BaseService, Pagination
+from services.cache import RedisCache
 
 
 class PersonService(BaseService[Person]):
@@ -20,6 +23,7 @@ class PersonService(BaseService[Person]):
 
 @lru_cache()
 def get_person_service(
+    redis: Redis = Depends(get_redis),
     elastic: AsyncElasticsearch = Depends(get_elastic),
 ) -> PersonService:
-    return PersonService(elastic)
+    return PersonService(elastic, RedisCache(redis))

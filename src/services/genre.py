@@ -2,10 +2,13 @@ from functools import lru_cache
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
+from redis.asyncio import Redis
 
 from db.elastic import get_elastic
+from db.redis import get_redis
 from models.genre import Genre
 from services.base import BaseService, Pagination
+from services.cache import RedisCache
 
 
 class GenreService(BaseService[Genre]):
@@ -19,6 +22,7 @@ class GenreService(BaseService[Genre]):
 
 @lru_cache()
 def get_genre_service(
+    redis: Redis = Depends(get_redis),
     elastic: AsyncElasticsearch = Depends(get_elastic),
 ) -> GenreService:
-    return GenreService(elastic)
+    return GenreService(elastic, RedisCache(redis))

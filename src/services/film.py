@@ -3,10 +3,13 @@ from uuid import UUID
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
+from redis.asyncio import Redis
 
 from db.elastic import get_elastic
+from db.redis import get_redis
 from models.film import Film, FilmShort
 from services.base import BaseService, Pagination, nested_term, sort_by
+from services.cache import RedisCache
 
 PERSON_ROLES = ('actors', 'writers', 'directors')
 
@@ -47,6 +50,7 @@ class FilmService(BaseService[Film]):
 
 @lru_cache()
 def get_film_service(
+    redis: Redis = Depends(get_redis),
     elastic: AsyncElasticsearch = Depends(get_elastic),
 ) -> FilmService:
-    return FilmService(elastic)
+    return FilmService(elastic, RedisCache(redis))
