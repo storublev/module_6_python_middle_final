@@ -6,6 +6,7 @@ from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
+from api.v1 import films
 from core.config import settings
 from core.logger import LOGGING
 from core.middleware import TrailingSlashMiddleware
@@ -39,6 +40,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(TrailingSlashMiddleware)
+
+app.include_router(films.router, prefix='/api/v1/films', tags=['films'])
 
 
 if __name__ == '__main__':
