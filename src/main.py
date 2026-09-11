@@ -1,9 +1,11 @@
 import logging.config
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 
 import uvicorn
 from elasticsearch import AsyncElasticsearch
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
@@ -13,8 +15,11 @@ from core.config import settings
 from core.logger import LOGGING
 from core.middleware import TrailingSlashMiddleware
 from db import elastic, redis
+from services.exceptions import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
+
+SERVICE_UNAVAILABLE = 'service temporarily unavailable'
 
 
 @asynccontextmanager
@@ -45,9 +50,18 @@ app = FastAPI(
 )
 app.add_middleware(TrailingSlashMiddleware)
 
-app.include_router(films.router, prefix='/api/v1/films', tags=['films'])
-app.include_router(genres.router, prefix='/api/v1/genres', tags=['genres'])
-app.include_router(persons.router, prefix='/api/v1/persons', tags=['persons'])
+
+@app.exception_handler(StorageUnavailableError)
+async def storage_unavailable_handler(_: Request, __: StorageUnavailableError) -> JSONResponse:
+    # Причина уже записана в журнал сервисом; клиенту — без внутренних подробностей.
+    return JSONResponse(status_code=HTTPStatus.SERVICE_UNAVAILABLE, content={'detail': SERVICE_UNAVAILABLE})
+
+
+# 503 возможен у любого эндпоинта, поэтому описан для роутеров целиком.
+storage_responses = {HTTPStatus.SERVICE_UNAVAILABLE: {'description': SERVICE_UNAVAILABLE}}
+app.include_router(films.router, prefix='/api/v1/films', tags=['films'], responses=storage_responses)
+app.include_router(genres.router, prefix='/api/v1/genres', tags=['genres'], responses=storage_responses)
+app.include_router(persons.router, prefix='/api/v1/persons', tags=['persons'], responses=storage_responses)
 
 
 if __name__ == '__main__':
