@@ -1,28 +1,23 @@
 import hashlib
 import logging
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 from uuid import UUID
 
 import orjson
-from elasticsearch import AsyncElasticsearch, ConnectionTimeout, NotFoundError
-from elasticsearch import ConnectionError as ElasticConnectionError
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from core.config import settings
 from services.cache import Cache
-from services.exceptions import StorageUnavailableError
+from storage.base import DocumentStorage, RelatedTo, SearchRequest, Sort, SortOrder, TextQuery
 
 logger = logging.getLogger(__name__)
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
 ItemT = TypeVar('ItemT', bound=BaseModel)
 T = TypeVar('T')
-
-INDEX_NOT_FOUND = 'index_not_found_exception'
 
 
 @dataclass(frozen=True)
@@ -41,34 +36,29 @@ def _list_adapter(model: type[ItemT]) -> TypeAdapter[list[ItemT]]:
     return TypeAdapter(list[model])
 
 
-def sort_by(field: str) -> list[dict[str, Any]]:
-    """Переводит `-imdb_rating` в сортировку Elasticsearch.
+def sort_by(field: str) -> tuple[Sort, ...]:
+    """Переводит `-imdb_rating` в сортировку хранилища.
 
     Минус в начале — сортировка по убыванию. Вторым ключом идёт `id`, чтобы
     порядок документов с одинаковым значением был стабильным между страницами.
     """
-    order = 'desc' if field.startswith('-') else 'asc'
-    return [{field.lstrip('-'): {'order': order}}, {'id': {'order': 'asc'}}]
-
-
-def nested_term(path: str, field: str, value: UUID | str) -> dict[str, Any]:
-    """Точное совпадение по полю вложенного (nested) объекта."""
-    return {'nested': {'path': path, 'query': {'term': {f'{path}.{field}': str(value)}}}}
+    order = SortOrder.DESC if field.startswith('-') else SortOrder.ASC
+    return Sort(field.lstrip('-'), order), Sort('id')
 
 
 class BaseService(Generic[ModelT]):
-    """Чтение документов одного индекса Elasticsearch с кешированием в Redis.
+    """Чтение документов одного индекса с кешированием.
 
     Наследник задаёт индекс и модель документа, а сам описывает только запросы.
     Ответы кешируются по набору параметров запроса: одинаковые запросы
-    в течение `cache_expire_in_seconds` не доходят до Elasticsearch.
+    в течение `cache_expire_in_seconds` не доходят до хранилища.
     """
 
     index: ClassVar[str]
     model: ClassVar[type[BaseModel]]
 
-    def __init__(self, elastic: AsyncElasticsearch, cache_storage: Cache):
-        self.elastic = elastic
+    def __init__(self, storage: DocumentStorage, cache_storage: Cache):
+        self.storage = storage
         self.cache = cache_storage
 
     async def get_by_id(self, item_id: UUID) -> ModelT | None:
@@ -78,17 +68,11 @@ class BaseService(Generic[ModelT]):
         if cached is not None:
             return cached
 
-        try:
-            async with self._elastic_errors():
-                doc = await self.elastic.get(
-                    index=self.index,
-                    id=str(item_id),
-                    source_includes=list(self.model.model_fields),
-                )
-        except NotFoundError:
+        doc = await self.storage.get(self.index, str(item_id), fields=tuple(self.model.model_fields))
+        if doc is None:
             return None
 
-        item = self.model.model_validate(doc['_source'])
+        item = self.model.model_validate(doc)
         await self.cache.set(cache_key, item.model_dump_json(), settings.cache_expire_in_seconds)
         return item
 
@@ -96,38 +80,37 @@ class BaseService(Generic[ModelT]):
         self,
         model: type[ItemT],
         pagination: Pagination,
-        query: dict[str, Any] | None = None,
-        sort: list[dict[str, Any]] | None = None,
+        text: TextQuery | None = None,
+        related_to: RelatedTo | None = None,
+        sort: tuple[Sort, ...] = (),
     ) -> list[ItemT]:
         """Ищет документы и отдаёт страницу результатов в виде моделей `model`.
 
-        Из Elasticsearch запрашиваются только поля модели — для списков
+        Из хранилища запрашиваются только поля модели — для списков
         не тянем описание и составы участников.
         """
-        params: dict[str, Any] = {
-            'query': query or {'match_all': {}},
-            'from_': pagination.offset,
-            'size': pagination.page_size,
-            'source_includes': list(model.model_fields),
-        }
-        if sort:
-            params['sort'] = sort
+        request = SearchRequest(
+            fields=tuple(model.model_fields),
+            offset=pagination.offset,
+            size=pagination.page_size,
+            text=text,
+            related_to=related_to,
+            sort=sort,
+        )
 
         adapter = _list_adapter(model)
-        cache_key = self._search_cache_key(params)
+        cache_key = self._search_cache_key(request)
         cached = await self._cache_get(cache_key, adapter.validate_json)
         if cached is not None:
             return cached
 
-        async with self._elastic_errors():
-            response = await self.elastic.search(index=self.index, track_total_hits=False, **params)
-
-        items = [model.model_validate(hit['_source']) for hit in response['hits']['hits']]
+        docs = await self.storage.search(self.index, request)
+        items = [model.model_validate(doc) for doc in docs]
         await self.cache.set(cache_key, adapter.dump_json(items), settings.cache_expire_in_seconds)
         return items
 
-    def _search_cache_key(self, params: dict[str, Any]) -> str:
-        digest = hashlib.md5(orjson.dumps(params, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    def _search_cache_key(self, request: SearchRequest) -> str:
+        digest = hashlib.md5(orjson.dumps(request, option=orjson.OPT_SORT_KEYS)).hexdigest()
         return f'{self.index}:search:{digest}'
 
     async def _cache_get(self, key: str, validate: Callable[[bytes], T]) -> T | None:
@@ -135,7 +118,7 @@ class BaseService(Generic[ModelT]):
 
         Запись может оказаться некорректным JSON или перестать соответствовать
         модели после обновления приложения. Тогда данные читаются из
-        Elasticsearch, а запись в кеше перезаписывается свежей.
+        хранилища, а запись в кеше перезаписывается свежей.
         """
         cached = await self.cache.get(key)
         if cached is None:
@@ -143,24 +126,5 @@ class BaseService(Generic[ModelT]):
         try:
             return validate(cached)
         except ValidationError as exc:
-            logger.warning('Запись %s в кеше не прошла проверку, читаем из Elasticsearch: %s', key, exc)
+            logger.warning('Запись %s в кеше не прошла проверку, читаем из хранилища: %s', key, exc)
             return None
-
-    @asynccontextmanager
-    async def _elastic_errors(self) -> AsyncIterator[None]:
-        """Переводит сбои Elasticsearch в StorageUnavailableError.
-
-        NotFoundError об отсутствии документа пропускается дальше как есть:
-        это обычный ответ, а не сбой. Отсутствие индекса, наоборот, значит,
-        что ETL ещё не загрузил данные или индекс удалён, — сервис не готов.
-        """
-        try:
-            yield
-        except NotFoundError as exc:
-            if exc.error != INDEX_NOT_FOUND:
-                raise
-            logger.error('Индекс %s не найден в Elasticsearch', self.index)
-            raise StorageUnavailableError from exc
-        except (ElasticConnectionError, ConnectionTimeout) as exc:
-            logger.error('Elasticsearch недоступен, индекс %s: %s', self.index, exc)
-            raise StorageUnavailableError from exc

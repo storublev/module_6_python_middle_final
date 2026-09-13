@@ -15,7 +15,7 @@ from core.config import settings
 from core.logger import LOGGING
 from core.middleware import TrailingSlashMiddleware
 from db import elastic, redis
-from services.exceptions import StorageUnavailableError
+from storage.base import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
 
