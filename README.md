@@ -52,6 +52,58 @@ cd src
 ELASTIC_HOST=localhost REDIS_HOST=localhost python main.py   # http://localhost:8000/api/openapi
 ```
 
+## Функциональные тесты
+
+Тесты проверяют API снаружи, через HTTP: сами наполняют Elasticsearch, шлют
+запросы и сверяют ответы. Код приложения они не импортируют, схемы индексов —
+копия схем ETL (`tests/functional/testdata/es_mapping.py`). Стек: pytest,
+pytest-asyncio, aiohttp.
+
+Запуск в изолированном окружении — API, Elasticsearch, Redis и контейнер
+с тестами поднимаются отдельным docker-compose, ETL и PostgreSQL не нужны:
+
+```bash
+docker compose -f tests/functional/docker-compose.yml up --build \
+    --abort-on-container-exit --exit-code-from tests
+docker compose -f tests/functional/docker-compose.yml down
+```
+
+Код выхода команды — результат тестов. Перед запуском контейнер тестов ждёт,
+пока Elasticsearch и Redis начнут отвечать (`tests/functional/utils/wait_for_*.py`):
+`depends_on` гарантирует только запуск процесса, а не готовность сервиса.
+
+Локально, например из IDE с отладчиком: docker-compose тестов пробрасывает на
+localhost порты API (8000), Elasticsearch (9200) и Redis (6379), а настройки
+тестов по умолчанию смотрят туда же.
+
+```bash
+docker compose -f tests/functional/docker-compose.yml up -d --build --wait api
+pip install -r tests/functional/requirements.txt
+pytest tests/functional                      # или: pytest tests/functional -k search
+```
+
+Порты меняются переменными `TEST_API_PORT`, `TEST_ELASTIC_PORT`,
+`TEST_REDIS_PORT`, адреса для тестов — `SERVICE_URL`, `ELASTIC_URL`,
+`REDIS_HOST`, `REDIS_PORT`. **Тесты пересоздают индексы `movies`, `genres`,
+`persons` и очищают Redis — не направляйте их на рабочие хранилища.**
+
+```
+tests/functional/
+├── conftest.py            # фикстуры: клиенты на сессию, очистка перед тестом, запись в ES, запрос к API
+├── docker-compose.yml     # API, Elasticsearch, Redis и тесты
+├── Dockerfile             # образ с тестами; entrypoint.sh ждёт хранилища и запускает pytest
+├── pytest.ini
+├── requirements.txt
+├── settings.py            # адреса API и хранилищ
+├── src/                   # тесты по эндпоинтам
+├── testdata/              # схемы индексов, фабрики документов, граничные значения параметров
+└── utils/                 # ожидание Elasticsearch и Redis, вспомогательный код
+```
+
+Скорость: клиенты Elasticsearch, Redis и HTTP-сессия создаются один раз на
+сессию, индексы — тоже; перед каждым тестом из индексов удаляются документы и
+сбрасывается кеш. Документы пишутся с `refresh`, поэтому тестам не нужны паузы.
+
 ## Эндпоинты
 
 | Метод и путь | Назначение |
