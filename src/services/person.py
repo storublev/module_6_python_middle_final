@@ -4,13 +4,15 @@ from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
 from redis.asyncio import Redis
 
+from core.config import settings
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.person import Person
 from services.base import BaseService, Pagination
-from services.cache import RedisCache
+from services.cache import ModelCache
 from storage.base import TextQuery
 from storage.elastic import ElasticStorage
+from storage.redis import RedisCache
 
 
 class PersonService(BaseService[Person]):
@@ -27,4 +29,5 @@ def get_person_service(
     redis: Redis = Depends(get_redis),
     elastic: AsyncElasticsearch = Depends(get_elastic),
 ) -> PersonService:
-    return PersonService(ElasticStorage(elastic), RedisCache(redis))
+    cache = ModelCache(RedisCache(redis), expire=settings.cache_expire_in_seconds)
+    return PersonService(ElasticStorage(elastic), cache)

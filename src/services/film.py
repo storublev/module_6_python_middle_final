@@ -5,13 +5,15 @@ from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
 from redis.asyncio import Redis
 
+from core.config import settings
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import Film, FilmShort
 from services.base import BaseService, Pagination, sort_by
-from services.cache import RedisCache
+from services.cache import ModelCache
 from storage.base import RelatedTo, TextQuery
 from storage.elastic import ElasticStorage
+from storage.redis import RedisCache
 
 PERSON_ROLES = ('actors', 'writers', 'directors')
 
@@ -46,4 +48,5 @@ def get_film_service(
     redis: Redis = Depends(get_redis),
     elastic: AsyncElasticsearch = Depends(get_elastic),
 ) -> FilmService:
-    return FilmService(ElasticStorage(elastic), RedisCache(redis))
+    cache = ModelCache(RedisCache(redis), expire=settings.cache_expire_in_seconds)
+    return FilmService(ElasticStorage(elastic), cache)

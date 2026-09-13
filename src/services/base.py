@@ -1,23 +1,16 @@
 import hashlib
-import logging
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
 from typing import ClassVar, Generic, TypeVar
 from uuid import UUID
 
 import orjson
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel
 
-from core.config import settings
-from services.cache import Cache
+from services.cache import ModelCache
 from storage.base import DocumentStorage, RelatedTo, SearchRequest, Sort, SortOrder, TextQuery
-
-logger = logging.getLogger(__name__)
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
 ItemT = TypeVar('ItemT', bound=BaseModel)
-T = TypeVar('T')
 
 
 @dataclass(frozen=True)
@@ -28,12 +21,6 @@ class Pagination:
     @property
     def offset(self) -> int:
         return (self.page_number - 1) * self.page_size
-
-
-@cache
-def _list_adapter(model: type[ItemT]) -> TypeAdapter[list[ItemT]]:
-    """TypeAdapter дорого создавать, поэтому он строится один раз на модель."""
-    return TypeAdapter(list[model])
 
 
 def sort_by(field: str) -> tuple[Sort, ...]:
@@ -51,20 +38,20 @@ class BaseService(Generic[ModelT]):
 
     Наследник задаёт индекс и модель документа, а сам описывает только запросы.
     Ответы кешируются по набору параметров запроса: одинаковые запросы
-    в течение `cache_expire_in_seconds` не доходят до хранилища.
+    не доходят до хранилища, пока запись в кеше не устарела.
     """
 
     index: ClassVar[str]
     model: ClassVar[type[BaseModel]]
 
-    def __init__(self, storage: DocumentStorage, cache_storage: Cache):
+    def __init__(self, storage: DocumentStorage, cache: ModelCache):
         self.storage = storage
-        self.cache = cache_storage
+        self.cache = cache
 
     async def get_by_id(self, item_id: UUID) -> ModelT | None:
         """Возвращает документ по id или None, если его нет."""
         cache_key = f'{self.index}:id:{item_id}'
-        cached = await self._cache_get(cache_key, self.model.model_validate_json)
+        cached = await self.cache.get(cache_key, self.model)
         if cached is not None:
             return cached
 
@@ -73,7 +60,7 @@ class BaseService(Generic[ModelT]):
             return None
 
         item = self.model.model_validate(doc)
-        await self.cache.set(cache_key, item.model_dump_json(), settings.cache_expire_in_seconds)
+        await self.cache.set(cache_key, item, self.model)
         return item
 
     async def _search(
@@ -98,33 +85,16 @@ class BaseService(Generic[ModelT]):
             sort=sort,
         )
 
-        adapter = _list_adapter(model)
         cache_key = self._search_cache_key(request)
-        cached = await self._cache_get(cache_key, adapter.validate_json)
+        cached = await self.cache.get(cache_key, list[model])
         if cached is not None:
             return cached
 
         docs = await self.storage.search(self.index, request)
         items = [model.model_validate(doc) for doc in docs]
-        await self.cache.set(cache_key, adapter.dump_json(items), settings.cache_expire_in_seconds)
+        await self.cache.set(cache_key, items, list[model])
         return items
 
     def _search_cache_key(self, request: SearchRequest) -> str:
         digest = hashlib.md5(orjson.dumps(request, option=orjson.OPT_SORT_KEYS)).hexdigest()
         return f'{self.index}:search:{digest}'
-
-    async def _cache_get(self, key: str, validate: Callable[[bytes], T]) -> T | None:
-        """Читает запись из кеша; повреждённую запись считает отсутствующей.
-
-        Запись может оказаться некорректным JSON или перестать соответствовать
-        модели после обновления приложения. Тогда данные читаются из
-        хранилища, а запись в кеше перезаписывается свежей.
-        """
-        cached = await self.cache.get(key)
-        if cached is None:
-            return None
-        try:
-            return validate(cached)
-        except ValidationError as exc:
-            logger.warning('Запись %s в кеше не прошла проверку, читаем из хранилища: %s', key, exc)
-            return None
