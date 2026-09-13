@@ -15,6 +15,19 @@ PERSON_NOT_FOUND = 'person not found'
 
 
 @router.get(
+    '',
+    response_model=list[PersonSchema],
+    summary='Список персон',
+    description='Персоны в алфавитном порядке.',
+)
+async def person_list(
+    pagination: PaginationDep,
+    person_service: PersonServiceDep,
+) -> list[Person]:
+    return await person_service.get_list(pagination)
+
+
+@router.get(
     '/search',
     response_model=list[PersonSchema],
     summary='Поиск по персонам',
