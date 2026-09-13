@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from api.dependencies import FilmServiceDep
 from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
-from api.v1.schemas import FilmSchema, FilmShortSchema
+from api.v1.schemas import FilmSchema, FilmShortSchema, error_response
 from models.film import Film, FilmShort
 
 router = APIRouter()
@@ -48,7 +48,7 @@ async def film_search(
     '/{film_id}',
     response_model=FilmSchema,
     summary='Полная информация по фильму',
-    responses={HTTPStatus.NOT_FOUND: {'description': FILM_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(FILM_NOT_FOUND)},
 )
 async def film_details(
     film_id: UUID,

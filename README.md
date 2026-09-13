@@ -43,6 +43,9 @@ docker compose up -d --build
 * Документация OpenAPI: http://localhost/api/openapi
 * Спецификация: http://localhost/api/openapi.json
 
+В документации для клиентов описаны пагинация, ошибки (404, 422, 503 с моделью
+`ErrorSchema`), назначение каждого эндпоинта и тега, поля ответов с примерами.
+
 ### Локальный запуск без Docker
 
 ```bash

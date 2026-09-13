@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from api.dependencies import FilmServiceDep, PersonServiceDep
 from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
-from api.v1.schemas import FilmShortSchema, PersonSchema
+from api.v1.schemas import FilmShortSchema, PersonSchema, error_response
 from models.film import FilmShort
 from models.person import Person
 
@@ -46,7 +46,7 @@ async def person_search(
     response_model=PersonSchema,
     summary='Данные по персоне',
     description='Имя персоны и фильмы, в которых она участвовала, с её ролями.',
-    responses={HTTPStatus.NOT_FOUND: {'description': PERSON_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
 )
 async def person_details(
     person_id: UUID,
@@ -62,7 +62,7 @@ async def person_details(
     '/{person_id}/film',
     response_model=list[FilmShortSchema],
     summary='Фильмы по персоне',
-    responses={HTTPStatus.NOT_FOUND: {'description': PERSON_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
 )
 async def person_films(
     person_id: UUID,

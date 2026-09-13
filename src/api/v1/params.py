@@ -34,6 +34,6 @@ def get_pagination(
 
 FilmSortQuery = Annotated[FilmSort, Query(description='Поле сортировки, минус — по убыванию')]
 
-SearchQuery = Annotated[str, Query(min_length=1, description='Строка поиска')]
+SearchQuery = Annotated[str, Query(min_length=1, description='Строка поиска', examples=['star'])]
 
 PaginationDep = Annotated[Pagination, Depends(get_pagination)]

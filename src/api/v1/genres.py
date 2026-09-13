@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from api.dependencies import GenreServiceDep
 from api.v1.params import PaginationDep
-from api.v1.schemas import GenreSchema
+from api.v1.schemas import GenreSchema, error_response
 from models.genre import Genre
 
 router = APIRouter()
@@ -30,7 +30,7 @@ async def genre_list(
     '/{genre_id}',
     response_model=GenreSchema,
     summary='Данные по жанру',
-    responses={HTTPStatus.NOT_FOUND: {'description': GENRE_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(GENRE_NOT_FOUND)},
 )
 async def genre_details(
     genre_id: UUID,
