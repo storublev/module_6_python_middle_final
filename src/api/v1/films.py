@@ -2,13 +2,12 @@ from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from api.v1.params import FilmSort, SearchQuery, get_pagination
+from api.dependencies import FilmServiceDep
+from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
 from api.v1.schemas import FilmSchema, FilmShortSchema
 from models.film import Film, FilmShort
-from services.base import Pagination
-from services.film import FilmService, get_film_service
 
 router = APIRouter()
 
@@ -23,9 +22,9 @@ FILM_NOT_FOUND = 'film not found'
                 'С фильтром по жанру фильма возвращает похожие фильмы.',
 )
 async def film_list(
-    pagination: Annotated[Pagination, Depends(get_pagination)],
-    film_service: Annotated[FilmService, Depends(get_film_service)],
-    sort: Annotated[FilmSort, Query(description='Поле сортировки, минус — по убыванию')] = FilmSort.imdb_rating_desc,
+    pagination: PaginationDep,
+    film_service: FilmServiceDep,
+    sort: FilmSortQuery = FilmSort.imdb_rating_desc,
     genre: Annotated[UUID | None, Query(description='uuid жанра для фильтрации')] = None,
 ) -> list[FilmShort]:
     return await film_service.get_list(pagination, sort=sort, genre_id=genre)
@@ -39,8 +38,8 @@ async def film_list(
 )
 async def film_search(
     query: SearchQuery,
-    pagination: Annotated[Pagination, Depends(get_pagination)],
-    film_service: Annotated[FilmService, Depends(get_film_service)],
+    pagination: PaginationDep,
+    film_service: FilmServiceDep,
 ) -> list[FilmShort]:
     return await film_service.search(query, pagination)
 
@@ -53,7 +52,7 @@ async def film_search(
 )
 async def film_details(
     film_id: UUID,
-    film_service: Annotated[FilmService, Depends(get_film_service)],
+    film_service: FilmServiceDep,
 ) -> Film:
     film = await film_service.get_by_id(film_id)
     if not film:

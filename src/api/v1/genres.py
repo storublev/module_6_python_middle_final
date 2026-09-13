@@ -1,14 +1,12 @@
 from http import HTTPStatus
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
-from api.v1.params import get_pagination
+from api.dependencies import GenreServiceDep
+from api.v1.params import PaginationDep
 from api.v1.schemas import GenreSchema
 from models.genre import Genre
-from services.base import Pagination
-from services.genre import GenreService, get_genre_service
 
 router = APIRouter()
 
@@ -22,8 +20,8 @@ GENRE_NOT_FOUND = 'genre not found'
     description='Жанры в алфавитном порядке.',
 )
 async def genre_list(
-    pagination: Annotated[Pagination, Depends(get_pagination)],
-    genre_service: Annotated[GenreService, Depends(get_genre_service)],
+    pagination: PaginationDep,
+    genre_service: GenreServiceDep,
 ) -> list[Genre]:
     return await genre_service.get_list(pagination)
 
@@ -36,7 +34,7 @@ async def genre_list(
 )
 async def genre_details(
     genre_id: UUID,
-    genre_service: Annotated[GenreService, Depends(get_genre_service)],
+    genre_service: GenreServiceDep,
 ) -> Genre:
     genre = await genre_service.get_by_id(genre_id)
     if not genre:

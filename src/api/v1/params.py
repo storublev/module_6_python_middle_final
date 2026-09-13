@@ -4,7 +4,7 @@ from enum import StrEnum
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 
 from services.base import Pagination
 
@@ -32,4 +32,8 @@ def get_pagination(
     return Pagination(page_number=page_number, page_size=page_size)
 
 
+FilmSortQuery = Annotated[FilmSort, Query(description='Поле сортировки, минус — по убыванию')]
+
 SearchQuery = Annotated[str, Query(min_length=1, description='Строка поиска')]
+
+PaginationDep = Annotated[Pagination, Depends(get_pagination)]

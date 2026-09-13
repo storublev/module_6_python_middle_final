@@ -111,6 +111,7 @@ ELASTIC_HOST=localhost REDIS_HOST=localhost python main.py   # http://localhost:
 ```
 src/
 ├── main.py              # приложение, lifespan с клиентами ES и Redis
+├── api/dependencies.py  # сборка сервисов: какие хранилища и кеш они получают
 ├── api/v1/              # роутеры, параметры запросов, схемы ответов
 ├── core/                # настройки, логирование, middleware
 ├── db/                  # клиенты Elasticsearch и Redis
@@ -132,6 +133,11 @@ src/
 С кешем так же: сервисы работают с `ModelCache` (`services/cache.py`), который
 сериализует модели, проверяет записи и задаёт время жизни, а хранит данные
 через интерфейс `Cache`. Реализация на Redis — `storage/redis.py`.
+
+Конкретные реализации выбираются в одном месте — `api/dependencies.py`
+(Composition Root): оттуда эндпоинты получают готовые сервисы через `Depends`.
+Модули сервисов содержат только бизнес-логику и не импортируют ни FastAPI,
+ни клиенты Elasticsearch и Redis.
 
 ## Переменные окружения
 
