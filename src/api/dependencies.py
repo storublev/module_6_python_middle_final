@@ -20,12 +20,18 @@ from services.film import FilmService
 from services.genre import GenreService
 from services.person import PersonService
 from storage.base import DocumentStorage
-from storage.elastic import ElasticStorage
+from storage.elastic import BackoffPolicy, ElasticStorage
 from storage.redis import RedisCache
+
+ELASTIC_BACKOFF = BackoffPolicy(
+    max_time=settings.elastic_backoff_max_time,
+    factor=settings.elastic_backoff_factor,
+    max_value=settings.elastic_backoff_max_value,
+)
 
 
 def get_storage(elastic: Annotated[AsyncElasticsearch, Depends(get_elastic)]) -> DocumentStorage:
-    return ElasticStorage(elastic)
+    return ElasticStorage(elastic, retry=ELASTIC_BACKOFF)
 
 
 def get_cache(redis: Annotated[Redis, Depends(get_redis)]) -> ModelCache:

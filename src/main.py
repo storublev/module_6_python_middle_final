@@ -8,7 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
-from redis.backoff import NoBackoff
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from api.v1 import films, genres, persons
 from api.v1.schemas import error_response
@@ -25,17 +26,29 @@ SERVICE_UNAVAILABLE = 'service temporarily unavailable'
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Короткие таймауты и без повторов: при недоступном Redis запрос должен
-    # быстро уйти в Elasticsearch, а не ждать кеш. По умолчанию redis-py
-    # повторяет операцию до 10 раз с паузами, и запрос висит секундами.
+    # Кеш не должен задерживать ответ: таймауты короткие, а повторяется только
+    # обрыв соединения (например, после перезапуска Redis) — несколько раз,
+    # с короткой экспоненциальной паузой. Таймаут не повторяется: Redis, который
+    # не ответил за секунду, вряд ли ответит на вторую попытку, и запрос уходит
+    # в Elasticsearch. По умолчанию redis-py повторяет и таймауты, до 10 раз.
     redis.redis = Redis(
         host=settings.redis_host,
         port=settings.redis_port,
         socket_connect_timeout=1,
         socket_timeout=1,
-        retry=Retry(NoBackoff(), retries=0),
+        retry=Retry(
+            ExponentialWithJitterBackoff(base=settings.redis_backoff_base, cap=settings.redis_backoff_cap),
+            retries=settings.redis_backoff_retries,
+            supported_errors=(RedisConnectionError,),
+        ),
     )
-    elastic.es = AsyncElasticsearch(hosts=[settings.elastic_url])
+    # Повторы с экспоненциальной паузой делает ElasticStorage; встроенные
+    # повторы клиента идут без паузы и умножали бы число попыток.
+    elastic.es = AsyncElasticsearch(
+        hosts=[settings.elastic_url],
+        request_timeout=settings.elastic_request_timeout,
+        max_retries=0,
+    )
     yield
     await redis.redis.aclose()
     await elastic.es.close()
