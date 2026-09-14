@@ -1,20 +1,30 @@
 from http import HTTPStatus
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
-from api.v1.params import FilmSort, SearchQuery, get_pagination
-from api.v1.schemas import FilmShortSchema, PersonSchema
+from api.dependencies import FilmServiceDep, PersonServiceDep
+from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
+from api.v1.schemas import FilmShortSchema, PersonSchema, error_response
 from models.film import FilmShort
 from models.person import Person
-from services.base import Pagination
-from services.film import FilmService, get_film_service
-from services.person import PersonService, get_person_service
 
 router = APIRouter()
 
 PERSON_NOT_FOUND = 'person not found'
+
+
+@router.get(
+    '',
+    response_model=list[PersonSchema],
+    summary='Список персон',
+    description='Персоны в алфавитном порядке.',
+)
+async def person_list(
+    pagination: PaginationDep,
+    person_service: PersonServiceDep,
+) -> list[Person]:
+    return await person_service.get_list(pagination)
 
 
 @router.get(
@@ -25,8 +35,8 @@ PERSON_NOT_FOUND = 'person not found'
 )
 async def person_search(
     query: SearchQuery,
-    pagination: Annotated[Pagination, Depends(get_pagination)],
-    person_service: Annotated[PersonService, Depends(get_person_service)],
+    pagination: PaginationDep,
+    person_service: PersonServiceDep,
 ) -> list[Person]:
     return await person_service.search(query, pagination)
 
@@ -36,11 +46,11 @@ async def person_search(
     response_model=PersonSchema,
     summary='Данные по персоне',
     description='Имя персоны и фильмы, в которых она участвовала, с её ролями.',
-    responses={HTTPStatus.NOT_FOUND: {'description': PERSON_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
 )
 async def person_details(
     person_id: UUID,
-    person_service: Annotated[PersonService, Depends(get_person_service)],
+    person_service: PersonServiceDep,
 ) -> Person:
     person = await person_service.get_by_id(person_id)
     if not person:
@@ -52,14 +62,14 @@ async def person_details(
     '/{person_id}/film',
     response_model=list[FilmShortSchema],
     summary='Фильмы по персоне',
-    responses={HTTPStatus.NOT_FOUND: {'description': PERSON_NOT_FOUND}},
+    responses={HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
 )
 async def person_films(
     person_id: UUID,
-    pagination: Annotated[Pagination, Depends(get_pagination)],
-    person_service: Annotated[PersonService, Depends(get_person_service)],
-    film_service: Annotated[FilmService, Depends(get_film_service)],
-    sort: Annotated[FilmSort, Query(description='Поле сортировки, минус — по убыванию')] = FilmSort.imdb_rating_desc,
+    pagination: PaginationDep,
+    person_service: PersonServiceDep,
+    film_service: FilmServiceDep,
+    sort: FilmSortQuery = FilmSort.imdb_rating_desc,
 ) -> list[FilmShort]:
     if not await person_service.get_by_id(person_id):
         raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=PERSON_NOT_FOUND)
