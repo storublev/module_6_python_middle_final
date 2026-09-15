@@ -2,21 +2,24 @@ from typing import Any
 from uuid import UUID
 
 from models.role import Role
+from services.access_invalidation import AccessInvalidator
 from services.errors import RoleNameTakenError, RoleNotAssignedError, RoleNotFoundError, UserNotFoundError
-from storage.base import AccessCache, AlreadyExistsError, RoleRepository, UserRepository
+from storage.base import AlreadyExistsError, RoleRepository, UserRepository
 
 
 class RoleService:
     """Управление ролями и их назначением пользователям.
 
     Любое изменение, влияющее на права, сбрасывает кеш прав: иначе проверка
-    доступа до истечения кеша отвечала бы по-старому.
+    доступа до истечения кеша отвечала бы по-старому. Задание на сброс
+    фиксируется в одной транзакции с изменением и выполняется сразу; если
+    Redis недоступен, его повторяет фоновая задача (AccessInvalidator).
     """
 
-    def __init__(self, roles: RoleRepository, users: UserRepository, cache: AccessCache):
+    def __init__(self, roles: RoleRepository, users: UserRepository, invalidator: AccessInvalidator):
         self.roles = roles
         self.users = users
-        self.cache = cache
+        self.invalidator = invalidator
 
     async def list_roles(self) -> list[Role]:
         return await self.roles.get_all()
@@ -48,14 +51,13 @@ class RoleService:
             raise RoleNameTakenError from exc
         if role is None:
             raise RoleNotFoundError
-        if changes:
-            await self.cache.invalidate_all()
+        await self.invalidator.flush_or_defer()
         return role
 
     async def delete_role(self, role_id: UUID) -> None:
         if not await self.roles.delete(role_id):
             raise RoleNotFoundError
-        await self.cache.invalidate_all()
+        await self.invalidator.flush_or_defer()
 
     async def user_roles(self, user_id: UUID) -> list[Role]:
         await self._ensure_user(user_id)
@@ -70,7 +72,7 @@ class RoleService:
         await self._ensure_user(user_id)
         await self.get_role(role_id)
         await self.roles.assign(user_id, role_id)
-        await self.cache.invalidate_user(user_id)
+        await self.invalidator.flush_or_defer()
 
     async def revoke(self, user_id: UUID, role_id: UUID) -> None:
         """Отбирает роль.
@@ -83,7 +85,7 @@ class RoleService:
         await self.get_role(role_id)
         if not await self.roles.revoke(user_id, role_id):
             raise RoleNotAssignedError
-        await self.cache.invalidate_user(user_id)
+        await self.invalidator.flush_or_defer()
 
     async def _ensure_user(self, user_id: UUID) -> None:
         if await self.users.get(user_id) is None:

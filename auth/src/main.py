@@ -1,5 +1,7 @@
+import asyncio
 import logging.config
-from contextlib import asynccontextmanager
+import random
+from contextlib import asynccontextmanager, suppress
 
 import uvicorn
 from fastapi import FastAPI
@@ -10,6 +12,7 @@ from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from api.dependencies import get_access_cache, get_access_invalidator, get_invalidation_queue
 from api.errors import (
     SERVICE_UNAVAILABLE_RESPONSE,
     service_error_handler,
@@ -24,8 +27,36 @@ from services.errors import ServiceError
 from storage.base import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
+logger = logging.getLogger(__name__)
 
 API_PREFIX = '/auth/api/v1'
+
+
+async def retry_access_invalidations() -> None:
+    """Повторяет сброс кеша прав по заданиям, которые не удалось выполнить сразу.
+
+    Работает в каждом процессе сервиса; одно задание два процесса не возьмут —
+    задания блокируются в PostgreSQL. При сбое хранилища пауза удваивается до
+    AUTH_ACCESS_INVALIDATION_MAX_INTERVAL, чтобы не долбить упавший Redis.
+    """
+    interval = settings.access_invalidation_interval.total_seconds()
+    delay = interval
+    while True:
+        # Случайная добавка разводит процессы, запущенные одновременно; это не криптография.
+        await asyncio.sleep(delay * random.uniform(0.8, 1.2))  # noqa: S311
+        try:
+            async with postgres.session_factory() as session:
+                invalidator = get_access_invalidator(get_invalidation_queue(session), get_access_cache(redis.redis))
+                if done := await invalidator.flush():
+                    logger.info('Кеш прав сброшен по отложенным заданиям: %d', done)
+        except StorageUnavailableError as exc:
+            delay = min(delay * 2, settings.access_invalidation_max_interval.total_seconds())
+            logger.warning('Сброс кеша прав не удался, следующая попытка через %.0f с: %s', delay, exc)
+        except Exception:
+            # Задача не должна умереть от неожиданной ошибки: задания дождутся исправления.
+            logger.exception('Ошибка при сбросе кеша прав по отложенным заданиям')
+        else:
+            delay = interval
 
 
 @asynccontextmanager
@@ -46,7 +77,11 @@ async def lifespan(_: FastAPI):
             supported_errors=(RedisConnectionError,),
         ),
     )
+    invalidations = asyncio.create_task(retry_access_invalidations())
     yield
+    invalidations.cancel()
+    with suppress(asyncio.CancelledError):
+        await invalidations
     await redis.redis.aclose()
     await postgres.engine.dispose()
 

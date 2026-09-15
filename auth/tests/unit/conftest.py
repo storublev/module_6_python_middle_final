@@ -7,6 +7,7 @@ import pytest
 from pwdlib.hashers.argon2 import Argon2Hasher
 
 from services.access import AccessService
+from services.access_invalidation import AccessInvalidator
 from services.auth import AuthService, ClientInfo, RegistrationService, SignupService
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
@@ -16,6 +17,7 @@ from services.tokens import TokenService
 from tests.unit.fakes import (
     Database,
     FakeAccessCache,
+    FakeAccessInvalidationQueue,
     FakeLoginHistoryRepository,
     FakeRateLimiter,
     FakeRoleRepository,
@@ -122,8 +124,15 @@ def profiles(
 
 
 @pytest.fixture
-def role_service(roles_repo: FakeRoleRepository, users: FakeUserRepository, cache: FakeAccessCache) -> RoleService:
-    return RoleService(roles_repo, users, cache)
+def invalidator(db: Database, cache: FakeAccessCache) -> AccessInvalidator:
+    return AccessInvalidator(FakeAccessInvalidationQueue(db), cache)
+
+
+@pytest.fixture
+def role_service(
+    roles_repo: FakeRoleRepository, users: FakeUserRepository, invalidator: AccessInvalidator,
+) -> RoleService:
+    return RoleService(roles_repo, users, invalidator)
 
 
 @pytest.fixture

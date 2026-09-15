@@ -27,7 +27,10 @@ router = APIRouter()
     summary='Проверка права',
     description='Есть ли у пользователя из access-токена право. Токен необязателен: без него проверяется '
                 'анонимный пользователь, у которого прав нет — ему доступно лишь то, что правом не ограничено. '
-                'Суперпользователю разрешено всё. Права берутся из кеша, изменения ролей действуют сразу.',
+                'Суперпользователю разрешено всё. Права берутся из кеша, изменения ролей сбрасывают его сразу. '
+                'Если в момент изменения хранилище кеша было недоступно, кеш сбросит фоновый повтор через '
+                'несколько секунд; для действий, где отзыв права должен действовать без задержки, передайте '
+                'fresh=true — права будут прочитаны из базы.',
     responses=error_responses(TokenExpiredError, TokenInvalidError, TokenRevokedError),
 )
 async def check_access(
@@ -38,11 +41,12 @@ async def check_access(
         Query(max_length=PERMISSION_MAX_LENGTH, pattern=PERMISSION_PATTERN,
               description='Право', examples=['films.subscription']),
     ],
+    fresh: Annotated[bool, Query(description='Проверить по актуальным правам из базы, минуя кеш')] = False,
 ) -> AccessCheckSchema:
     return AccessCheckSchema(
         user_id=principal.user_id if principal else None,
         permission=permission,
-        allowed=await access.check(principal, permission),
+        allowed=await access.check(principal, permission, fresh=fresh),
     )
 
 

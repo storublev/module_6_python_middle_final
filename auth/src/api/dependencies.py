@@ -16,6 +16,7 @@ from core.config import settings
 from db.postgres import get_session
 from db.redis import get_redis
 from services.access import AccessService
+from services.access_invalidation import AccessInvalidator
 from services.auth import AuthService, RegistrationService, SignupService
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
@@ -24,13 +25,19 @@ from services.throttling import Limit, Throttle, ThrottlingPolicy
 from services.tokens import TokenService
 from storage.base import (
     AccessCache,
+    AccessInvalidationQueue,
     LoginHistoryRepository,
     RateLimiter,
     RoleRepository,
     SessionStore,
     UserRepository,
 )
-from storage.postgres import PostgresLoginHistoryRepository, PostgresRoleRepository, PostgresUserRepository
+from storage.postgres import (
+    PostgresAccessInvalidationQueue,
+    PostgresLoginHistoryRepository,
+    PostgresRoleRepository,
+    PostgresUserRepository,
+)
 from storage.redis import RedisAccessCache, RedisRateLimiter, RedisSessionStore
 
 
@@ -78,6 +85,10 @@ def get_history_repository(session: DbSession) -> LoginHistoryRepository:
     return PostgresLoginHistoryRepository(session)
 
 
+def get_invalidation_queue(session: DbSession) -> AccessInvalidationQueue:
+    return PostgresAccessInvalidationQueue(session)
+
+
 def get_session_store(redis: RedisClient) -> SessionStore:
     return RedisSessionStore(redis)
 
@@ -96,6 +107,15 @@ History = Annotated[LoginHistoryRepository, Depends(get_history_repository)]
 Sessions = Annotated[SessionStore, Depends(get_session_store)]
 Cache = Annotated[AccessCache, Depends(get_access_cache)]
 Limiter = Annotated[RateLimiter, Depends(get_rate_limiter)]
+Invalidations = Annotated[AccessInvalidationQueue, Depends(get_invalidation_queue)]
+
+
+def get_access_invalidator(queue: Invalidations, cache: Cache) -> AccessInvalidator:
+    # Вызывается и вне запросов — фоновым повтором сброса кеша в main.py.
+    return AccessInvalidator(queue, cache)
+
+
+Invalidator = Annotated[AccessInvalidator, Depends(get_access_invalidator)]
 
 
 def get_throttle(limiter: Limiter, policy: Policy) -> Throttle:
@@ -121,8 +141,8 @@ def get_profile_service(
     return ProfileService(users, roles, history, sessions, passwords)
 
 
-def get_role_service(roles: Roles, users: Users, cache: Cache) -> RoleService:
-    return RoleService(roles, users, cache)
+def get_role_service(roles: Roles, users: Users, invalidator: Invalidator) -> RoleService:
+    return RoleService(roles, users, invalidator)
 
 
 def get_access_service(users: Users, cache: Cache) -> AccessService:

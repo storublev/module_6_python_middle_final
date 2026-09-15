@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # Сколько хранится в кеше набор прав пользователя. Изменения ролей
     # сбрасывают кеш сразу, время жизни — страховка от забытых записей.
     access_cache_ttl: Duration = timedelta(minutes=10)
+    # Как часто фоновая задача повторяет сброс кеша прав, если сразу после
+    # изменения ролей Redis был недоступен. При сбоях пауза растёт до max.
+    access_invalidation_interval: Duration = timedelta(seconds=5)
+    access_invalidation_max_interval: Duration = timedelta(minutes=1)
 
     # Лимиты попыток входа и регистрации: не больше N попыток за скользящее окно.
     # С одного адреса входят в разные аккаунты (NAT, офис), поэтому лимит по

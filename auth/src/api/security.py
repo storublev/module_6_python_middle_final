@@ -39,7 +39,10 @@ OptionalPrincipalDep = Annotated[Principal | None, Depends(get_optional_principa
 
 
 async def require_manage_access(principal: PrincipalDep, access: AccessServiceDep) -> Principal:
-    await access.require(principal, MANAGE_ACCESS)
+    # Отобранное право управлять доступом должно перестать действовать сразу,
+    # поэтому оно проверяется по базе, а не по кешу. Запросов на управление
+    # ролями немного — лишний запрос к PostgreSQL здесь ничего не стоит.
+    await access.require(principal, MANAGE_ACCESS, fresh=True)
     return principal
 
 

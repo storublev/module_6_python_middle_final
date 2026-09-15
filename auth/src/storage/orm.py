@@ -3,7 +3,20 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, DateTime, ForeignKey, Index, MetaData, String, Text, false, func, text
+from sqlalchemy import (
+    ARRAY,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Index,
+    MetaData,
+    String,
+    Text,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 SCHEMA = 'auth'
@@ -64,6 +77,21 @@ class UserRoleRow(Timestamped, Base):
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
     role_id: Mapped[UUID] = mapped_column(ForeignKey('roles.id', ondelete='CASCADE'), primary_key=True)
+
+
+class AccessInvalidationRow(Timestamped, Base):
+    """Задание на сброс кеша прав: пишется в одной транзакции с изменением ролей.
+
+    Сброс кеша в Redis — отдельный шаг после фиксации транзакции, и он может
+    не удаться. Задание остаётся в базе, пока кеш не сброшен, и выполняется
+    повторно — отозванные права не задержатся в кеше.
+    """
+
+    __tablename__ = 'access_invalidations'
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    # NULL — сбросить права всех пользователей: изменили или удалили роль.
+    user_id: Mapped[UUID | None]
 
 
 class LoginHistoryRow(Timestamped, Base):

@@ -4,8 +4,9 @@
 можно проверить без баз данных.
 """
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,6 +15,8 @@ from models.session import Session
 from models.user import LoginRecord, User
 from storage.base import (
     AccessCache,
+    AccessInvalidation,
+    AccessInvalidationQueue,
     AlreadyExistsError,
     LoginHistoryRepository,
     RateLimit,
@@ -38,6 +41,12 @@ class Database:
         self.roles: dict[UUID, Role] = {}
         self.user_roles: set[tuple[UUID, UUID]] = set()
         self.history: list[tuple[UUID, LoginRecord]] = []
+        # Задания на сброс кеша прав: пишутся вместе с изменением ролей.
+        self.invalidations: list[AccessInvalidation] = []
+        self._invalidation_ids = count(1)
+
+    def invalidate(self, user_id: UUID | None) -> None:
+        self.invalidations.append(AccessInvalidation(id=next(self._invalidation_ids), user_id=user_id))
 
 
 class FakeUserRepository(UserRepository):
@@ -117,12 +126,15 @@ class FakeRoleRepository(RoleRepository):
         if 'permissions' in changes:
             changes = {**changes, 'permissions': tuple(changes['permissions'])}
         self.db.roles[role_id] = role.model_copy(update={**changes, 'updated_at': now()})
+        if changes:
+            self.db.invalidate(user_id=None)
         return self.db.roles[role_id]
 
     async def delete(self, role_id: UUID) -> bool:
         if self.db.roles.pop(role_id, None) is None:
             return False
         self.db.user_roles = {(user, role) for user, role in self.db.user_roles if role != role_id}
+        self.db.invalidate(user_id=None)
         return True
 
     async def list_for_user(self, user_id: UUID) -> list[Role]:
@@ -131,16 +143,33 @@ class FakeRoleRepository(RoleRepository):
 
     async def assign(self, user_id: UUID, role_id: UUID) -> None:
         self.db.user_roles.add((user_id, role_id))
+        self.db.invalidate(user_id)
 
     async def revoke(self, user_id: UUID, role_id: UUID) -> bool:
         if (user_id, role_id) not in self.db.user_roles:
             return False
         self.db.user_roles.remove((user_id, role_id))
+        self.db.invalidate(user_id)
         return True
 
     def _check_name(self, name: str) -> None:
         if any(role.name == name for role in self.db.roles.values()):
             raise AlreadyExistsError(name)
+
+
+class FakeAccessInvalidationQueue(AccessInvalidationQueue):
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def process(
+        self, handler: Callable[[list[AccessInvalidation]], Awaitable[None]], limit: int,
+    ) -> int:
+        tasks = self.db.invalidations[:limit]
+        if not tasks:
+            return 0
+        await handler(tasks)
+        self.db.invalidations = self.db.invalidations[len(tasks):]
+        return len(tasks)
 
 
 class FakeLoginHistoryRepository(LoginHistoryRepository):
@@ -208,6 +237,8 @@ class FakeAccessCache(AccessCache):
 
     def __init__(self) -> None:
         self.entries: dict[UUID, UserAccess] = {}
+        # Имитация недоступного Redis при сбросе кеша.
+        self.invalidation_fails = False
 
     async def get(self, user_id: UUID) -> tuple[UserAccess | None, str]:
         return self.entries.get(user_id), ''
@@ -216,10 +247,16 @@ class FakeAccessCache(AccessCache):
         self.entries[user_id] = access
 
     async def invalidate_user(self, user_id: UUID) -> None:
+        self._check_available()
         self.entries.pop(user_id, None)
 
     async def invalidate_all(self) -> None:
+        self._check_available()
         self.entries.clear()
+
+    def _check_available(self) -> None:
+        if self.invalidation_fails:
+            raise StorageUnavailableError('Redis: connection refused')
 
 
 class FakeRateLimiter(RateLimiter):

@@ -2,8 +2,8 @@
 
 HTTP-клиент и соединения с PostgreSQL и Redis создаются один раз на сессию.
 Перед каждым тестом удаляются пользователи (вместе с их ролями и историей
-входов), созданные тестами роли и все сессии в Redis — тесты не видят чужих
-данных. Роль subscribers создаёт миграция, её тесты не меняют.
+входов), созданные тестами роли, задания на сброс кеша прав и всё в Redis —
+тесты не видят чужих данных. Роль subscribers создаёт миграция, её тесты не меняют.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -63,9 +63,10 @@ async def redis_client() -> AsyncIterator[Redis]:
 
 @pytest.fixture(autouse=True)
 async def clean_storage(pg: asyncpg.Connection, redis_client: Redis) -> None:
-    """Перед каждым тестом удаляет пользователей, созданные тестами роли и сессии."""
+    """Перед каждым тестом удаляет пользователей, созданные тестами роли, задания на сброс кеша и сессии."""
     await pg.execute('TRUNCATE auth.users CASCADE')
     await pg.execute('DELETE FROM auth.roles WHERE name <> $1', SEEDED_ROLE)
+    await pg.execute('TRUNCATE auth.access_invalidations')
     await redis_client.flushdb()
 
 

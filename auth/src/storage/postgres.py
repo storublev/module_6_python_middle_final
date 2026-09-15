@@ -4,7 +4,7 @@
 Сессия SQLAlchemy одна на запрос, её создаёт и закрывает FastAPI.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
@@ -17,13 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.role import Role, UserAccess
 from models.user import LoginRecord, User
 from storage.base import (
+    AccessInvalidation,
+    AccessInvalidationQueue,
     AlreadyExistsError,
     LoginHistoryRepository,
     RoleRepository,
     StorageUnavailableError,
     UserRepository,
 )
-from storage.orm import LoginHistoryRow, RoleRow, UserRoleRow, UserRow
+from storage.orm import AccessInvalidationRow, LoginHistoryRow, RoleRow, UserRoleRow, UserRow
 
 # Сбои соединения: asyncpg поднимает OSError, если сервер не принимает
 # соединения, SQLAlchemy — OperationalError и InterfaceError, если оно оборвалось.
@@ -143,6 +145,8 @@ class PostgresRoleRepository(PostgresRepository, RoleRepository):
             row = await self.session.scalar(
                 update(RoleRow).where(RoleRow.id == role_id).values(**changes).returning(RoleRow),
             )
+            if row is not None:
+                await self._invalidate(user_id=None)
             await self.session.commit()
         return Role.model_validate(row) if row else None
 
@@ -150,6 +154,8 @@ class PostgresRoleRepository(PostgresRepository, RoleRepository):
         # Назначения роли удаляет внешний ключ ON DELETE CASCADE.
         async with self._errors():
             deleted = await self.session.scalar(delete(RoleRow).where(RoleRow.id == role_id).returning(RoleRow.id))
+            if deleted is not None:
+                await self._invalidate(user_id=None)
             await self.session.commit()
         return deleted is not None
 
@@ -169,6 +175,7 @@ class PostgresRoleRepository(PostgresRepository, RoleRepository):
             await self.session.execute(
                 pg_insert(UserRoleRow).values(user_id=user_id, role_id=role_id).on_conflict_do_nothing(),
             )
+            await self._invalidate(user_id)
             await self.session.commit()
 
     async def revoke(self, user_id: UUID, role_id: UUID) -> bool:
@@ -179,8 +186,43 @@ class PostgresRoleRepository(PostgresRepository, RoleRepository):
         )
         async with self._errors():
             deleted = await self.session.scalar(query)
+            if deleted is not None:
+                await self._invalidate(user_id)
             await self.session.commit()
         return deleted is not None
+
+    async def _invalidate(self, user_id: UUID | None) -> None:
+        """Записывает задание на сброс кеша прав в текущую транзакцию."""
+        await self.session.execute(insert(AccessInvalidationRow).values(user_id=user_id))
+
+
+class PostgresAccessInvalidationQueue(PostgresRepository, AccessInvalidationQueue):
+    async def process(
+        self, handler: Callable[[list[AccessInvalidation]], Awaitable[None]], limit: int,
+    ) -> int:
+        # Задания блокируются до конца транзакции: другой процесс сервиса их
+        # пропустит (SKIP LOCKED) и не будет сбрасывать кеш дважды.
+        query = (
+            select(AccessInvalidationRow)
+            .order_by(AccessInvalidationRow.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        async with self._errors():
+            rows = (await self.session.scalars(query)).all()
+            tasks = [AccessInvalidation(id=row.id, user_id=row.user_id) for row in rows]
+            if not tasks:
+                await self.session.rollback()
+                return 0
+            try:
+                await handler(tasks)
+            except BaseException:
+                await self.session.rollback()
+                raise
+            ids = [task.id for task in tasks]
+            await self.session.execute(delete(AccessInvalidationRow).where(AccessInvalidationRow.id.in_(ids)))
+            await self.session.commit()
+        return len(tasks)
 
 
 class PostgresLoginHistoryRepository(PostgresRepository, LoginHistoryRepository):

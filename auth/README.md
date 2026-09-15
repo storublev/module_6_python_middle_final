@@ -124,6 +124,7 @@ cd auth && flake8 . && ruff check .
 | `AUTH_ACCESS_TOKEN_TTL` | `900` | Время жизни access-токена, секунды или ISO 8601 (`PT15M`) |
 | `AUTH_REFRESH_TOKEN_TTL` | `1209600` | Время жизни refresh-токена и сессии, 14 дней |
 | `AUTH_ACCESS_CACHE_TTL` | `600` | Время жизни кеша прав |
+| `AUTH_ACCESS_INVALIDATION_INTERVAL` / `…_MAX_INTERVAL` | `5` / `60` | Как часто повторять сброс кеша прав, отложенный из-за сбоя Redis; наибольшая пауза при сбоях |
 | `AUTH_LOGIN_ATTEMPTS_PER_IP` / `…_PERIOD` | `20` / `60` | Попыток входа с одного IP за скользящее окно, секунды |
 | `AUTH_LOGIN_ATTEMPTS_PER_ACCOUNT` / `…_PERIOD` | `10` / `900` | Неудачных попыток входа в один логин за окно |
 | `AUTH_SIGNUP_ATTEMPTS_PER_IP` / `…_PERIOD` | `10` / `3600` | Регистраций с одного IP за окно |

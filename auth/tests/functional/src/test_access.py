@@ -1,22 +1,39 @@
 """Назначение и отзыв ролей, проверка прав."""
 
+import asyncio
 import uuid
 
+import asyncpg
 import httpx
 import pytest
 from redis.asyncio import Redis
 
-from tests.functional.conftest import Account, bearer
+from tests.functional.conftest import Account, MakeAccount, bearer
 from tests.functional.utils.tokens import expired, forged
 
 SUBSCRIPTION = 'films.subscription'
 
 
-async def check(client: httpx.AsyncClient, account: Account | None, permission: str = SUBSCRIPTION) -> bool:
+async def check(
+    client: httpx.AsyncClient, account: Account | None, permission: str = SUBSCRIPTION, fresh: bool = False,
+) -> bool:
     headers = account.headers if account else {}
-    response = await client.get('/access/check', params={'permission': permission}, headers=headers)
+    params = {'permission': permission, 'fresh': str(fresh).lower()}
+    response = await client.get('/access/check', params=params, headers=headers)
     assert response.status_code == 200, response.text
     return response.json()['allowed']
+
+
+async def revoke_without_cache_reset(pg: asyncpg.Connection, user_id: str, invalidation: bool) -> None:
+    """Отзыв роли прямо в базе: так выглядит отзыв, после которого сбросить кеш в Redis не удалось.
+
+    invalidation=True — вместе с отзывом записано задание на сброс кеша, как это
+    делает сервис; False — задания нет, кеш так и останется устаревшим.
+    """
+    async with pg.transaction():
+        await pg.execute('DELETE FROM auth.user_roles WHERE user_id = $1', user_id)
+        if invalidation:
+            await pg.execute('INSERT INTO auth.access_invalidations (user_id) VALUES ($1)', user_id)
 
 
 async def test_user_roles(client: httpx.AsyncClient, admin: Account, neo: Account, subscribers_id: str) -> None:
@@ -123,6 +140,53 @@ async def test_check_is_cached(client: httpx.AsyncClient, neo: Account, redis_cl
     await check(client, neo)
 
     assert await redis_client.exists(f'auth:access:{neo.id}')
+
+
+async def test_role_changes_leave_no_pending_invalidations(
+    client: httpx.AsyncClient, admin: Account, neo: Account, subscribers_id: str, pg: asyncpg.Connection,
+) -> None:
+    """Задание на сброс кеша выполняется сразу после изменения роли и удаляется из базы."""
+    await client.put(f'/users/{neo.id}/roles/{subscribers_id}', headers=admin.headers)
+    await client.delete(f'/users/{neo.id}/roles/{subscribers_id}', headers=admin.headers)
+
+    assert await pg.fetchval('SELECT count(*) FROM auth.access_invalidations') == 0
+
+
+async def test_pending_invalidation_is_retried(
+    client: httpx.AsyncClient, admin: Account, neo: Account, subscribers_id: str, pg: asyncpg.Connection,
+) -> None:
+    """Задание, оставшееся после сбоя Redis, выполняет фоновый повтор; fresh-проверка верна сразу."""
+    await client.put(f'/users/{neo.id}/roles/{subscribers_id}', headers=admin.headers)
+    assert await check(client, neo)
+
+    await revoke_without_cache_reset(pg, neo.id, invalidation=True)
+
+    assert not await check(client, neo, fresh=True)
+    for _ in range(50):
+        if not await check(client, neo):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        pytest.fail('Фоновый повтор не сбросил кеш прав за 5 секунд')
+    assert await pg.fetchval('SELECT count(*) FROM auth.access_invalidations') == 0
+
+
+async def test_manage_access_is_checked_without_cache(
+    client: httpx.AsyncClient, admin: Account, make_account: MakeAccount, pg: asyncpg.Connection,
+) -> None:
+    """Отобранное право access.manage перестаёт действовать сразу, даже если кеш прав устарел."""
+    managers = (await client.post('/roles', headers=admin.headers,
+                                  json={'name': 'managers', 'permissions': ['access.manage']})).json()
+    neo = await make_account('neo')
+    await client.put(f'/users/{neo.id}/roles/{managers["id"]}', headers=admin.headers)
+    assert await check(client, neo, 'access.manage')
+    assert (await client.get('/roles', headers=neo.headers)).status_code == 200
+
+    await revoke_without_cache_reset(pg, neo.id, invalidation=False)
+
+    assert await check(client, neo, 'access.manage')
+    response = await client.get('/roles', headers=neo.headers)
+    assert (response.status_code, response.json()['code']) == (403, 'permission_denied')
 
 
 @pytest.mark.parametrize('make_token, code', [

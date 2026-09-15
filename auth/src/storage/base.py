@@ -9,7 +9,7 @@ SQLAlchemy, ни о Redis. Реализации выбираются в api/depe
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
@@ -70,7 +70,12 @@ class UserRepository(ABC):
 
 
 class RoleRepository(ABC):
-    """Роли и их назначение пользователям."""
+    """Роли и их назначение пользователям.
+
+    Каждое изменение, влияющее на права, в той же транзакции записывает
+    задание на сброс кеша прав (AccessInvalidationQueue): изменение и задание
+    фиксируются вместе или не фиксируются вовсе.
+    """
 
     @abstractmethod
     async def get_all(self) -> list[Role]:
@@ -111,6 +116,29 @@ class RoleRepository(ABC):
     @abstractmethod
     async def revoke(self, user_id: UUID, role_id: UUID) -> bool:
         """Отбирает роль у пользователя; False — роль не была назначена."""
+
+
+@dataclass(frozen=True)
+class AccessInvalidation:
+    """Задание на сброс кеша прав: одного пользователя или всех (user_id=None)."""
+
+    id: int
+    user_id: UUID | None
+
+
+class AccessInvalidationQueue(ABC):
+    """Задания на сброс кеша прав, записанные вместе с изменением ролей."""
+
+    @abstractmethod
+    async def process(
+        self, handler: Callable[[list[AccessInvalidation]], Awaitable[None]], limit: int,
+    ) -> int:
+        """Передаёт обработчику до limit заданий и удаляет их, если он завершился без ошибки.
+
+        Задания, которые в это время выполняет другой процесс, пропускаются.
+        Если обработчик поднял исключение, задания остаются и будут выполнены
+        при следующем вызове. Возвращает, сколько заданий выполнено.
+        """
 
 
 class LoginHistoryRepository(ABC):
