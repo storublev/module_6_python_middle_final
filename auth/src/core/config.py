@@ -1,7 +1,26 @@
+import re
 from datetime import timedelta
+from typing import Annotated, Any
 
-from pydantic import Field, SecretStr
+from pydantic import BeforeValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SECONDS_PATTERN = re.compile(r'\d+(\.\d+)?')
+
+
+def seconds_to_timedelta(value: Any) -> Any:
+    """Число секунд строкой — как timedelta.
+
+    Переменные окружения — всегда строки, а строку «900» pydantic не считает
+    числом секунд: принимает только ISO 8601 (PT15M) и чч:мм:сс.
+    """
+    if isinstance(value, str) and SECONDS_PATTERN.fullmatch(value.strip()):
+        return float(value)
+    return value
+
+
+# Время жизни и интервалы задаются числом секунд или в ISO 8601 (PT15M).
+Duration = Annotated[timedelta, BeforeValidator(seconds_to_timedelta)]
 
 
 class Settings(BaseSettings):
@@ -39,26 +58,25 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr = Field(min_length=32)
     # HS256 — HMAC-SHA256: один секрет и подписывает, и проверяет токен.
     jwt_algorithm: str = 'HS256'
-    # Время жизни задаётся числом секунд или в ISO 8601 (PT15M).
     # access-токен не хранится и не отзывается сам по себе, поэтому живёт
     # недолго; refresh-токен одноразовый и хранится в Redis вместе с сессией.
-    access_token_ttl: timedelta = timedelta(minutes=15)
-    refresh_token_ttl: timedelta = timedelta(days=14)
+    access_token_ttl: Duration = timedelta(minutes=15)
+    refresh_token_ttl: Duration = timedelta(days=14)
 
     # Сколько хранится в кеше набор прав пользователя. Изменения ролей
     # сбрасывают кеш сразу, время жизни — страховка от забытых записей.
-    access_cache_ttl: timedelta = timedelta(minutes=10)
+    access_cache_ttl: Duration = timedelta(minutes=10)
 
     # Лимиты попыток входа и регистрации: не больше N попыток за скользящее окно.
     # С одного адреса входят в разные аккаунты (NAT, офис), поэтому лимит по
     # IP мягче лимита по логину. Лимит логина считает неудачные попытки:
     # успешный вход его обнуляет.
     login_attempts_per_ip: int = Field(default=20, ge=1)
-    login_attempts_per_ip_period: timedelta = timedelta(minutes=1)
+    login_attempts_per_ip_period: Duration = timedelta(minutes=1)
     login_attempts_per_account: int = Field(default=10, ge=1)
-    login_attempts_per_account_period: timedelta = timedelta(minutes=15)
+    login_attempts_per_account_period: Duration = timedelta(minutes=15)
     signup_attempts_per_ip: int = Field(default=10, ge=1)
-    signup_attempts_per_ip_period: timedelta = timedelta(hours=1)
+    signup_attempts_per_ip_period: Duration = timedelta(hours=1)
 
     @property
     def postgres_dsn(self) -> str:
