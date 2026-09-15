@@ -9,6 +9,8 @@ SQLAlchemy, ни о Redis. Реализации выбираются в api/depe
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from typing import Any
@@ -55,8 +57,12 @@ class UserRepository(ABC):
         """
 
     @abstractmethod
-    async def update_password(self, user_id: UUID, password_hash: str) -> None:
-        """Меняет хеш пароля."""
+    async def update_password(self, user_id: UUID, password_hash: str) -> int:
+        """Меняет хеш пароля и в той же транзакции увеличивает версию учётных данных; возвращает новую версию."""
+
+    @abstractmethod
+    async def get_credentials_version(self, user_id: UUID) -> int | None:
+        """Возвращает текущую версию учётных данных или None, если пользователя нет."""
 
     @abstractmethod
     async def get_access(self, user_id: UUID) -> UserAccess | None:
@@ -64,7 +70,12 @@ class UserRepository(ABC):
 
 
 class RoleRepository(ABC):
-    """Роли и их назначение пользователям."""
+    """Роли и их назначение пользователям.
+
+    Каждое изменение, влияющее на права, в той же транзакции записывает
+    задание на сброс кеша прав (AccessInvalidationQueue): изменение и задание
+    фиксируются вместе или не фиксируются вовсе.
+    """
 
     @abstractmethod
     async def get_all(self) -> list[Role]:
@@ -107,6 +118,29 @@ class RoleRepository(ABC):
         """Отбирает роль у пользователя; False — роль не была назначена."""
 
 
+@dataclass(frozen=True)
+class AccessInvalidation:
+    """Задание на сброс кеша прав: одного пользователя или всех (user_id=None)."""
+
+    id: int
+    user_id: UUID | None
+
+
+class AccessInvalidationQueue(ABC):
+    """Задания на сброс кеша прав, записанные вместе с изменением ролей."""
+
+    @abstractmethod
+    async def process(
+        self, handler: Callable[[list[AccessInvalidation]], Awaitable[None]], limit: int,
+    ) -> int:
+        """Передаёт обработчику до limit заданий и удаляет их, если он завершился без ошибки.
+
+        Задания, которые в это время выполняет другой процесс, пропускаются.
+        Если обработчик поднял исключение, задания остаются и будут выполнены
+        при следующем вызове. Возвращает, сколько заданий выполнено.
+        """
+
+
 class LoginHistoryRepository(ABC):
     """История входов в аккаунт."""
 
@@ -139,11 +173,19 @@ class SessionStore(ABC):
 
     @abstractmethod
     async def create(self, session: Session, ttl: timedelta) -> None:
-        """Сохраняет сессию на время жизни refresh-токена."""
+        """Сохраняет сессию на время жизни refresh-токена.
+
+        Если сессий у пользователя становится больше предела, закрываются те,
+        что дольше всех не продлевались.
+        """
 
     @abstractmethod
-    async def exists(self, session_id: UUID) -> bool:
-        """Жива ли сессия."""
+    async def get(self, session_id: UUID) -> Session | None:
+        """Возвращает сессию или None, если она закрыта или истекла."""
+
+    @abstractmethod
+    async def set_credentials_version(self, session_id: UUID, version: int) -> None:
+        """Переводит живую сессию на новую версию учётных данных; закрытую не воскрешает."""
 
     @abstractmethod
     async def rotate(
@@ -184,3 +226,32 @@ class AccessCache(ABC):
     @abstractmethod
     async def invalidate_all(self) -> None:
         """Сбрасывает права всех пользователей: изменили или удалили роль."""
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    """Не больше limit попыток с одним ключом за скользящее окно period."""
+
+    key: str
+    limit: int
+    period: timedelta
+
+
+class RateLimiter(ABC):
+    """Счётчики попыток, общие для всех процессов и реплик сервиса.
+
+    Окно скользящее: считаются попытки за последние period, а не с начала
+    минуты или часа, поэтому на стыке окон лимит не удваивается.
+    """
+
+    @abstractmethod
+    async def acquire(self, limits: Sequence[RateLimit]) -> timedelta | None:
+        """Засчитывает попытку сразу во всех лимитах.
+
+        Если хотя бы один лимит исчерпан, попытка не засчитывается ни в один
+        из них, и возвращается, через сколько освободится место; иначе — None.
+        """
+
+    @abstractmethod
+    async def reset(self, key: str) -> None:
+        """Обнуляет счётчик попыток с ключом."""

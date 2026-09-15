@@ -2,7 +2,7 @@ from http import HTTPStatus
 
 from fastapi import APIRouter, Request
 
-from api.dependencies import AuthServiceDep, RegistrationServiceDep
+from api.dependencies import AuthServiceDep, SignupServiceDep
 from api.errors import TOKEN_ERRORS, error_responses
 from api.security import PrincipalDep
 from api.v1.schemas import LoginSchema, RefreshSchema, SignupSchema, TokenPairSchema, UserSchema
@@ -14,10 +14,20 @@ from services.errors import (
     TokenExpiredError,
     TokenInvalidError,
     TokenRevokedError,
+    TooManyRequestsError,
 )
 from services.tokens import TokenPair
 
 router = APIRouter()
+
+
+def client_info(request: Request) -> ClientInfo:
+    # Адрес клиента за nginx uvicorn берёт из X-Forwarded-For, который nginx
+    # перезаписывает адресом клиента: подставить чужой IP через заголовок нельзя.
+    return ClientInfo(
+        user_agent=request.headers.get('user-agent'),
+        ip=request.client.host if request.client else None,
+    )
 
 
 @router.post(
@@ -25,11 +35,12 @@ router = APIRouter()
     status_code=HTTPStatus.CREATED,
     response_model=UserSchema,
     summary='Регистрация',
-    description='Создаёт пользователя. Логин приводится к нижнему регистру и должен быть свободен.',
-    responses=error_responses(LoginTakenError),
+    description='Создаёт пользователя. Логин приводится к нижнему регистру и должен быть свободен. '
+                'Число регистраций с одного IP ограничено: сверх лимита — 429 с заголовком Retry-After.',
+    responses=error_responses(LoginTakenError, TooManyRequestsError),
 )
-async def signup(body: SignupSchema, registration: RegistrationServiceDep) -> User:
-    return await registration.register(body.login, body.password)
+async def signup(body: SignupSchema, request: Request, signups: SignupServiceDep) -> User:
+    return await signups.signup(body.login, body.password, client_info(request))
 
 
 @router.post(
@@ -37,15 +48,13 @@ async def signup(body: SignupSchema, registration: RegistrationServiceDep) -> Us
     response_model=TokenPairSchema,
     summary='Вход',
     description='Обменивает логин и пароль на пару токенов и записывает вход в историю. '
-                'Каждый вход открывает отдельную сессию: так входят с разных устройств.',
-    responses=error_responses(InvalidCredentialsError),
+                'Каждый вход открывает отдельную сессию: так входят с разных устройств. '
+                'Число попыток ограничено для IP и для логина (успешный вход обнуляет счётчик логина): '
+                'сверх лимита — 429 с заголовком Retry-After, пароль при этом не проверяется.',
+    responses=error_responses(InvalidCredentialsError, TooManyRequestsError),
 )
 async def login(body: LoginSchema, request: Request, auth: AuthServiceDep) -> TokenPair:
-    client = ClientInfo(
-        user_agent=request.headers.get('user-agent'),
-        ip=request.client.host if request.client else None,
-    )
-    return await auth.login(normalize_login(body.login), body.password, client)
+    return await auth.login(normalize_login(body.login), body.password, client_info(request))
 
 
 @router.post(

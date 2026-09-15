@@ -18,6 +18,15 @@ x-auth-env: &auth-env
   AUTH_REDIS_PORT: 6379
   # Ключ только для тестов: тесты подписывают им истёкшие токены.
   AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+  # Небольшие лимиты попыток, чтобы тесты упирались в них за несколько
+  # запросов. Каждый тест начинается с пустого Redis, поэтому остальные
+  # тесты в лимиты не попадают. Те же значения — в tests/functional/settings.py.
+  AUTH_LOGIN_ATTEMPTS_PER_IP: 10
+  AUTH_LOGIN_ATTEMPTS_PER_ACCOUNT: 5
+  AUTH_SIGNUP_ATTEMPTS_PER_IP: 5
+  AUTH_MAX_SESSIONS_PER_USER: 5
+  # Фоновый повтор сброса кеша прав — раз в секунду, чтобы тест не ждал долго.
+  AUTH_ACCESS_INVALIDATION_INTERVAL: 1
 
 services:
   postgres:
@@ -55,7 +64,9 @@ services:
     environment:
       <<: *auth-env
       WEB_CONCURRENCY: 2
-    command: ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000"]
+    # Адрес клиента uvicorn берёт из X-Forwarded-For, как рабочий образ за
+    # nginx: так тесты отправляют запросы «с разных IP».
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"]
     ports:
       - "${TEST_AUTH_PORT:-8001}:8000"
     depends_on:

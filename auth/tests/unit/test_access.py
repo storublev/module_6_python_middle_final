@@ -7,6 +7,7 @@ import pytest
 from models.role import FILMS_SUBSCRIPTION, MANAGE_ACCESS, Role
 from models.user import User
 from services.access import AccessService
+from services.access_invalidation import AccessInvalidator
 from services.auth import Principal, RegistrationService
 from services.errors import (
     PermissionDeniedError,
@@ -17,7 +18,7 @@ from services.errors import (
 )
 from services.roles import RoleService
 from tests.unit.conftest import PASSWORD
-from tests.unit.fakes import FakeAccessCache, FakeUserRepository
+from tests.unit.fakes import Database, FakeAccessCache, FakeUserRepository
 
 
 @pytest.fixture
@@ -185,3 +186,72 @@ async def test_assign_twice_and_revoke_not_assigned(
     await role_service.revoke(principal.user_id, subscribers.id)
     with pytest.raises(RoleNotAssignedError):
         await role_service.revoke(principal.user_id, subscribers.id)
+
+
+async def test_revoke_survives_cache_failure(
+    access: AccessService,
+    role_service: RoleService,
+    invalidator: AccessInvalidator,
+    cache: FakeAccessCache,
+    db: Database,
+    principal: Principal,
+    subscribers: Role,
+) -> None:
+    """Redis недоступен при отзыве роли: отзыв зафиксирован вместе с заданием на сброс кеша.
+
+    Пока кеш не сброшен, обычная проверка может ответить по-старому, но проверка
+    по базе (fresh) — уже нет. Повторный отзыв — RoleNotAssignedError, а задание
+    не теряется: фоновый повтор сбрасывает кеш, когда Redis вернулся.
+    """
+    await role_service.assign(principal.user_id, subscribers.id)
+    assert await access.check(principal, FILMS_SUBSCRIPTION)
+    cache.invalidation_fails = True
+
+    await role_service.revoke(principal.user_id, subscribers.id)
+
+    assert [task.user_id for task in db.invalidations] == [principal.user_id]
+    assert not await access.check(principal, FILMS_SUBSCRIPTION, fresh=True)
+    with pytest.raises(RoleNotAssignedError):
+        await role_service.revoke(principal.user_id, subscribers.id)
+
+    cache.invalidation_fails = False
+    assert await invalidator.flush() == 1
+
+    assert db.invalidations == []
+    assert not await access.check(principal, FILMS_SUBSCRIPTION)
+
+
+async def test_role_change_during_cache_failure_resets_everyone(
+    access: AccessService,
+    role_service: RoleService,
+    invalidator: AccessInvalidator,
+    cache: FakeAccessCache,
+    principal: Principal,
+    subscribers: Role,
+) -> None:
+    """Изменение роли при недоступном Redis оставляет задание сбросить права всех; повтор его выполняет."""
+    await role_service.assign(principal.user_id, subscribers.id)
+    assert await access.check(principal, FILMS_SUBSCRIPTION)
+    cache.invalidation_fails = True
+
+    await role_service.update_role(subscribers.id, {'permissions': ['films.premium']})
+
+    cache.invalidation_fails = False
+    await invalidator.flush()
+    assert not await access.check(principal, FILMS_SUBSCRIPTION)
+    assert await access.check(principal, 'films.premium')
+
+
+async def test_fresh_check_reads_database(
+    access: AccessService, users: FakeUserRepository, principal: Principal,
+) -> None:
+    """Проверка fresh идёт в базу каждый раз, минуя кеш."""
+    for _ in range(3):
+        await access.check(principal, MANAGE_ACCESS, fresh=True)
+
+    assert users.access_reads == 3
+
+
+async def test_flush_without_tasks(invalidator: AccessInvalidator) -> None:
+    """Без заданий сброс ничего не делает."""
+    assert await invalidator.flush() == 0

@@ -27,6 +27,16 @@ async def test_every_endpoint_documents_errors() -> None:
                 assert codes == {'not_authenticated', 'token_expired', 'token_invalid', 'token_revoked'}, path
 
 
+async def test_throttled_endpoints_document_429() -> None:
+    """Вход и регистрация описывают 429 too_many_requests с заголовком Retry-After."""
+    spec = await get_spec()
+
+    for path in ('/auth/api/v1/login', '/auth/api/v1/signup'):
+        response = spec['paths'][path]['post']['responses']['429']
+        assert set(response['content']['application/json']['examples']) == {'too_many_requests'}, path
+        assert 'Retry-After' in response['headers'], path
+
+
 async def test_bearer_security_scheme() -> None:
     """В документации есть схема авторизации Bearer: токен можно передать из Swagger UI."""
     spec = await get_spec()

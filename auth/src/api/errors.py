@@ -26,6 +26,7 @@ from services.errors import (
     TokenExpiredError,
     TokenInvalidError,
     TokenRevokedError,
+    TooManyRequestsError,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,13 @@ STATUSES: dict[type[ServiceError], HTTPStatus] = {
     ForbiddenError: HTTPStatus.FORBIDDEN,
     NotFoundError: HTTPStatus.NOT_FOUND,
     ConflictError: HTTPStatus.CONFLICT,
+    TooManyRequestsError: HTTPStatus.TOO_MANY_REQUESTS,
+}
+RETRY_AFTER_HEADER = {
+    'Retry-After': {
+        'description': 'Через сколько секунд можно повторить попытку',
+        'schema': {'type': 'integer', 'example': 60},
+    },
 }
 SERVICE_UNAVAILABLE_CODE = 'service_unavailable'
 SERVICE_UNAVAILABLE_DETAIL = 'Service temporarily unavailable, retry later'
@@ -68,8 +76,9 @@ def error_responses(*errors: type[ServiceError]) -> dict[int | str, dict[str, An
     grouped: dict[HTTPStatus, list[type[ServiceError]]] = {}
     for error in errors:
         grouped.setdefault(status_of(error), []).append(error)
-    return {
-        status: {
+    responses: dict[int | str, dict[str, Any]] = {}
+    for status, status_errors in grouped.items():
+        responses[status] = {
             'model': ErrorSchema,
             'description': ', '.join(f'`{error.code}`' for error in status_errors),
             'content': {
@@ -81,8 +90,9 @@ def error_responses(*errors: type[ServiceError]) -> dict[int | str, dict[str, An
                 },
             },
         }
-        for status, status_errors in grouped.items()
-    }
+        if status == HTTPStatus.TOO_MANY_REQUESTS:
+            responses[status]['headers'] = RETRY_AFTER_HEADER
+    return responses
 
 
 SERVICE_UNAVAILABLE_RESPONSE = {
@@ -105,6 +115,8 @@ async def service_error_handler(_: Request, exc: ServiceError) -> JSONResponse:
         if isinstance(exc, (TokenExpiredError, TokenInvalidError, TokenRevokedError)):
             header = f'Bearer error="invalid_token", error_description="{exc.message}"'
         headers = {'WWW-Authenticate': header}
+    elif isinstance(exc, TooManyRequestsError):
+        headers = {'Retry-After': str(exc.retry_after)}
     return JSONResponse(status_code=status_of(type(exc)), content=error_body(exc.code, exc.message), headers=headers)
 
 

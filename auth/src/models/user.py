@@ -40,6 +40,8 @@ class User(BaseModel):
     id: UUID
     login: str
     password_hash: str
+    # Растёт при смене пароля: сессии, открытые с прежней версией, не действуют.
+    credentials_version: int
     is_superuser: bool
     created_at: datetime
 

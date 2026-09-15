@@ -83,7 +83,7 @@ pytest auth/tests/unit
 **Функциональные тесты** — сервис в Docker со своими PostgreSQL и Redis,
 тесты ходят к нему по HTTP. Проверяется каждый ответ каждого эндпоинта:
 успех, все коды 401 (без токена, истёкший, поддельный, повреждённый, из
-закрытой сессии), 403, 404, 409, 422. Прогон — около 30 секунд:
+закрытой сессии), 403, 404, 409, 422, 429. Прогон — около 30 секунд:
 
 ```bash
 docker compose -f auth/tests/functional/docker-compose.yml up --build \
@@ -123,7 +123,12 @@ cd auth && flake8 . && ruff check .
 | `AUTH_REDIS_HOST` / `AUTH_REDIS_PORT` / `AUTH_REDIS_DB` | `127.0.0.1` / `6379` / `0` | Адрес Redis (в compose — `auth-redis`) |
 | `AUTH_ACCESS_TOKEN_TTL` | `900` | Время жизни access-токена, секунды или ISO 8601 (`PT15M`) |
 | `AUTH_REFRESH_TOKEN_TTL` | `1209600` | Время жизни refresh-токена и сессии, 14 дней |
+| `AUTH_MAX_SESSIONS_PER_USER` | `20` | Сессий (устройств) у пользователя одновременно; вход сверх предела закрывает самые давно не продлевавшиеся |
 | `AUTH_ACCESS_CACHE_TTL` | `600` | Время жизни кеша прав |
+| `AUTH_ACCESS_INVALIDATION_INTERVAL` / `…_MAX_INTERVAL` | `5` / `60` | Как часто повторять сброс кеша прав, отложенный из-за сбоя Redis; наибольшая пауза при сбоях |
+| `AUTH_LOGIN_ATTEMPTS_PER_IP` / `…_PERIOD` | `20` / `60` | Попыток входа с одного IP за скользящее окно, секунды |
+| `AUTH_LOGIN_ATTEMPTS_PER_ACCOUNT` / `…_PERIOD` | `10` / `900` | Неудачных попыток входа в один логин за окно |
+| `AUTH_SIGNUP_ATTEMPTS_PER_IP` / `…_PERIOD` | `10` / `3600` | Регистраций с одного IP за окно |
 | `AUTH_JWT_ALGORITHM` | `HS256` | Алгоритм подписи JWT |
 | `AUTH_REDIS_BACKOFF_RETRIES` | `2` | Повторы при обрыве соединения с Redis |
 | `AUTH_REDIS_BACKOFF_BASE` / `AUTH_REDIS_BACKOFF_CAP` | `0.05` / `0.5` | Первая и наибольшая пауза между повторами, с |
