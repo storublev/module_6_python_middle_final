@@ -34,14 +34,28 @@ class Sort:
 
 
 @dataclass(frozen=True)
-class TextQuery:
-    """Полнотекстовый поиск с опечатками по нескольким полям.
+class SearchField:
+    """Поле полнотекстового поиска и его вес.
 
-    Вес поля задаётся суффиксом: `title^3` в три раза важнее `description`.
+    Совпадение в поле с весом 3 влияет на релевантность втрое сильнее,
+    чем в поле с весом 1. Как выразить вес на языке запросов, решает
+    реализация хранилища.
     """
 
+    name: str
+    weight: float = 1
+
+    def __post_init__(self) -> None:
+        if self.weight <= 0:
+            raise ValueError(f'Вес поля {self.name} должен быть положительным: {self.weight}')
+
+
+@dataclass(frozen=True)
+class TextQuery:
+    """Полнотекстовый поиск с опечатками по нескольким полям."""
+
     text: str
-    fields: tuple[str, ...]
+    fields: tuple[SearchField, ...]
 
 
 @dataclass(frozen=True)
