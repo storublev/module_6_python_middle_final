@@ -1,0 +1,8 @@
+asyncpg==0.31.0
+backoff==2.2.1
+httpx==0.28.1
+pydantic-settings==2.15.0
+pyjwt==2.14.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+redis==8.1.0

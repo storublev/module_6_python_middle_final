@@ -1,50 +1,81 @@
-# Async API онлайн-кинотеатра
+# Онлайн-кинотеатр: Async API и сервис авторизации
 
-Асинхронный API на FastAPI — точка входа для клиентов кинотеатра. Отдаёт фильмы,
-жанры и персоны из Elasticsearch и кеширует ответы в Redis. В первой итерации
-все пользователи анонимные.
+Два сервиса онлайн-кинотеатра на FastAPI за общим nginx:
+
+* **Async API** — точка входа для клиентов каталога: отдаёт фильмы, жанры и
+  персоны из Elasticsearch и кеширует ответы в Redis;
+* **сервис авторизации** ([auth/](auth/README.md)) — регистрация, вход по
+  логину и паролю с парой JWT-токенов, выход (в том числе из остальных
+  устройств), личный кабинет с историей входов, роли и проверка прав.
+  Архитектура — [auth/docs/architecture.md](auth/docs/architecture.md).
+
+Роли нужны, чтобы ограничить доступ к категориям фильмов: фильмы, вышедшие
+менее трёх лет назад, ETL помечает `access_level=subscription`, а смотреть их
+может роль `subscribers` с правом `films.subscription`.
 
 ## Архитектура
 
 ```
-клиент ──► nginx :80 ──► api (FastAPI, uvicorn) ──► redis (кеш)
-                                   │
-                                   └──────────────► elasticsearch ◄── etl ◄── postgres
+                    ┌──► api (FastAPI) ───► redis (кеш)
+клиент ──► nginx :80┤  /api/     │
+                    │            └────────► elasticsearch ◄── etl ◄── postgres (фильмы)
+                    │
+                    └──► auth (FastAPI) ──► auth-redis (сессии, кеш прав)
+                       /auth/    │
+                                 └────────► auth-postgres (пользователи, роли, история входов)
 ```
 
-API — самостоятельный сервис: он только читает индексы `movies`, `genres` и
-`persons`. Их заполняет ETL, который живёт в своём репозитории
+Сервисы самостоятельны: у каждого свои хранилища, общий у них только nginx.
+API только читает индексы `movies`, `genres` и `persons`. Их заполняет ETL,
+который живёт в своём репозитории
 [new_admin_panel_sprint_3](https://github.com/storublev/new_admin_panel_sprint_3)
 и в этот репозиторий не копируется. `docker-compose.yml` собирает ETL из соседнего
 каталога (переменная `ETL_PROJECT_PATH`), чтобы все сервисы поднимались одной командой.
 
 | Сервис | Назначение |
 |---|---|
-| `nginx` | Входная точка, проксирует `/api/` в API, держит пул keepalive-соединений |
+| `nginx` | Входная точка: `/api/` — в API, `/auth/` — в сервис авторизации, пулы keepalive-соединений |
 | `api` | FastAPI + uvicorn (uvloop, httptools), несколько процессов-воркеров |
-| `redis` | Кеш ответов, LRU-вытеснение, без персистентности |
+| `redis` | Кеш ответов API, LRU-вытеснение, без персистентности |
 | `elasticsearch` | Хранилище для чтения и полнотекстового поиска |
-| `postgres` | Исходные данные (дамп из репозитория ETL) |
-| `etl` | Перенос данных PostgreSQL → Elasticsearch с отслеживанием изменений |
+| `postgres` | Исходные данные о фильмах (дамп из репозитория ETL) |
+| `etl` | Перенос данных PostgreSQL → Elasticsearch с отслеживанием изменений и меткой доступа фильмов |
+| `auth` | Сервис авторизации: FastAPI + uvicorn, без состояния |
+| `auth-postgres` | Пользователи, роли, история входов — отдельно от данных о фильмах |
+| `auth-redis` | Сессии и кеш прав: без вытеснения ключей, с журналом AOF |
+| `auth-migrations` | Одноразовый контейнер с миграциями Alembic |
 
 ## Запуск
 
-Нужны Docker и Docker Compose v2, а рядом с этим репозиторием — клон ETL:
+Нужны Docker и Docker Compose v2, а рядом с этим репозиторием — клон ETL на
+ветке с меткой доступа фильмов (`auth-sprint-1`, пока она не влита в `main`):
 
 ```bash
-git clone git@github.com:storublev/new_admin_panel_sprint_3.git ../new_admin_panel_sprint_3
-cp .env.example .env        # при необходимости поправить ETL_PROJECT_PATH и порты
+git clone -b auth-sprint-1 git@github.com:storublev/new_admin_panel_sprint_3.git ../new_admin_panel_sprint_3
+cp .env.example .env
+```
+
+В `.env` задайте секреты сервиса авторизации — без них docker-compose не
+запустится: `AUTH_POSTGRES_PASSWORD` и `AUTH_JWT_SECRET_KEY` (не короче 32
+символов, например `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`).
+При необходимости поправьте `ETL_PROJECT_PATH` и порты. Затем:
+
+```bash
 docker compose up -d --build
+docker compose exec auth python cli.py createsuperuser --login admin
 ```
 
 После старта ETL загружает данные в Elasticsearch (при первом запуске — около
-минуты), дальше подхватывает изменения в PostgreSQL.
+минуты), дальше подхватывает изменения в PostgreSQL. Миграции сервиса
+авторизации применяет контейнер `auth-migrations` перед его запуском.
 
-* Документация OpenAPI: http://localhost/api/openapi
-* Спецификация: http://localhost/api/openapi.json
+* Документация Async API: http://localhost/api/openapi
+* Документация сервиса авторизации: http://localhost/auth/api/openapi
+* Спецификации: http://localhost/api/openapi.json, http://localhost/auth/api/openapi.json
 
 В документации для клиентов описаны пагинация, ошибки (404, 422, 503 с моделью
 `ErrorSchema`), назначение каждого эндпоинта и тега, поля ответов с примерами.
+Команды, тесты и настройки сервиса авторизации — в [auth/README.md](auth/README.md).
 
 ### Локальный запуск без Docker
 
@@ -55,7 +86,9 @@ cd src
 ELASTIC_HOST=localhost REDIS_HOST=localhost python main.py   # http://localhost:8000/api/openapi
 ```
 
-## Функциональные тесты
+## Функциональные тесты Async API
+
+Тесты сервиса авторизации описаны в [auth/README.md](auth/README.md#тесты).
 
 Тесты проверяют API снаружи, через HTTP: сами наполняют Elasticsearch, шлют
 запросы и сверяют ответы. Код приложения они не импортируют, схемы индексов —
@@ -117,7 +150,7 @@ pip install -r tests/unit/requirements.txt
 pytest tests/unit
 ```
 
-## Эндпоинты
+## Эндпоинты Async API
 
 | Метод и путь | Назначение |
 |---|---|
@@ -158,7 +191,7 @@ pytest tests/unit
 * Примеры из ТЗ с невалидными UUID (`g`, кириллическая `с`) и повторяющимися
   идентификаторами не годятся для фикстур.
 
-## Производительность
+## Производительность Async API
 
 * **C10k.** Нагрузка I/O-bound, поэтому весь путь запроса асинхронный:
   `AsyncElasticsearch`, `redis.asyncio`, uvicorn с uvloop. Один процесс
@@ -196,7 +229,7 @@ pytest tests/unit
 идут повторы, запрос проходит; при остановленном Redis ответы приходят за
 15–30 мс, после его перезапуска кеш снова работает.
 
-## Структура
+## Структура Async API
 
 ```
 src/
@@ -239,6 +272,8 @@ Redis на другой кеш не меняет поведения API при �
 
 ## Переменные окружения
 
+Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/README.md](auth/README.md#переменные-окружения).
+
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `ETL_PROJECT_PATH` | `../new_admin_panel_sprint_3` | Путь к репозиторию ETL |
@@ -255,3 +290,47 @@ Redis на другой кеш не меняет поведения API при �
 | `ELASTIC_BACKOFF_FACTOR` / `ELASTIC_BACKOFF_MAX_VALUE` | `0.1` / `1` | Первая и наибольшая пауза между повторами, с |
 | `REDIS_BACKOFF_RETRIES` | `1` | Повторы при обрыве соединения с Redis |
 | `REDIS_BACKOFF_BASE` / `REDIS_BACKOFF_CAP` | `0.01` / `0.1` | Первая и наибольшая пауза между повторами к Redis, с |
+
+## Участники
+
+| Участник | Роль |
+|---|---|
+| [storublev](https://github.com/storublev) | Разработка всех сервисов: архитектура, Async API, ETL, сервис авторизации, тесты |
+
+## Changelog
+
+### Спринт 6 — сервис авторизации
+
+* Описана архитектура сервиса: компоненты, модель доступа (RBAC), схема
+  данных, токены и сессии, обработка ошибок — `auth/docs/architecture.md`,
+  спецификация `auth/docs/openapi.json`.
+* Регистрация, вход по логину и паролю с выдачей пары токенов (JWT access +
+  одноразовый refresh), обновление пары, выход.
+* «Выйти из остальных устройств» без хранения access-токенов: токен действует,
+  пока жива его сессия в Redis.
+* Защита от повторного использования refresh-токена: сессия закрывается целиком.
+* Личный кабинет: данные пользователя с ролями, смена логина и пароля
+  (подтверждаются текущим паролем; смена пароля закрывает остальные сессии),
+  история входов с устройством и IP.
+* CRUD ролей, назначение и отзыв ролей, проверка права пользователя с кешем в
+  Redis; изменения ролей действуют сразу.
+* Суперпользователь (консольная команда `createsuperuser`) — ему разрешено всё;
+  анонимному пользователю доступно только то, что правом не ограничено.
+* Роль `subscribers` с правом `films.subscription`; ETL помечает фильмы,
+  вышедшие менее трёх лет назад, `access_level=subscription` и раз в сутки
+  снимает метку с тех, что перестали быть новинками.
+* Пароли — Argon2id; ошибки с машиночитаемыми кодами (`token_expired`,
+  `token_invalid`, `token_revoked`, ...); 503 при недоступности хранилищ.
+* Unit- и функциональные тесты на каждый ответ каждого эндпоинта, линтеры
+  flake8 и ruff.
+
+### Спринт 5
+
+* Функциональные тесты Async API в изолированном docker-compose.
+* Документация OpenAPI для клиентов.
+* Exponential backoff при сбоях Elasticsearch и Redis.
+
+### Спринт 4
+
+* Async API: фильмы, жанры, персоны, поиск, кеширование в Redis.
+* ETL переносит в Elasticsearch жанры и персоны.
