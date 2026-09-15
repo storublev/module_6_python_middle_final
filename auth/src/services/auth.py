@@ -6,6 +6,7 @@ from models.session import Session
 from models.user import User
 from services.errors import InvalidCredentialsError, LoginTakenError, TokenRevokedError
 from services.passwords import PasswordHasher
+from services.throttling import Throttle
 from services.tokens import TokenPair, TokenService, TokenType
 from storage.base import AlreadyExistsError, LoginHistoryRepository, RotateResult, SessionStore, UserRepository
 
@@ -50,6 +51,28 @@ class RegistrationService:
             raise LoginTakenError from exc
 
 
+class SignupService:
+    """Регистрация на сайте: создание учётной записи с ограничением частоты по IP.
+
+    Консольная команда создаёт пользователей через RegistrationService
+    напрямую: у неё нет ни клиента, ни лимитов.
+    """
+
+    def __init__(self, registration: RegistrationService, throttle: Throttle):
+        self.registration = registration
+        self.throttle = throttle
+
+    async def signup(self, login: str, password: str, client: ClientInfo) -> User:
+        """Создаёт пользователя.
+
+        Raises:
+            TooManyRequestsError: слишком много регистраций с адреса клиента.
+            LoginTakenError: логин занят.
+        """
+        await self.throttle.signup_attempt(client.ip)
+        return await self.registration.register(login, password)
+
+
 class AuthService:
     """Вход, обновление токенов, проверка access-токена и выход."""
 
@@ -60,25 +83,33 @@ class AuthService:
         history: LoginHistoryRepository,
         tokens: TokenService,
         passwords: PasswordHasher,
+        throttle: Throttle,
     ):
         self.users = users
         self.sessions = sessions
         self.history = history
         self.tokens = tokens
         self.passwords = passwords
+        self.throttle = throttle
 
     async def login(self, login: str, password: str, client: ClientInfo) -> TokenPair:
         """Проверяет логин и пароль, открывает сессию и записывает вход в историю.
 
+        Попытка засчитывается в лимиты до проверки пароля: сверх лимита хеш
+        Argon2 не считается вовсе.
+
         Raises:
+            TooManyRequestsError: слишком много попыток с адреса клиента или для логина.
             InvalidCredentialsError: нет такого логина или пароль неверный.
         """
+        await self.throttle.login_attempt(login, client.ip)
         user = await self.users.get_by_login(login)
         if user is None:
             await self.passwords.verify_dummy(password)
             raise InvalidCredentialsError
         if not await self.passwords.verify(password, user.password_hash):
             raise InvalidCredentialsError
+        await self.throttle.login_succeeded(login)
 
         session_id = uuid4()
         tokens = self.tokens.issue(user.id, session_id)

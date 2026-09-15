@@ -4,6 +4,7 @@
 можно проверить без баз данных.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -15,6 +16,8 @@ from storage.base import (
     AccessCache,
     AlreadyExistsError,
     LoginHistoryRepository,
+    RateLimit,
+    RateLimiter,
     RoleRepository,
     RotateResult,
     SessionStore,
@@ -194,3 +197,21 @@ class FakeAccessCache(AccessCache):
 
     async def invalidate_all(self) -> None:
         self.entries.clear()
+
+
+class FakeRateLimiter(RateLimiter):
+    """Счётчики без времени: окно не сдвигается, сдвиг проверяется на Redis в test_redis_storage."""
+
+    def __init__(self) -> None:
+        self.attempts: dict[str, int] = {}
+
+    async def acquire(self, limits: Sequence[RateLimit]) -> timedelta | None:
+        exhausted = [limit for limit in limits if self.attempts.get(limit.key, 0) >= limit.limit]
+        if exhausted:
+            return max(limit.period for limit in exhausted)
+        for limit in limits:
+            self.attempts[limit.key] = self.attempts.get(limit.key, 0) + 1
+        return None
+
+    async def reset(self, key: str) -> None:
+        self.attempts.pop(key, None)

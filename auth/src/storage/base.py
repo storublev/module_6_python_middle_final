@@ -9,6 +9,8 @@ SQLAlchemy, ни о Redis. Реализации выбираются в api/depe
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from typing import Any
@@ -184,3 +186,32 @@ class AccessCache(ABC):
     @abstractmethod
     async def invalidate_all(self) -> None:
         """Сбрасывает права всех пользователей: изменили или удалили роль."""
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    """Не больше limit попыток с одним ключом за скользящее окно period."""
+
+    key: str
+    limit: int
+    period: timedelta
+
+
+class RateLimiter(ABC):
+    """Счётчики попыток, общие для всех процессов и реплик сервиса.
+
+    Окно скользящее: считаются попытки за последние period, а не с начала
+    минуты или часа, поэтому на стыке окон лимит не удваивается.
+    """
+
+    @abstractmethod
+    async def acquire(self, limits: Sequence[RateLimit]) -> timedelta | None:
+        """Засчитывает попытку сразу во всех лимитах.
+
+        Если хотя бы один лимит исчерпан, попытка не засчитывается ни в один
+        из них, и возвращается, через сколько освободится место; иначе — None.
+        """
+
+    @abstractmethod
+    async def reset(self, key: str) -> None:
+        """Обнуляет счётчик попыток с ключом."""

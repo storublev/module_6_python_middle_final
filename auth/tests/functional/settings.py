@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # истёкшие токены, которые иначе пришлось бы ждать 15 минут.
     jwt_secret_key: str = 'functional-tests-secret-key-of-32-bytes'
 
+    # Лимиты попыток, с которыми запущен сервис в docker-compose тестов.
+    login_attempts_per_ip: int = 10
+    login_attempts_per_account: int = 5
+    signup_attempts_per_ip: int = 5
+
     # Сколько секунд ждать готовности сервиса и хранилищ перед тестами.
     wait_timeout: float = 60
 

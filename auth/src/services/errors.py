@@ -92,3 +92,15 @@ class LoginTakenError(ConflictError):
 class RoleNameTakenError(ConflictError):
     code = 'role_name_taken'
     message = 'Role with this name already exists'
+
+
+class TooManyRequestsError(ServiceError):
+    """Исчерпан лимит попыток входа или регистрации."""
+
+    code = 'too_many_requests'
+    message = 'Too many attempts, retry later'
+
+    def __init__(self, retry_after: int, message: str | None = None):
+        super().__init__(message)
+        # Через сколько секунд попытку можно повторить.
+        self.retry_after = retry_after

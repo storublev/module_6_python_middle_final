@@ -1,7 +1,7 @@
-"""Хранилища в Redis: сессии, одноразовость refresh-токена и версии кеша прав.
+"""Хранилища в Redis: сессии, одноразовость refresh-токена, версии кеша прав и лимиты попыток.
 
-Redis заменён на fakeredis с Lua: скрипт замены refresh-токена выполняется
-так же, как в настоящем Redis.
+Redis заменён на fakeredis с Lua: скрипты замены refresh-токена и учёта
+попыток выполняются так же, как в настоящем Redis.
 """
 
 from collections.abc import AsyncIterator
@@ -14,8 +14,8 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from models.role import UserAccess
 from models.session import Session
-from storage.base import RotateResult, StorageUnavailableError
-from storage.redis import RedisAccessCache, RedisSessionStore
+from storage.base import RateLimit, RotateResult, StorageUnavailableError
+from storage.redis import RedisAccessCache, RedisRateLimiter, RedisSessionStore
 
 TTL = timedelta(days=14)
 
@@ -160,3 +160,79 @@ async def test_redis_errors_become_storage_unavailable(redis: FakeAsyncRedis, mo
         await RedisSessionStore(redis).exists(uuid4())
     with pytest.raises(StorageUnavailableError):
         await RedisAccessCache(redis, TTL).get(uuid4())
+
+
+class Clock:
+    """Часы, которые тест переводит вперёд вместо ожидания."""
+
+    def __init__(self) -> None:
+        self.now = 1_700_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def limiter(redis: FakeAsyncRedis, clock: Clock) -> RedisRateLimiter:
+    return RedisRateLimiter(redis, clock=clock)
+
+
+MINUTE = timedelta(minutes=1)
+
+
+async def test_rate_limit_allows_limit_attempts(limiter: RedisRateLimiter, clock: Clock) -> None:
+    """В окне засчитывается не больше limit попыток; ответ — через сколько освободится место."""
+    limit = RateLimit('login:ip:10.0.0.1', limit=3, period=MINUTE)
+    for _ in range(3):
+        assert await limiter.acquire([limit]) is None
+        clock.now += 10
+
+    assert await limiter.acquire([limit]) == MINUTE - timedelta(seconds=30)
+
+
+async def test_rate_limit_window_slides(limiter: RedisRateLimiter, clock: Clock) -> None:
+    """Окно скользящее: место освобождается, когда самая старая попытка выходит из окна, а не с новой минутой."""
+    limit = RateLimit('login:ip:10.0.0.1', limit=2, period=MINUTE)
+    await limiter.acquire([limit])
+    clock.now += 30
+    await limiter.acquire([limit])
+
+    clock.now += 29
+    assert await limiter.acquire([limit]) is not None
+    clock.now += 2
+    assert await limiter.acquire([limit]) is None
+    assert await limiter.acquire([limit]) is not None
+
+
+async def test_rejected_attempt_is_not_counted_anywhere(limiter: RedisRateLimiter) -> None:
+    """Если исчерпан один лимит, попытка не засчитывается и в остальные: другой адрес этим логином не заблокировать."""
+    ip = RateLimit('login:ip:10.0.0.1', limit=1, period=MINUTE)
+    account = RateLimit('login:account:neo', limit=2, period=MINUTE)
+    assert await limiter.acquire([ip, account]) is None
+
+    for _ in range(5):
+        assert await limiter.acquire([ip, account]) is not None
+
+    assert await limiter.acquire([RateLimit('login:ip:10.0.0.2', limit=1, period=MINUTE), account]) is None
+
+
+async def test_rate_limit_keys_expire_with_window(limiter: RedisRateLimiter, redis: FakeAsyncRedis) -> None:
+    """Ключ попыток живёт не дольше окна: неактивные адреса и логины не копятся в Redis."""
+    await limiter.acquire([RateLimit('signup:ip:10.0.0.1', limit=5, period=MINUTE)])
+
+    assert 0 < await redis.pttl('auth:rate:signup:ip:10.0.0.1') <= MINUTE.total_seconds() * 1000
+
+
+async def test_rate_limit_reset(limiter: RedisRateLimiter) -> None:
+    """Обнулённый счётчик снова пропускает попытки."""
+    limit = RateLimit('login:account:neo', limit=1, period=MINUTE)
+    await limiter.acquire([limit])
+
+    await limiter.reset('login:account:neo')
+
+    assert await limiter.acquire([limit]) is None

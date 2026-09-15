@@ -9,30 +9,34 @@
 * `auth:access:<user_id>` — права пользователя (JSON) с отметкой версии;
 * `auth:access_version` и `auth:access_version:<user_id>` — версии прав:
   общая растёт при изменении и удалении ролей, личная — при назначении и
-  отзыве роли у пользователя.
+  отзыве роли у пользователя;
+* `auth:rate:<ключ>` — попытки входа и регистрации за скользящее окно:
+  сортированное множество, оценка — время попытки в миллисекундах.
 
 Redis сервиса авторизации — не кеш с вытеснением: без сессий пользователи
 окажутся разлогинены, поэтому он настроен без вытеснения и с журналом AOF.
 """
 
 import json
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from models.role import UserAccess
 from models.session import Session
-from storage.base import AccessCache, RotateResult, SessionStore, StorageUnavailableError
+from storage.base import AccessCache, RateLimit, RateLimiter, RotateResult, SessionStore, StorageUnavailableError
 
 SESSION_KEY = 'auth:session:{session_id}'
 USER_SESSIONS_KEY = 'auth:user_sessions:{user_id}'
 ACCESS_KEY = 'auth:access:{user_id}'
 ACCESS_VERSION_KEY = 'auth:access_version'
 USER_ACCESS_VERSION_KEY = 'auth:access_version:{user_id}'
+RATE_KEY = 'auth:rate:{key}'
 
 # Сравнить jti и заменить его нужно атомарно: иначе два одновременных запроса
 # с одним refresh-токеном оба получили бы новую пару.
@@ -50,6 +54,34 @@ redis.call('EXPIRE', KEYS[2], ARGV[3])
 return 1
 """
 ROTATE_RESULTS = {1: RotateResult.ROTATED, -1: RotateResult.REUSED, 0: RotateResult.MISSING}
+
+# Скользящее окно: в множестве лежат попытки за последние period. Проверить
+# все лимиты и засчитать попытку нужно атомарно: иначе параллельные запросы
+# прошли бы проверку одновременно и превысили лимит.
+# KEYS — ключи лимитов; ARGV[1] — текущее время, мс; ARGV[2] — метка попытки;
+# дальше по паре на ключ: лимит и окно, мс. Возвращает 0, если попытка
+# засчитана, иначе — через сколько миллисекунд освободится место.
+ACQUIRE_SCRIPT = """
+local now = tonumber(ARGV[1])
+local wait = 0
+for i, key in ipairs(KEYS) do
+    local limit = tonumber(ARGV[2 * i + 1])
+    local window = tonumber(ARGV[2 * i + 2])
+    redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+    if redis.call('ZCARD', key) >= limit then
+        local oldest = tonumber(redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')[2])
+        wait = math.max(wait, oldest + window - now)
+    end
+end
+if wait > 0 then
+    return wait
+end
+for i, key in ipairs(KEYS) do
+    redis.call('ZADD', key, now, ARGV[2])
+    redis.call('PEXPIRE', key, ARGV[2 * i + 2])
+end
+return 0
+"""
 
 
 @asynccontextmanager
@@ -152,3 +184,28 @@ class RedisAccessCache(AccessCache):
     async def invalidate_all(self) -> None:
         async with redis_errors():
             await self.redis.incr(ACCESS_VERSION_KEY)
+
+
+def milliseconds(period: timedelta) -> int:
+    return int(period.total_seconds() * 1000)
+
+
+class RedisRateLimiter(RateLimiter):
+    def __init__(self, redis: Redis, clock: Callable[[], float] = time.time):
+        self.redis = redis
+        self._acquire = redis.register_script(ACQUIRE_SCRIPT)
+        # Часы подменяются в тестах, чтобы проверить сдвиг окна без ожидания.
+        self.clock = clock
+
+    async def acquire(self, limits: Sequence[RateLimit]) -> timedelta | None:
+        keys = [RATE_KEY.format(key=limit.key) for limit in limits]
+        args: list[int | str] = [int(self.clock() * 1000), uuid4().hex]
+        for limit in limits:
+            args += [limit.limit, milliseconds(limit.period)]
+        async with redis_errors():
+            wait = int(await self._acquire(keys=keys, args=args))
+        return timedelta(milliseconds=wait) if wait else None
+
+    async def reset(self, key: str) -> None:
+        async with redis_errors():
+            await self.redis.delete(RATE_KEY.format(key=key))

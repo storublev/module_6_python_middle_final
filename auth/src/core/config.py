@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # сбрасывают кеш сразу, время жизни — страховка от забытых записей.
     access_cache_ttl: timedelta = timedelta(minutes=10)
 
+    # Лимиты попыток входа и регистрации: не больше N попыток за скользящее окно.
+    # С одного адреса входят в разные аккаунты (NAT, офис), поэтому лимит по
+    # IP мягче лимита по логину. Лимит логина считает неудачные попытки:
+    # успешный вход его обнуляет.
+    login_attempts_per_ip: int = Field(default=20, ge=1)
+    login_attempts_per_ip_period: timedelta = timedelta(minutes=1)
+    login_attempts_per_account: int = Field(default=10, ge=1)
+    login_attempts_per_account_period: timedelta = timedelta(minutes=15)
+    signup_attempts_per_ip: int = Field(default=10, ge=1)
+    signup_attempts_per_ip_period: timedelta = timedelta(hours=1)
+
     @property
     def postgres_dsn(self) -> str:
         return (

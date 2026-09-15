@@ -7,15 +7,17 @@ import pytest
 from pwdlib.hashers.argon2 import Argon2Hasher
 
 from services.access import AccessService
-from services.auth import AuthService, ClientInfo, RegistrationService
+from services.auth import AuthService, ClientInfo, RegistrationService, SignupService
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
 from services.roles import RoleService
+from services.throttling import Limit, Throttle, ThrottlingPolicy
 from services.tokens import TokenService
 from tests.unit.fakes import (
     Database,
     FakeAccessCache,
     FakeLoginHistoryRepository,
+    FakeRateLimiter,
     FakeRoleRepository,
     FakeSessionStore,
     FakeUserRepository,
@@ -27,6 +29,12 @@ os.environ.setdefault('AUTH_JWT_SECRET_KEY', SECRET_KEY)
 os.environ.setdefault('AUTH_POSTGRES_PASSWORD', 'unit-tests')
 PASSWORD = 'followtherabbit'
 CLIENT = ClientInfo(user_agent='pytest', ip='127.0.0.1')
+# Небольшие лимиты, чтобы тесты упирались в них за несколько попыток.
+POLICY = ThrottlingPolicy(
+    login_per_ip=Limit(attempts=5, period=timedelta(minutes=1)),
+    login_per_account=Limit(attempts=3, period=timedelta(minutes=15)),
+    signup_per_ip=Limit(attempts=2, period=timedelta(hours=1)),
+)
 
 
 @pytest.fixture(scope='session')
@@ -71,8 +79,23 @@ def cache() -> FakeAccessCache:
 
 
 @pytest.fixture
+def limiter() -> FakeRateLimiter:
+    return FakeRateLimiter()
+
+
+@pytest.fixture
+def throttle(limiter: FakeRateLimiter) -> Throttle:
+    return Throttle(limiter, POLICY)
+
+
+@pytest.fixture
 def registration(users: FakeUserRepository, passwords: PasswordHasher) -> RegistrationService:
     return RegistrationService(users, passwords)
+
+
+@pytest.fixture
+def signups(registration: RegistrationService, throttle: Throttle) -> SignupService:
+    return SignupService(registration, throttle)
 
 
 @pytest.fixture
@@ -82,8 +105,9 @@ def auth(
     history: FakeLoginHistoryRepository,
     tokens: TokenService,
     passwords: PasswordHasher,
+    throttle: Throttle,
 ) -> AuthService:
-    return AuthService(users, sessions, history, tokens, passwords)
+    return AuthService(users, sessions, history, tokens, passwords, throttle)
 
 
 @pytest.fixture
