@@ -7,6 +7,7 @@ from services.auth import AuthService, Principal, RegistrationService
 from services.errors import InvalidCredentialsError, LoginTakenError, TokenRevokedError, WrongPasswordError
 from services.profile import Pagination, ProfileService
 from tests.unit.conftest import CLIENT, PASSWORD
+from tests.unit.fakes import Database, FakeSessionStore, FakeUserRepository
 
 
 @pytest.fixture
@@ -66,6 +67,50 @@ async def test_change_password_revokes_other_sessions(
     with pytest.raises(TokenRevokedError):
         await auth.authenticate(other.access_token)
     assert (await profiles.get_profile(principal)).user.login == 'neo'
+
+
+async def test_change_password_revokes_sessions_when_redis_fails(
+    profiles: ProfileService, auth: AuthService, principal: Principal, sessions: FakeSessionStore,
+) -> None:
+    """Redis недоступен после смены пароля: сессии остались в хранилище, но ни одна не действует.
+
+    Пароль сменён — повторять запрос со старым паролем не нужно; войти заново
+    придётся и на текущем устройстве, но уже с новым паролем.
+    """
+    other = await auth.login('neo', PASSWORD, CLIENT)
+    sessions.writes_fail = True
+
+    await profiles.change_password(principal, PASSWORD, 'new-password')
+
+    sessions.writes_fail = False
+    assert len(sessions.sessions) == 2
+    with pytest.raises(TokenRevokedError):
+        await auth.authenticate(other.access_token)
+    with pytest.raises(TokenRevokedError):
+        await auth.refresh(other.refresh_token)
+    await auth.login('neo', 'new-password', CLIENT)
+
+
+async def test_session_opened_before_password_change_is_revoked(
+    auth: AuthService, users: FakeUserRepository, user: User,
+) -> None:
+    """Сессия с устаревшей версией учётных данных не действует, даже если её не удалили."""
+    pair = await auth.login('neo', PASSWORD, CLIENT)
+
+    await users.update_password(user.id, user.password_hash)
+
+    with pytest.raises(TokenRevokedError):
+        await auth.authenticate(pair.access_token)
+
+
+async def test_session_of_deleted_user_is_revoked(auth: AuthService, db: Database, user: User) -> None:
+    """Токены удалённого пользователя не действуют, хотя сессия ещё жива."""
+    pair = await auth.login('neo', PASSWORD, CLIENT)
+
+    del db.users[user.id]
+
+    with pytest.raises(TokenRevokedError):
+        await auth.authenticate(pair.access_token)
 
 
 async def test_change_password_requires_current_password(profiles: ProfileService, principal: Principal) -> None:

@@ -21,6 +21,7 @@ from storage.base import (
     RoleRepository,
     RotateResult,
     SessionStore,
+    StorageUnavailableError,
     UserRepository,
 )
 
@@ -53,7 +54,8 @@ class FakeUserRepository(UserRepository):
     async def create(self, login: str, password_hash: str, is_superuser: bool = False) -> User:
         if await self.get_by_login(login):
             raise AlreadyExistsError(login)
-        user = User(id=uuid4(), login=login, password_hash=password_hash, is_superuser=is_superuser, created_at=now())
+        user = User(id=uuid4(), login=login, password_hash=password_hash, credentials_version=0,
+                    is_superuser=is_superuser, created_at=now())
         self.db.users[user.id] = user
         return user
 
@@ -64,8 +66,17 @@ class FakeUserRepository(UserRepository):
         self.db.users[user_id] = user
         return user
 
-    async def update_password(self, user_id: UUID, password_hash: str) -> None:
-        self.db.users[user_id] = self.db.users[user_id].model_copy(update={'password_hash': password_hash})
+    async def update_password(self, user_id: UUID, password_hash: str) -> int:
+        user = self.db.users[user_id]
+        version = user.credentials_version + 1
+        self.db.users[user_id] = user.model_copy(
+            update={'password_hash': password_hash, 'credentials_version': version},
+        )
+        return version
+
+    async def get_credentials_version(self, user_id: UUID) -> int | None:
+        user = self.db.users.get(user_id)
+        return user.credentials_version if user else None
 
     async def get_access(self, user_id: UUID) -> UserAccess | None:
         self.access_reads += 1
@@ -148,13 +159,24 @@ class FakeSessionStore(SessionStore):
     def __init__(self) -> None:
         self.sessions: dict[UUID, Session] = {}
         self.ttls: dict[UUID, timedelta] = {}
+        # Имитация недоступного Redis для изменений, которые идут после записи в базу.
+        self.writes_fail = False
+
+    def _check_available(self) -> None:
+        if self.writes_fail:
+            raise StorageUnavailableError('Redis: connection refused')
 
     async def create(self, session: Session, ttl: timedelta) -> None:
         self.sessions[session.id] = session
         self.ttls[session.id] = ttl
 
-    async def exists(self, session_id: UUID) -> bool:
-        return session_id in self.sessions
+    async def get(self, session_id: UUID) -> Session | None:
+        return self.sessions.get(session_id)
+
+    async def set_credentials_version(self, session_id: UUID, version: int) -> None:
+        self._check_available()
+        if session_id in self.sessions:
+            self.sessions[session_id] = self.sessions[session_id].model_copy(update={'credentials_version': version})
 
     async def rotate(
         self, user_id: UUID, session_id: UUID, old_jti: str, new_jti: str, ttl: timedelta,
@@ -172,6 +194,7 @@ class FakeSessionStore(SessionStore):
         self.sessions.pop(session_id, None)
 
     async def delete_others(self, user_id: UUID, keep_session_id: UUID) -> int:
+        self._check_available()
         others = [
             sid for sid, session in self.sessions.items() if session.user_id == user_id and sid != keep_session_id
         ]

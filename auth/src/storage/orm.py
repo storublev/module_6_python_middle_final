@@ -32,6 +32,10 @@ class UserRow(Timestamped, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     login: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    # Растёт при смене пароля в той же транзакции. Сессия запоминает версию, с
+    # которой открыта, и с устаревшей не действует — даже если удалить её из
+    # Redis при смене пароля не удалось.
+    credentials_version: Mapped[int] = mapped_column(server_default=text('0'))
     is_superuser: Mapped[bool] = mapped_column(server_default=false())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),

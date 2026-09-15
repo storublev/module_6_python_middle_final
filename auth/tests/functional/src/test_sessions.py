@@ -1,5 +1,6 @@
 """Обновление токенов, выход и выход из остальных сессий."""
 
+import asyncpg
 import httpx
 import jwt
 import pytest
@@ -96,6 +97,26 @@ async def test_logout_others(client: httpx.AsyncClient, neo: Account, make_accou
     assert (await client.get('/users/me', headers=neo.headers)).status_code == 200
     assert (await refresh(client, neo.refresh_token)).status_code == 200
     assert (await client.get('/users/me', headers=trinity.headers)).status_code == 200
+
+
+async def test_sessions_of_changed_credentials_are_revoked(
+    client: httpx.AsyncClient, neo: Account, pg: asyncpg.Connection,
+) -> None:
+    """401 token_revoked для сессий с устаревшей версией учётных данных, хотя они остались в Redis.
+
+    Так выглядит смена пароля, после которой удалить остальные сессии из Redis
+    не удалось: версия меняется в одной транзакции с паролем. Новый вход работает.
+    """
+    other = await login(client, 'neo')
+    await pg.execute('UPDATE auth.users SET credentials_version = credentials_version + 1 WHERE id = $1', neo.id)
+
+    for access_token in (neo.access_token, other['access_token']):
+        response = await client.get('/users/me', headers=bearer(access_token))
+        assert response.status_code == 401
+        assert response.json()['code'] == 'token_revoked'
+    assert (await refresh(client, neo.refresh_token)).json()['code'] == 'token_revoked'
+    fresh = await login(client, 'neo')
+    assert (await client.get('/users/me', headers=bearer(fresh['access_token']))).status_code == 200
 
 
 async def test_access_token_is_not_stored(neo: Account, redis_client) -> None:

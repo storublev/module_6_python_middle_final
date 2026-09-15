@@ -78,12 +78,22 @@ class PostgresUserRepository(PostgresRepository, UserRepository):
             await self.session.commit()
         return User.model_validate(row)
 
-    async def update_password(self, user_id: UUID, password_hash: str) -> None:
+    async def update_password(self, user_id: UUID, password_hash: str) -> int:
+        # Пароль и версия учётных данных меняются одним UPDATE: либо оба, либо ничего.
+        query = (
+            update(UserRow)
+            .where(UserRow.id == user_id)
+            .values(password_hash=password_hash, credentials_version=UserRow.credentials_version + 1)
+            .returning(UserRow.credentials_version)
+        )
         async with self._errors():
-            await self.session.execute(
-                update(UserRow).where(UserRow.id == user_id).values(password_hash=password_hash),
-            )
+            version = await self.session.scalar(query)
             await self.session.commit()
+        return version
+
+    async def get_credentials_version(self, user_id: UUID) -> int | None:
+        async with self._errors():
+            return await self.session.scalar(select(UserRow.credentials_version).where(UserRow.id == user_id))
 
     async def get_access(self, user_id: UUID) -> UserAccess | None:
         query = (

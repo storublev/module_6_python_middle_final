@@ -7,7 +7,7 @@ from models.user import User
 from services.errors import InvalidCredentialsError, LoginTakenError, TokenRevokedError
 from services.passwords import PasswordHasher
 from services.throttling import Throttle
-from services.tokens import TokenPair, TokenService, TokenType
+from services.tokens import TokenClaims, TokenPair, TokenService, TokenType
 from storage.base import AlreadyExistsError, LoginHistoryRepository, RotateResult, SessionStore, UserRepository
 
 logger = logging.getLogger(__name__)
@@ -113,10 +113,15 @@ class AuthService:
 
         session_id = uuid4()
         tokens = self.tokens.issue(user.id, session_id)
-        await self.sessions.create(
-            Session(id=session_id, user_id=user.id, refresh_jti=tokens.refresh_jti),
-            ttl=self.tokens.refresh_ttl,
+        # Если пароль сменят, пока открывается сессия, она получит прежнюю
+        # версию учётных данных и действовать не будет.
+        session = Session(
+            id=session_id,
+            user_id=user.id,
+            refresh_jti=tokens.refresh_jti,
+            credentials_version=user.credentials_version,
         )
+        await self.sessions.create(session, ttl=self.tokens.refresh_ttl)
         user_agent = client.user_agent[:USER_AGENT_MAX_LENGTH] if client.user_agent else None
         await self.history.add(user.id, user_agent=user_agent, ip=client.ip)
         return tokens
@@ -130,9 +135,10 @@ class AuthService:
 
         Raises:
             TokenExpiredError, TokenInvalidError: токен истёк или недействителен.
-            TokenRevokedError: сессия закрыта или токен уже использован.
+            TokenRevokedError: сессия закрыта, открыта до смены пароля или токен уже использован.
         """
         claims = self.tokens.decode(refresh_token, TokenType.REFRESH)
+        await self._check_session(claims)
         tokens = self.tokens.issue(claims.user_id, claims.session_id)
         result = await self.sessions.rotate(
             claims.user_id, claims.session_id, claims.jti, tokens.refresh_jti, ttl=self.tokens.refresh_ttl,
@@ -150,12 +156,26 @@ class AuthService:
 
         Raises:
             TokenExpiredError, TokenInvalidError: токен истёк или недействителен.
-            TokenRevokedError: пользователь вышел из этой сессии.
+            TokenRevokedError: пользователь вышел из этой сессии или сессия открыта до смены пароля.
         """
         claims = self.tokens.decode(access_token, TokenType.ACCESS)
-        if not await self.sessions.exists(claims.session_id):
-            raise TokenRevokedError
+        await self._check_session(claims)
         return Principal(user_id=claims.user_id, session_id=claims.session_id)
+
+    async def _check_session(self, claims: TokenClaims) -> None:
+        """Сессия токена жива и открыта с текущей версией учётных данных пользователя.
+
+        Версия хранится в PostgreSQL и меняется в одной транзакции с паролем.
+        Поэтому смена пароля закрывает остальные сессии, даже если удалить
+        их из Redis не удалось: такие сессии отвергаются здесь.
+        """
+        session = await self.sessions.get(claims.session_id)
+        if session is None or session.user_id != claims.user_id:
+            raise TokenRevokedError
+        # None — пользователя удалили, пока его сессия ещё жила.
+        if await self.users.get_credentials_version(claims.user_id) != session.credentials_version:
+            await self.sessions.delete(claims.user_id, claims.session_id)
+            raise TokenRevokedError
 
     async def logout(self, principal: Principal) -> None:
         """Закрывает текущую сессию: её access- и refresh-токены перестают действовать."""

@@ -39,17 +39,50 @@ def cache(redis: FakeAsyncRedis) -> RedisAccessCache:
 
 
 def new_session(user_id=None) -> Session:
-    return Session(id=uuid4(), user_id=user_id or uuid4(), refresh_jti=uuid4().hex)
+    return Session(id=uuid4(), user_id=user_id or uuid4(), refresh_jti=uuid4().hex, credentials_version=3)
+
+
+async def exists(store: RedisSessionStore, session: Session) -> bool:
+    return await store.get(session.id) is not None
 
 
 async def test_session_lives_as_long_as_refresh_token(store: RedisSessionStore, redis: FakeAsyncRedis) -> None:
-    """Сессия хранится со временем жизни refresh-токена."""
+    """Сессия хранится со временем жизни refresh-токена и читается со всеми полями."""
     session = new_session()
 
     await store.create(session, TTL)
 
-    assert await store.exists(session.id)
+    assert await store.get(session.id) == session
     assert await redis.ttl(f'auth:session:{session.id}') == TTL.total_seconds()
+
+
+async def test_set_credentials_version(store: RedisSessionStore) -> None:
+    """Живая сессия переводится на новую версию учётных данных, срок её жизни не меняется."""
+    session = new_session()
+    await store.create(session, TTL)
+
+    await store.set_credentials_version(session.id, 4)
+
+    assert (await store.get(session.id)).credentials_version == 4
+
+
+async def test_set_credentials_version_does_not_revive_session(store: RedisSessionStore, redis: FakeAsyncRedis) -> None:
+    """Для закрытой сессии смена версии ничего не создаёт: иначе появилась бы сессия без срока жизни."""
+    session_id = uuid4()
+
+    await store.set_credentials_version(session_id, 4)
+
+    assert not await redis.exists(f'auth:session:{session_id}')
+
+
+async def test_session_without_credentials_version_is_not_accepted(
+    store: RedisSessionStore, redis: FakeAsyncRedis,
+) -> None:
+    """Сессия, открытая до появления версии учётных данных, не принимается — нужно войти заново."""
+    session_id, user_id = uuid4(), uuid4()
+    await redis.hset(f'auth:session:{session_id}', mapping={'user_id': str(user_id), 'refresh_jti': 'jti'})
+
+    assert await store.get(session_id) is None
 
 
 async def test_rotate_accepts_only_current_refresh_token(store: RedisSessionStore) -> None:
@@ -84,7 +117,7 @@ async def test_delete_session(store: RedisSessionStore) -> None:
 
     await store.delete(session.user_id, session.id)
 
-    assert not await store.exists(session.id)
+    assert not await exists(store, session)
 
 
 async def test_delete_others_keeps_current_session(store: RedisSessionStore) -> None:
@@ -97,10 +130,10 @@ async def test_delete_others_keeps_current_session(store: RedisSessionStore) -> 
 
     assert await store.delete_others(user_id, keep_session_id=current.id) == 2
 
-    assert await store.exists(current.id)
-    assert not await store.exists(other.id)
-    assert not await store.exists(another.id)
-    assert await store.exists(stranger.id)
+    assert await exists(store, current)
+    assert not await exists(store, other)
+    assert not await exists(store, another)
+    assert await exists(store, stranger)
     assert await store.delete_others(user_id, keep_session_id=current.id) == 0
 
 
@@ -153,11 +186,11 @@ async def test_redis_errors_become_storage_unavailable(redis: FakeAsyncRedis, mo
     async def broken(*args, **kwargs):
         raise RedisConnectionError('connection refused')
 
-    monkeypatch.setattr(redis, 'exists', broken)
+    monkeypatch.setattr(redis, 'hgetall', broken)
     monkeypatch.setattr(redis, 'mget', broken)
 
     with pytest.raises(StorageUnavailableError):
-        await RedisSessionStore(redis).exists(uuid4())
+        await RedisSessionStore(redis).get(uuid4())
     with pytest.raises(StorageUnavailableError):
         await RedisAccessCache(redis, TTL).get(uuid4())
 

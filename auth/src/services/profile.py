@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 
 from models.role import Role
@@ -5,7 +6,16 @@ from models.user import LoginRecord, User
 from services.auth import Principal
 from services.errors import LoginTakenError, TokenRevokedError, WrongPasswordError
 from services.passwords import PasswordHasher
-from storage.base import AlreadyExistsError, LoginHistoryRepository, RoleRepository, SessionStore, UserRepository
+from storage.base import (
+    AlreadyExistsError,
+    LoginHistoryRepository,
+    RoleRepository,
+    SessionStore,
+    StorageUnavailableError,
+    UserRepository,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -63,12 +73,24 @@ class ProfileService:
     async def change_password(self, principal: Principal, password: str, new_password: str) -> None:
         """Меняет пароль и закрывает остальные сессии: если пароль узнал кто-то ещё, он потеряет доступ.
 
+        Остальные сессии перестают действовать в момент смены пароля: вместе с
+        ним в той же транзакции растёт версия учётных данных, а сессии с
+        прежней версией не проходят проверку. Дальше в Redis текущая сессия
+        переводится на новую версию, а остальные удаляются. Если Redis в этот
+        момент недоступен, безопасность не страдает — чужие сессии всё равно не
+        действуют, а войти заново (уже с новым паролем) придётся и на текущем
+        устройстве. Поэтому такой сбой не делает смену пароля неудачной.
+
         Raises:
             WrongPasswordError: текущий пароль неверный.
         """
         user = await self._check_password(principal, password)
-        await self.users.update_password(user.id, await self.passwords.hash(new_password))
-        await self.sessions.delete_others(user.id, keep_session_id=principal.session_id)
+        version = await self.users.update_password(user.id, await self.passwords.hash(new_password))
+        try:
+            await self.sessions.set_credentials_version(principal.session_id, version)
+            await self.sessions.delete_others(user.id, keep_session_id=principal.session_id)
+        except StorageUnavailableError as exc:
+            logger.warning('Пароль пользователя %s сменён, но сессии в Redis не обновлены: %s', user.id, exc)
 
     async def login_history(self, principal: Principal, pagination: Pagination) -> list[LoginRecord]:
         return await self.history.get_page(principal.user_id, offset=pagination.offset, limit=pagination.page_size)

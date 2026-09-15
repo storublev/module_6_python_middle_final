@@ -57,8 +57,12 @@ class UserRepository(ABC):
         """
 
     @abstractmethod
-    async def update_password(self, user_id: UUID, password_hash: str) -> None:
-        """Меняет хеш пароля."""
+    async def update_password(self, user_id: UUID, password_hash: str) -> int:
+        """Меняет хеш пароля и в той же транзакции увеличивает версию учётных данных; возвращает новую версию."""
+
+    @abstractmethod
+    async def get_credentials_version(self, user_id: UUID) -> int | None:
+        """Возвращает текущую версию учётных данных или None, если пользователя нет."""
 
     @abstractmethod
     async def get_access(self, user_id: UUID) -> UserAccess | None:
@@ -144,8 +148,12 @@ class SessionStore(ABC):
         """Сохраняет сессию на время жизни refresh-токена."""
 
     @abstractmethod
-    async def exists(self, session_id: UUID) -> bool:
-        """Жива ли сессия."""
+    async def get(self, session_id: UUID) -> Session | None:
+        """Возвращает сессию или None, если она закрыта или истекла."""
+
+    @abstractmethod
+    async def set_credentials_version(self, session_id: UUID, version: int) -> None:
+        """Переводит живую сессию на новую версию учётных данных; закрытую не воскрешает."""
 
     @abstractmethod
     async def rotate(

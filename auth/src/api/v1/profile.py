@@ -49,7 +49,9 @@ async def change_login(body: ChangeLoginSchema, principal: PrincipalDep, profile
     '/me/password',
     status_code=HTTPStatus.NO_CONTENT,
     summary='Смена пароля',
-    description='Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей.',
+    description='Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают '
+                'действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, '
+                'а войти заново придётся и на текущем устройстве.',
     responses=error_responses(*TOKEN_ERRORS, WrongPasswordError),
 )
 async def change_password(body: ChangePasswordSchema, principal: PrincipalDep, profiles: ProfileServiceDep) -> None:

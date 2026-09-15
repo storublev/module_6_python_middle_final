@@ -2,8 +2,9 @@
 
 Ключи:
 
-* `auth:session:<session_id>` — хеш сессии (user_id, refresh_jti), живёт
-  столько же, сколько refresh-токен, и продлевается при каждом обновлении;
+* `auth:session:<session_id>` — хеш сессии (user_id, refresh_jti,
+  credentials_version), живёт столько же, сколько refresh-токен, и
+  продлевается при каждом обновлении;
 * `auth:user_sessions:<user_id>` — множество сессий пользователя, нужно
   для «выйти из остальных устройств»;
 * `auth:access:<user_id>` — права пользователя (JSON) с отметкой версии;
@@ -55,6 +56,14 @@ return 1
 """
 ROTATE_RESULTS = {1: RotateResult.ROTATED, -1: RotateResult.REUSED, 0: RotateResult.MISSING}
 
+# HSET несуществующего ключа создал бы сессию без срока жизни и без
+# refresh-токена: закрытую сессию обновлять нельзя.
+SET_CREDENTIALS_VERSION_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    redis.call('HSET', KEYS[1], 'credentials_version', ARGV[1])
+end
+"""
+
 # Скользящее окно: в множестве лежат попытки за последние period. Проверить
 # все лимиты и засчитать попытку нужно атомарно: иначе параллельные запросы
 # прошли бы проверку одновременно и превысили лимит.
@@ -101,21 +110,41 @@ class RedisSessionStore(SessionStore):
     def __init__(self, redis: Redis):
         self.redis = redis
         self._rotate = redis.register_script(ROTATE_SCRIPT)
+        self._set_credentials_version = redis.register_script(SET_CREDENTIALS_VERSION_SCRIPT)
 
     async def create(self, session: Session, ttl: timedelta) -> None:
         session_key = SESSION_KEY.format(session_id=session.id)
         user_key = USER_SESSIONS_KEY.format(user_id=session.user_id)
+        fields = {
+            'user_id': str(session.user_id),
+            'refresh_jti': session.refresh_jti,
+            'credentials_version': session.credentials_version,
+        }
         async with redis_errors(), self.redis.pipeline(transaction=True) as pipe:
-            pipe.hset(session_key, mapping={'user_id': str(session.user_id), 'refresh_jti': session.refresh_jti})
+            pipe.hset(session_key, mapping=fields)
             pipe.expire(session_key, seconds(ttl))
             pipe.sadd(user_key, str(session.id))
             # Множество живёт не меньше самой долгой сессии пользователя.
             pipe.expire(user_key, seconds(ttl))
             await pipe.execute()
 
-    async def exists(self, session_id: UUID) -> bool:
+    async def get(self, session_id: UUID) -> Session | None:
         async with redis_errors():
-            return bool(await self.redis.exists(SESSION_KEY.format(session_id=session_id)))
+            fields = await self.redis.hgetall(SESSION_KEY.format(session_id=session_id))
+        # Сессия без версии учётных данных открыта до её появления: такую не
+        # принимаем, пользователь войдёт заново.
+        if b'credentials_version' not in fields:
+            return None
+        return Session(
+            id=session_id,
+            user_id=UUID(fields[b'user_id'].decode()),
+            refresh_jti=fields[b'refresh_jti'].decode(),
+            credentials_version=int(fields[b'credentials_version']),
+        )
+
+    async def set_credentials_version(self, session_id: UUID, version: int) -> None:
+        async with redis_errors():
+            await self._set_credentials_version(keys=[SESSION_KEY.format(session_id=session_id)], args=[version])
 
     async def rotate(
         self, user_id: UUID, session_id: UUID, old_jti: str, new_jti: str, ttl: timedelta,
