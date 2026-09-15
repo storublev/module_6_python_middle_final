@@ -123,6 +123,7 @@ cd auth && flake8 . && ruff check .
 | `AUTH_REDIS_HOST` / `AUTH_REDIS_PORT` / `AUTH_REDIS_DB` | `127.0.0.1` / `6379` / `0` | Адрес Redis (в compose — `auth-redis`) |
 | `AUTH_ACCESS_TOKEN_TTL` | `900` | Время жизни access-токена, секунды или ISO 8601 (`PT15M`) |
 | `AUTH_REFRESH_TOKEN_TTL` | `1209600` | Время жизни refresh-токена и сессии, 14 дней |
+| `AUTH_MAX_SESSIONS_PER_USER` | `20` | Сессий (устройств) у пользователя одновременно; вход сверх предела закрывает самые давно не продлевавшиеся |
 | `AUTH_ACCESS_CACHE_TTL` | `600` | Время жизни кеша прав |
 | `AUTH_ACCESS_INVALIDATION_INTERVAL` / `…_MAX_INTERVAL` | `5` / `60` | Как часто повторять сброс кеша прав, отложенный из-за сбоя Redis; наибольшая пауза при сбоях |
 | `AUTH_LOGIN_ATTEMPTS_PER_IP` / `…_PERIOD` | `20` / `60` | Попыток входа с одного IP за скользящее окно, секунды |

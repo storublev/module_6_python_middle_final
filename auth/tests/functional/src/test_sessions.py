@@ -6,6 +6,7 @@ import jwt
 import pytest
 
 from tests.functional.conftest import Account, MakeAccount, bearer, login
+from tests.functional.settings import settings
 from tests.functional.utils.tokens import expired, forged
 
 
@@ -127,8 +128,22 @@ async def test_access_token_is_not_stored(neo: Account, redis_client) -> None:
         stored.append(key)
         if await redis_client.type(key) == b'hash':
             stored.extend((await redis_client.hgetall(key)).values())
-        elif await redis_client.type(key) == b'set':
-            stored.extend(await redis_client.smembers(key))
+        elif await redis_client.type(key) == b'zset':
+            stored.extend(await redis_client.zrange(key, 0, -1))
 
     assert stored
     assert not any(neo.access_token.encode() in value or access_jti.encode() in value for value in stored)
+
+
+async def test_session_limit_closes_oldest_session(
+    client: httpx.AsyncClient, neo: Account, redis_client,
+) -> None:
+    """Вход сверх предела сессий закрывает самую давнюю: её токены — 401 token_revoked, новые работают."""
+    for _ in range(settings.max_sessions_per_user):
+        latest = await login(client, 'neo')
+
+    response = await client.get('/users/me', headers=neo.headers)
+    assert (response.status_code, response.json()['code']) == (401, 'token_revoked')
+    assert (await refresh(client, neo.refresh_token)).json()['code'] == 'token_revoked'
+    assert (await client.get('/users/me', headers=bearer(latest['access_token']))).status_code == 200
+    assert await redis_client.zcard(f'auth:user_session_expiry:{neo.id}') == settings.max_sessions_per_user

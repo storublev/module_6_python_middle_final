@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     login_attempts_per_ip: int = 10
     login_attempts_per_account: int = 5
     signup_attempts_per_ip: int = 5
+    max_sessions_per_user: int = 5
 
     # Сколько секунд ждать готовности сервиса и хранилищ перед тестами.
     wait_timeout: float = 60

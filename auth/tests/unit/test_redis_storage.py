@@ -18,6 +18,7 @@ from storage.base import RateLimit, RotateResult, StorageUnavailableError
 from storage.redis import RedisAccessCache, RedisRateLimiter, RedisSessionStore
 
 TTL = timedelta(days=14)
+MAX_SESSIONS = 3
 
 
 @pytest.fixture
@@ -28,9 +29,24 @@ async def redis() -> AsyncIterator[FakeAsyncRedis]:
     await client.aclose()
 
 
+class Clock:
+    """Часы, которые тест переводит вперёд вместо ожидания."""
+
+    def __init__(self) -> None:
+        self.now = 1_700_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 @pytest.fixture
-def store(redis: FakeAsyncRedis) -> RedisSessionStore:
-    return RedisSessionStore(redis)
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def store(redis: FakeAsyncRedis, clock: Clock) -> RedisSessionStore:
+    return RedisSessionStore(redis, max_sessions=MAX_SESSIONS, clock=clock)
 
 
 @pytest.fixture
@@ -137,6 +153,93 @@ async def test_delete_others_keeps_current_session(store: RedisSessionStore) -> 
     assert await store.delete_others(user_id, keep_session_id=current.id) == 0
 
 
+async def user_sessions(redis: FakeAsyncRedis, user_id) -> list[str]:
+    return [member.decode() for member in await redis.zrange(f'auth:user_session_expiry:{user_id}', 0, -1)]
+
+
+async def test_expired_sessions_leave_user_index(store: RedisSessionStore, redis: FakeAsyncRedis, clock: Clock) -> None:
+    """Истёкшая сессия уходит из множества сессий пользователя при следующем входе: оно не растёт."""
+    user_id = uuid4()
+    short, long = new_session(user_id), new_session(user_id)
+    await store.create(short, timedelta(minutes=1))
+    await store.create(long, TTL)
+
+    clock.now += 120
+    fresh = new_session(user_id)
+    await store.create(fresh, TTL)
+
+    assert sorted(await user_sessions(redis, user_id)) == sorted([str(long.id), str(fresh.id)])
+
+
+async def test_rotate_extends_session_in_user_index(
+    store: RedisSessionStore, redis: FakeAsyncRedis, clock: Clock,
+) -> None:
+    """Продлённая сессия получает новый срок и в множестве сессий пользователя — её не вычистят раньше времени."""
+    session = new_session()
+    await store.create(session, timedelta(minutes=1))
+
+    clock.now += 30
+    await store.rotate(session.user_id, session.id, session.refresh_jti, 'next', TTL)
+
+    score = await redis.zscore(f'auth:user_session_expiry:{session.user_id}', str(session.id))
+    assert score == (clock.now + TTL.total_seconds()) * 1000
+
+
+async def test_user_index_lives_as_long_as_longest_session(store: RedisSessionStore, redis: FakeAsyncRedis) -> None:
+    """Срок множества сессий пользователя продлевается, но не сокращается короткой сессией."""
+    user_id = uuid4()
+    await store.create(new_session(user_id), TTL)
+    await store.create(new_session(user_id), timedelta(minutes=1))
+
+    assert await redis.ttl(f'auth:user_session_expiry:{user_id}') == TTL.total_seconds()
+
+
+async def test_session_limit_closes_least_recently_extended(
+    store: RedisSessionStore, redis: FakeAsyncRedis, clock: Clock,
+) -> None:
+    """Сверх предела сессий закрывается та, что дольше всех не продлевалась; продлённая остаётся."""
+    user_id = uuid4()
+    sessions = [new_session(user_id) for _ in range(MAX_SESSIONS)]
+    for session in sessions:
+        await store.create(session, TTL)
+        clock.now += 1
+    await store.rotate(user_id, sessions[0].id, sessions[0].refresh_jti, 'next', TTL)
+
+    newest = new_session(user_id)
+    await store.create(newest, TTL)
+
+    assert not await exists(store, sessions[1])
+    for session in (sessions[0], sessions[2], newest):
+        assert await exists(store, session)
+    assert len(await user_sessions(redis, user_id)) == MAX_SESSIONS
+
+
+async def test_session_limit_never_closes_new_session(store: RedisSessionStore, redis: FakeAsyncRedis) -> None:
+    """Даже при совпадающих сроках новая сессия не закрывается пределом — закрываются прежние."""
+    user_id = uuid4()
+    sessions = [new_session(user_id) for _ in range(MAX_SESSIONS + 2)]
+    for session in sessions:
+        await store.create(session, TTL)
+        assert await exists(store, session)
+
+    assert len(await user_sessions(redis, user_id)) == MAX_SESSIONS
+
+
+async def test_delete_others_counts_only_live_sessions(store: RedisSessionStore, clock: Clock) -> None:
+    """Истёкшие сессии «выйти из остальных» не считает и убирает из множества."""
+    user_id = uuid4()
+    current, expired_session, other = new_session(user_id), new_session(user_id), new_session(user_id)
+    await store.create(expired_session, timedelta(minutes=1))
+    await store.create(current, TTL)
+    await store.create(other, TTL)
+
+    clock.now += 120
+
+    assert await store.delete_others(user_id, keep_session_id=current.id) == 1
+    assert await exists(store, current)
+    assert not await exists(store, other)
+
+
 async def test_access_cache_roundtrip(cache: RedisAccessCache) -> None:
     """Права, сохранённые с отметкой версии, читаются из кеша."""
     user_id = uuid4()
@@ -190,24 +293,9 @@ async def test_redis_errors_become_storage_unavailable(redis: FakeAsyncRedis, mo
     monkeypatch.setattr(redis, 'mget', broken)
 
     with pytest.raises(StorageUnavailableError):
-        await RedisSessionStore(redis).get(uuid4())
+        await RedisSessionStore(redis, max_sessions=MAX_SESSIONS).get(uuid4())
     with pytest.raises(StorageUnavailableError):
         await RedisAccessCache(redis, TTL).get(uuid4())
-
-
-class Clock:
-    """Часы, которые тест переводит вперёд вместо ожидания."""
-
-    def __init__(self) -> None:
-        self.now = 1_700_000_000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-@pytest.fixture
-def clock() -> Clock:
-    return Clock()
 
 
 @pytest.fixture

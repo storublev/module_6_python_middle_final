@@ -173,7 +173,11 @@ class SessionStore(ABC):
 
     @abstractmethod
     async def create(self, session: Session, ttl: timedelta) -> None:
-        """Сохраняет сессию на время жизни refresh-токена."""
+        """Сохраняет сессию на время жизни refresh-токена.
+
+        Если сессий у пользователя становится больше предела, закрываются те,
+        что дольше всех не продлевались.
+        """
 
     @abstractmethod
     async def get(self, session_id: UUID) -> Session | None:

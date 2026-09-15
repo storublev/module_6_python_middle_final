@@ -90,7 +90,7 @@ def get_invalidation_queue(session: DbSession) -> AccessInvalidationQueue:
 
 
 def get_session_store(redis: RedisClient) -> SessionStore:
-    return RedisSessionStore(redis)
+    return RedisSessionStore(redis, max_sessions=settings.max_sessions_per_user)
 
 
 def get_access_cache(redis: RedisClient) -> AccessCache:
