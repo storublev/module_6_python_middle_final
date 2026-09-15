@@ -1,0 +1,192 @@
+"""Хранилища на PostgreSQL (SQLAlchemy, asyncpg).
+
+Каждый метод — законченная операция: изменения фиксируются в нём же.
+Сессия SQLAlchemy одна на запрос, её создаёт и закрывает FastAPI.
+"""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import delete, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.role import Role, UserAccess
+from models.user import LoginRecord, User
+from storage.base import (
+    AlreadyExistsError,
+    LoginHistoryRepository,
+    RoleRepository,
+    StorageUnavailableError,
+    UserRepository,
+)
+from storage.orm import LoginHistoryRow, RoleRow, UserRoleRow, UserRow
+
+# Сбои соединения: asyncpg поднимает OSError, если сервер не принимает
+# соединения, SQLAlchemy — OperationalError и InterfaceError, если оно оборвалось.
+CONNECTION_ERRORS = (OperationalError, InterfaceError, OSError, TimeoutError)
+UNIQUE_VIOLATION = '23505'
+
+
+class PostgresRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @asynccontextmanager
+    async def _errors(self) -> AsyncIterator[None]:
+        """Переводит ошибки SQLAlchemy и asyncpg в ошибки хранилища."""
+        try:
+            yield
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if getattr(exc.orig, 'sqlstate', None) == UNIQUE_VIOLATION:
+                raise AlreadyExistsError(str(exc.orig)) from exc
+            raise
+        except CONNECTION_ERRORS as exc:
+            raise StorageUnavailableError(f'PostgreSQL: {exc}') from exc
+
+
+class PostgresUserRepository(PostgresRepository, UserRepository):
+    async def get(self, user_id: UUID) -> User | None:
+        async with self._errors():
+            row = await self.session.get(UserRow, user_id)
+        return User.model_validate(row) if row else None
+
+    async def get_by_login(self, login: str) -> User | None:
+        async with self._errors():
+            row = await self.session.scalar(select(UserRow).where(UserRow.login == login))
+        return User.model_validate(row) if row else None
+
+    async def create(self, login: str, password_hash: str, is_superuser: bool = False) -> User:
+        async with self._errors():
+            row = await self.session.scalar(
+                insert(UserRow)
+                .values(login=login, password_hash=password_hash, is_superuser=is_superuser)
+                .returning(UserRow),
+            )
+            await self.session.commit()
+        return User.model_validate(row)
+
+    async def update_login(self, user_id: UUID, login: str) -> User:
+        async with self._errors():
+            row = await self.session.scalar(
+                update(UserRow).where(UserRow.id == user_id).values(login=login).returning(UserRow),
+            )
+            await self.session.commit()
+        return User.model_validate(row)
+
+    async def update_password(self, user_id: UUID, password_hash: str) -> None:
+        async with self._errors():
+            await self.session.execute(
+                update(UserRow).where(UserRow.id == user_id).values(password_hash=password_hash),
+            )
+            await self.session.commit()
+
+    async def get_access(self, user_id: UUID) -> UserAccess | None:
+        query = (
+            select(UserRow.is_superuser, RoleRow.name, RoleRow.permissions)
+            .outerjoin(UserRoleRow, UserRoleRow.user_id == UserRow.id)
+            .outerjoin(RoleRow, RoleRow.id == UserRoleRow.role_id)
+            .where(UserRow.id == user_id)
+        )
+        async with self._errors():
+            rows = (await self.session.execute(query)).all()
+        if not rows:
+            return None
+        # Без ролей LEFT JOIN вернёт одну строку с NULL вместо роли.
+        roles = [(name, permissions) for _, name, permissions in rows if name is not None]
+        return UserAccess(
+            is_superuser=rows[0].is_superuser,
+            roles=frozenset(name for name, _ in roles),
+            permissions=frozenset(permission for _, permissions in roles for permission in permissions),
+        )
+
+
+class PostgresRoleRepository(PostgresRepository, RoleRepository):
+    async def get_all(self) -> list[Role]:
+        async with self._errors():
+            rows = await self.session.scalars(select(RoleRow).order_by(RoleRow.name))
+        return [Role.model_validate(row) for row in rows]
+
+    async def get(self, role_id: UUID) -> Role | None:
+        async with self._errors():
+            row = await self.session.get(RoleRow, role_id)
+        return Role.model_validate(row) if row else None
+
+    async def create(self, name: str, description: str | None, permissions: list[str]) -> Role:
+        async with self._errors():
+            row = await self.session.scalar(
+                insert(RoleRow)
+                .values(name=name, description=description, permissions=permissions)
+                .returning(RoleRow),
+            )
+            await self.session.commit()
+        return Role.model_validate(row)
+
+    async def update(self, role_id: UUID, changes: dict[str, Any]) -> Role | None:
+        if not changes:
+            return await self.get(role_id)
+        async with self._errors():
+            row = await self.session.scalar(
+                update(RoleRow).where(RoleRow.id == role_id).values(**changes).returning(RoleRow),
+            )
+            await self.session.commit()
+        return Role.model_validate(row) if row else None
+
+    async def delete(self, role_id: UUID) -> bool:
+        # Назначения роли удаляет внешний ключ ON DELETE CASCADE.
+        async with self._errors():
+            deleted = await self.session.scalar(delete(RoleRow).where(RoleRow.id == role_id).returning(RoleRow.id))
+            await self.session.commit()
+        return deleted is not None
+
+    async def list_for_user(self, user_id: UUID) -> list[Role]:
+        query = (
+            select(RoleRow)
+            .join(UserRoleRow, UserRoleRow.role_id == RoleRow.id)
+            .where(UserRoleRow.user_id == user_id)
+            .order_by(RoleRow.name)
+        )
+        async with self._errors():
+            rows = await self.session.scalars(query)
+        return [Role.model_validate(row) for row in rows]
+
+    async def assign(self, user_id: UUID, role_id: UUID) -> None:
+        async with self._errors():
+            await self.session.execute(
+                pg_insert(UserRoleRow).values(user_id=user_id, role_id=role_id).on_conflict_do_nothing(),
+            )
+            await self.session.commit()
+
+    async def revoke(self, user_id: UUID, role_id: UUID) -> bool:
+        query = (
+            delete(UserRoleRow)
+            .where(UserRoleRow.user_id == user_id, UserRoleRow.role_id == role_id)
+            .returning(UserRoleRow.role_id)
+        )
+        async with self._errors():
+            deleted = await self.session.scalar(query)
+            await self.session.commit()
+        return deleted is not None
+
+
+class PostgresLoginHistoryRepository(PostgresRepository, LoginHistoryRepository):
+    async def add(self, user_id: UUID, user_agent: str | None, ip: str | None) -> None:
+        async with self._errors():
+            await self.session.execute(insert(LoginHistoryRow).values(user_id=user_id, user_agent=user_agent, ip=ip))
+            await self.session.commit()
+
+    async def get_page(self, user_id: UUID, offset: int, limit: int) -> list[LoginRecord]:
+        query = (
+            select(LoginHistoryRow)
+            .where(LoginHistoryRow.user_id == user_id)
+            .order_by(LoginHistoryRow.created_at.desc(), LoginHistoryRow.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        async with self._errors():
+            rows = await self.session.scalars(query)
+        return [LoginRecord.model_validate(row) for row in rows]
