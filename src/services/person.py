@@ -1,6 +1,6 @@
 from models.person import Person
 from services.base import BaseService, Pagination
-from storage.base import Sort, TextQuery
+from storage.base import SearchField, Sort, TextQuery
 
 
 class PersonService(BaseService[Person]):
@@ -13,4 +13,4 @@ class PersonService(BaseService[Person]):
 
     async def search(self, query: str, pagination: Pagination) -> list[Person]:
         """Поиск персон по имени, сортировка по релевантности."""
-        return await self._search(Person, pagination, text=TextQuery(query, ('full_name',)))
+        return await self._search(Person, pagination, text=TextQuery(query, (SearchField('full_name'),)))

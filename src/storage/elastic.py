@@ -8,7 +8,16 @@ import backoff
 from elasticsearch import AsyncElasticsearch, ConnectionTimeout, NotFoundError
 from elasticsearch import ConnectionError as ElasticConnectionError
 
-from storage.base import Document, DocumentStorage, RelatedTo, SearchRequest, Sort, StorageUnavailableError, TextQuery
+from storage.base import (
+    Document,
+    DocumentStorage,
+    RelatedTo,
+    SearchField,
+    SearchRequest,
+    Sort,
+    StorageUnavailableError,
+    TextQuery,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +115,13 @@ class ElasticStorage(DocumentStorage):
 
     @staticmethod
     def _text(text: TextQuery) -> dict[str, Any]:
-        return {'multi_match': {'query': text.text, 'fields': list(text.fields), 'fuzziness': 'AUTO'}}
+        fields = [ElasticStorage._field(field) for field in text.fields]
+        return {'multi_match': {'query': text.text, 'fields': fields, 'fuzziness': 'AUTO'}}
+
+    @staticmethod
+    def _field(field: SearchField) -> str:
+        """Поле с весом в синтаксисе Elasticsearch: `title^3`; вес 1 не указывается."""
+        return field.name if field.weight == 1 else f'{field.name}^{field.weight:g}'
 
     @staticmethod
     def _related(related: RelatedTo) -> dict[str, Any]:
