@@ -1,0 +1,196 @@
+"""Хранилища в памяти с тем же контрактом, что у PostgreSQL и Redis.
+
+Сервисы зависят только от интерфейсов storage/base.py, поэтому бизнес-логику
+можно проверить без баз данных.
+"""
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import UUID, uuid4
+
+from models.role import Role, UserAccess
+from models.session import Session
+from models.user import LoginRecord, User
+from storage.base import (
+    AccessCache,
+    AlreadyExistsError,
+    LoginHistoryRepository,
+    RoleRepository,
+    RotateResult,
+    SessionStore,
+    UserRepository,
+)
+
+
+def now() -> datetime:
+    return datetime.now(UTC)
+
+
+class Database:
+    """Общие для репозиториев «таблицы»: роли пользователя видны и через пользователей, и через роли."""
+
+    def __init__(self) -> None:
+        self.users: dict[UUID, User] = {}
+        self.roles: dict[UUID, Role] = {}
+        self.user_roles: set[tuple[UUID, UUID]] = set()
+        self.history: list[tuple[UUID, LoginRecord]] = []
+
+
+class FakeUserRepository(UserRepository):
+    def __init__(self, db: Database):
+        self.db = db
+        self.access_reads = 0
+
+    async def get(self, user_id: UUID) -> User | None:
+        return self.db.users.get(user_id)
+
+    async def get_by_login(self, login: str) -> User | None:
+        return next((user for user in self.db.users.values() if user.login == login), None)
+
+    async def create(self, login: str, password_hash: str, is_superuser: bool = False) -> User:
+        if await self.get_by_login(login):
+            raise AlreadyExistsError(login)
+        user = User(id=uuid4(), login=login, password_hash=password_hash, is_superuser=is_superuser, created_at=now())
+        self.db.users[user.id] = user
+        return user
+
+    async def update_login(self, user_id: UUID, login: str) -> User:
+        if await self.get_by_login(login):
+            raise AlreadyExistsError(login)
+        user = self.db.users[user_id].model_copy(update={'login': login})
+        self.db.users[user_id] = user
+        return user
+
+    async def update_password(self, user_id: UUID, password_hash: str) -> None:
+        self.db.users[user_id] = self.db.users[user_id].model_copy(update={'password_hash': password_hash})
+
+    async def get_access(self, user_id: UUID) -> UserAccess | None:
+        self.access_reads += 1
+        user = self.db.users.get(user_id)
+        if user is None:
+            return None
+        roles = [self.db.roles[role_id] for owner, role_id in self.db.user_roles if owner == user_id]
+        return UserAccess(
+            is_superuser=user.is_superuser,
+            roles=frozenset(role.name for role in roles),
+            permissions=frozenset(permission for role in roles for permission in role.permissions),
+        )
+
+
+class FakeRoleRepository(RoleRepository):
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def get_all(self) -> list[Role]:
+        return sorted(self.db.roles.values(), key=lambda role: role.name)
+
+    async def get(self, role_id: UUID) -> Role | None:
+        return self.db.roles.get(role_id)
+
+    async def create(self, name: str, description: str | None, permissions: list[str]) -> Role:
+        self._check_name(name)
+        role = Role(id=uuid4(), name=name, description=description, permissions=tuple(permissions),
+                    created_at=now(), updated_at=now())
+        self.db.roles[role.id] = role
+        return role
+
+    async def update(self, role_id: UUID, changes: dict[str, Any]) -> Role | None:
+        role = self.db.roles.get(role_id)
+        if role is None:
+            return None
+        if 'name' in changes and changes['name'] != role.name:
+            self._check_name(changes['name'])
+        if 'permissions' in changes:
+            changes = {**changes, 'permissions': tuple(changes['permissions'])}
+        self.db.roles[role_id] = role.model_copy(update={**changes, 'updated_at': now()})
+        return self.db.roles[role_id]
+
+    async def delete(self, role_id: UUID) -> bool:
+        if self.db.roles.pop(role_id, None) is None:
+            return False
+        self.db.user_roles = {(user, role) for user, role in self.db.user_roles if role != role_id}
+        return True
+
+    async def list_for_user(self, user_id: UUID) -> list[Role]:
+        roles = [self.db.roles[role_id] for owner, role_id in self.db.user_roles if owner == user_id]
+        return sorted(roles, key=lambda role: role.name)
+
+    async def assign(self, user_id: UUID, role_id: UUID) -> None:
+        self.db.user_roles.add((user_id, role_id))
+
+    async def revoke(self, user_id: UUID, role_id: UUID) -> bool:
+        if (user_id, role_id) not in self.db.user_roles:
+            return False
+        self.db.user_roles.remove((user_id, role_id))
+        return True
+
+    def _check_name(self, name: str) -> None:
+        if any(role.name == name for role in self.db.roles.values()):
+            raise AlreadyExistsError(name)
+
+
+class FakeLoginHistoryRepository(LoginHistoryRepository):
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def add(self, user_id: UUID, user_agent: str | None, ip: str | None) -> None:
+        self.db.history.append((user_id, LoginRecord(id=uuid4(), user_agent=user_agent, ip=ip, created_at=now())))
+
+    async def get_page(self, user_id: UUID, offset: int, limit: int) -> list[LoginRecord]:
+        records = [record for owner, record in reversed(self.db.history) if owner == user_id]
+        return records[offset:offset + limit]
+
+
+class FakeSessionStore(SessionStore):
+    def __init__(self) -> None:
+        self.sessions: dict[UUID, Session] = {}
+        self.ttls: dict[UUID, timedelta] = {}
+
+    async def create(self, session: Session, ttl: timedelta) -> None:
+        self.sessions[session.id] = session
+        self.ttls[session.id] = ttl
+
+    async def exists(self, session_id: UUID) -> bool:
+        return session_id in self.sessions
+
+    async def rotate(
+        self, user_id: UUID, session_id: UUID, old_jti: str, new_jti: str, ttl: timedelta,
+    ) -> RotateResult:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return RotateResult.MISSING
+        if session.refresh_jti != old_jti:
+            return RotateResult.REUSED
+        self.sessions[session_id] = session.model_copy(update={'refresh_jti': new_jti})
+        self.ttls[session_id] = ttl
+        return RotateResult.ROTATED
+
+    async def delete(self, user_id: UUID, session_id: UUID) -> None:
+        self.sessions.pop(session_id, None)
+
+    async def delete_others(self, user_id: UUID, keep_session_id: UUID) -> int:
+        others = [
+            sid for sid, session in self.sessions.items() if session.user_id == user_id and sid != keep_session_id
+        ]
+        for session_id in others:
+            del self.sessions[session_id]
+        return len(others)
+
+
+class FakeAccessCache(AccessCache):
+    """Кеш без версий: гонки проверяются на настоящей реализации в test_redis_storage."""
+
+    def __init__(self) -> None:
+        self.entries: dict[UUID, UserAccess] = {}
+
+    async def get(self, user_id: UUID) -> tuple[UserAccess | None, str]:
+        return self.entries.get(user_id), ''
+
+    async def set(self, user_id: UUID, access: UserAccess, version: str, ttl: timedelta) -> None:
+        self.entries[user_id] = access
+
+    async def invalidate_user(self, user_id: UUID) -> None:
+        self.entries.pop(user_id, None)
+
+    async def invalidate_all(self) -> None:
+        self.entries.clear()
