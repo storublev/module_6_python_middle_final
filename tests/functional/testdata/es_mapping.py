@@ -57,6 +57,10 @@ MOVIES_MAPPING = {
         'writers': NESTED_REF_MAPPING,
         'actors_names': {'type': 'text', 'analyzer': 'ru_en'},
         'writers_names': {'type': 'text', 'analyzer': 'ru_en'},
+        # Дата выхода и метка доступа для сервиса авторизации: public — всем,
+        # subscription — только с правом films.subscription.
+        'creation_date': {'type': 'date'},
+        'access_level': {'type': 'keyword'},
     },
 }
 
