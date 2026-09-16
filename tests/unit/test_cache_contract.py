@@ -14,6 +14,7 @@ from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 
 from models.film import Film
+from services.access import PUBLIC_ONLY
 from services.base import Pagination
 from services.cache import ModelCache
 from services.film import FilmService
@@ -110,7 +111,7 @@ async def test_service_returns_document_when_cache_unavailable():
     doc = {'id': str(uuid4()), 'title': 'The Star', 'imdb_rating': 8.5}
     service = FilmService(OneDocumentStorage(doc), ModelCache(BrokenCache(), expire=60))
 
-    film = await service.get_by_id(doc['id'])
+    film = await service.get_by_id(doc['id'], PUBLIC_ONLY)
 
     assert film is not None
     assert film.title == 'The Star'
@@ -120,6 +121,6 @@ async def test_service_search_works_when_cache_unavailable():
     doc = {'id': str(uuid4()), 'title': 'The Star', 'imdb_rating': 8.5}
     service = FilmService(OneDocumentStorage(doc), ModelCache(BrokenCache(), expire=60))
 
-    films = await service.search('star', Pagination(page_number=1, page_size=50))
+    films = await service.search('star', Pagination(page_number=1, page_size=50), PUBLIC_ONLY)
 
     assert [film.title for film in films] == ['The Star']

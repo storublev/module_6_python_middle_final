@@ -1,16 +1,13 @@
 import hashlib
 from dataclasses import dataclass
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar
 from uuid import UUID
 
 import orjson
 from pydantic import BaseModel
 
 from services.cache import ModelCache
-from storage.base import DocumentStorage, RelatedTo, SearchRequest, Sort, SortOrder, TextQuery
-
-ModelT = TypeVar('ModelT', bound=BaseModel)
-ItemT = TypeVar('ItemT', bound=BaseModel)
+from storage.base import DocumentStorage, FieldIn, RelatedTo, SearchRequest, Sort, SortOrder, TextQuery
 
 
 @dataclass(frozen=True)
@@ -33,7 +30,7 @@ def sort_by(field: str) -> tuple[Sort, ...]:
     return Sort(field.lstrip('-'), order), Sort('id')
 
 
-class BaseService(Generic[ModelT]):
+class BaseService[ModelT: BaseModel]:
     """Чтение документов одного индекса с кешированием.
 
     Наследник задаёт индекс и модель документа, а сам описывает только запросы.
@@ -63,12 +60,13 @@ class BaseService(Generic[ModelT]):
         await self.cache.set(cache_key, item, self.model)
         return item
 
-    async def _search(
+    async def _search[ItemT: BaseModel](
         self,
         model: type[ItemT],
         pagination: Pagination,
         text: TextQuery | None = None,
         related_to: RelatedTo | None = None,
+        filters: tuple[FieldIn, ...] = (),
         sort: tuple[Sort, ...] = (),
     ) -> list[ItemT]:
         """Ищет документы и отдаёт страницу результатов в виде моделей `model`.
@@ -82,6 +80,7 @@ class BaseService(Generic[ModelT]):
             size=pagination.page_size,
             text=text,
             related_to=related_to,
+            filters=filters,
             sort=sort,
         )
 
@@ -96,5 +95,8 @@ class BaseService(Generic[ModelT]):
         return items
 
     def _search_cache_key(self, request: SearchRequest) -> str:
-        digest = hashlib.md5(orjson.dumps(request, option=orjson.OPT_SORT_KEYS)).hexdigest()
+        # md5 здесь не защищает, а даёт короткий отпечаток параметров для ключа кеша.
+        digest = hashlib.md5(
+            orjson.dumps(request, option=orjson.OPT_SORT_KEYS), usedforsecurity=False,
+        ).hexdigest()
         return f'{self.index}:search:{digest}'

@@ -3,7 +3,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from api.dependencies import FilmServiceDep, PersonServiceDep
+from api.dependencies import AccessDep, FilmServiceDep, PersonServiceDep
+from api.v1.films import TOKEN_RESPONSES, VISIBILITY_NOTE
 from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
 from api.v1.schemas import FilmShortSchema, PersonSchema, error_response
 from models.film import FilmShort
@@ -62,15 +63,17 @@ async def person_details(
     '/{person_id}/film',
     response_model=list[FilmShortSchema],
     summary='Фильмы по персоне',
-    responses={HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
+    description=VISIBILITY_NOTE,
+    responses={**TOKEN_RESPONSES, HTTPStatus.NOT_FOUND: error_response(PERSON_NOT_FOUND)},
 )
 async def person_films(
     person_id: UUID,
     pagination: PaginationDep,
+    access: AccessDep,
     person_service: PersonServiceDep,
     film_service: FilmServiceDep,
     sort: FilmSortQuery = FilmSort.imdb_rating_desc,
 ) -> list[FilmShort]:
     if not await person_service.get_by_id(person_id):
         raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=PERSON_NOT_FOUND)
-    return await film_service.get_by_person(person_id, pagination, sort=sort)
+    return await film_service.get_by_person(person_id, pagination, access, sort=sort)
