@@ -7,6 +7,7 @@
 пользователя проверяют модульные тесты с подменённым транспортом.
 """
 
+import asyncio
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlparse
 
@@ -15,6 +16,10 @@ import pytest
 from tests.functional.conftest import Account
 
 PROVIDER = 'yandex'
+# Второй поставщик в базе тестов нужен, чтобы у пользователя было два способа
+# войти. Ключей приложения у него нет, но записи в social_accounts тесты
+# заводят сами, а открепление к настройкам поставщика не обращается.
+OTHER_PROVIDER = 'google'
 UNKNOWN_PROVIDER = 'facebook'
 
 
@@ -203,6 +208,42 @@ async def test_user_without_password_cannot_unlink_last_account(client, neo: Acc
     assert response.json()['code'] == 'last_login_method'
 
 
+async def test_last_of_two_accounts_cannot_be_unlinked(client, neo: Account, pg):
+    """Открепив одну из двух соцсетей, вторую — последнюю — открепить уже нельзя."""
+    await link_account(pg, neo.id, social_id='42')
+    await link_account(pg, neo.id, social_id='43', provider=OTHER_PROVIDER)
+    await pg.execute('UPDATE auth.users SET password_hash = NULL WHERE id = $1', neo.id)
+
+    first = await client.delete(f'/users/me/social-accounts/{PROVIDER}', headers=neo.headers)
+    second = await client.delete(f'/users/me/social-accounts/{OTHER_PROVIDER}', headers=neo.headers)
+
+    assert first.status_code == HTTPStatus.NO_CONTENT
+    assert second.status_code == HTTPStatus.CONFLICT
+    assert second.json()['code'] == 'last_login_method'
+
+
+async def test_parallel_unlink_keeps_one_login_method(client, neo: Account, pg):
+    """Два одновременных открепления не снимут обе последние соцсети: одно из них откажет.
+
+    Проверка и удаление идут одной операцией с заблокированной строкой
+    пользователя, поэтому запросы выполняются по очереди, а не оба на
+    состоянии «вторая соцсеть ещё на месте».
+    """
+    await link_account(pg, neo.id, social_id='42')
+    await link_account(pg, neo.id, social_id='43', provider=OTHER_PROVIDER)
+    await pg.execute('UPDATE auth.users SET password_hash = NULL WHERE id = $1', neo.id)
+
+    responses = await asyncio.gather(
+        client.delete(f'/users/me/social-accounts/{PROVIDER}', headers=neo.headers),
+        client.delete(f'/users/me/social-accounts/{OTHER_PROVIDER}', headers=neo.headers),
+    )
+
+    assert sorted(response.status_code for response in responses) == [
+        HTTPStatus.NO_CONTENT, HTTPStatus.CONFLICT,
+    ]
+    assert await pg.fetchval('SELECT count(*) FROM auth.social_accounts WHERE user_id = $1', neo.id) == 1
+
+
 async def test_user_without_password_sets_the_first_one(client, neo: Account, pg):
     """Пользователь из соцсети задаёт первый пароль без подтверждения текущим: его нет."""
     await pg.execute('UPDATE auth.users SET password_hash = NULL WHERE id = $1', neo.id)
@@ -244,10 +285,10 @@ async def test_account_becomes_available_after_setting_a_password(client, neo: A
     assert response.status_code == HTTPStatus.OK
 
 
-async def link_account(pg, user_id: str, social_id: str, display_name=None, email=None) -> None:
+async def link_account(pg, user_id: str, social_id: str, display_name=None, email=None, provider=PROVIDER) -> None:
     """Привязывает аккаунт соцсети в обход поставщика: его в окружении тестов нет."""
     await pg.execute(
         'INSERT INTO auth.social_accounts (id, user_id, provider, social_id, display_name, email) '
         'VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)',
-        user_id, PROVIDER, social_id, display_name, email,
+        user_id, provider, social_id, display_name, email,
     )

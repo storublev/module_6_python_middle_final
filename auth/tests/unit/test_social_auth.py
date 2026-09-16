@@ -354,6 +354,18 @@ async def test_last_login_method_cannot_be_unlinked(social, db):
         await social.unlink(user_id, 'yandex')
 
 
+async def test_last_of_two_accounts_cannot_be_unlinked(social, social_accounts, db):
+    """Из двух соцсетей открепить можно одну: вторая остаётся единственным способом войти."""
+    state = await start(social)
+    await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
+    user_id = next(iter(db.users))
+    await social_accounts.link(user_id, 'google', TRINITY)
+
+    assert await social.unlink(user_id, 'google')
+    with pytest.raises(LastLoginMethodError):
+        await social.unlink(user_id, 'yandex')
+
+
 async def test_unlink_is_allowed_after_password_is_set(social, profiles, tokens):
     """Задав пароль, пользователь из соцсети может открепить аккаунт: способ войти остаётся."""
     state = await start(social)

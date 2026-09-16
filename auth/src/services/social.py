@@ -45,6 +45,7 @@ from storage.base import (
     OAuthProvider,
     OAuthStateStore,
     SocialAccountRepository,
+    UnlinkResult,
     UserRepository,
 )
 
@@ -186,17 +187,17 @@ class SocialAuthService:
         соцсетью, пароля не знает и остался бы без доступа к аккаунту. Сначала
         пусть задаст пароль или привяжет другую соцсеть.
 
+        Считает оставшиеся способы войти и открепляет аккаунт само хранилище,
+        одной операцией: посчитай их здесь — и два одновременных запроса
+        сняли бы две последние соцсети разом.
+
         Raises:
             LastLoginMethodError: это единственный способ войти.
         """
-        user = await self.users.get(user_id)
-        if user is None:
-            return False
-        if not user.has_password:
-            linked = {account.provider for account in await self.accounts.list_for_user(user_id)}
-            if linked == {provider_name}:
-                raise LastLoginMethodError
-        return await self.accounts.unlink(user_id, provider_name)
+        result = await self.accounts.unlink(user_id, provider_name)
+        if result is UnlinkResult.LAST_LOGIN_METHOD:
+            raise LastLoginMethodError
+        return result is UnlinkResult.UNLINKED
 
     async def _take_state(self, state: str, provider_name: str) -> LinkTarget | None:
         """Проверяет и гасит state; возвращает, кому привязать аккаунт, или None для входа."""

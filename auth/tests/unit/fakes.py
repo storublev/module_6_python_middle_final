@@ -31,6 +31,7 @@ from storage.base import (
     SessionStore,
     SocialAccountRepository,
     StorageUnavailableError,
+    UnlinkResult,
     UserRepository,
 )
 from storage.partitions import partition_name
@@ -330,12 +331,17 @@ class FakeSocialAccountRepository(SocialAccountRepository):
         accounts = [a for a in self.db.social_accounts.values() if a.user_id == user_id]
         return sorted(accounts, key=lambda account: account.provider)
 
-    async def unlink(self, user_id: UUID, provider: str) -> bool:
+    async def unlink(self, user_id: UUID, provider: str) -> UnlinkResult:
+        """Проверка и удаление вместе: в памяти одновременных запросов нет, очередь обеспечивает PostgreSQL."""
+        user = self.db.users.get(user_id)
         account = self._find(provider=provider, user_id=user_id)
-        if account is None:
-            return False
+        if user is None or account is None:
+            return UnlinkResult.NOT_LINKED
+        linked = {a.provider for a in self.db.social_accounts.values() if a.user_id == user_id}
+        if not user.has_password and linked == {provider}:
+            return UnlinkResult.LAST_LOGIN_METHOD
         del self.db.social_accounts[account.id]
-        return True
+        return UnlinkResult.UNLINKED
 
     def _find(self, **fields: Any) -> SocialAccount | None:
         return next(

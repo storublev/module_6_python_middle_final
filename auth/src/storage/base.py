@@ -162,6 +162,16 @@ class LoginHistoryRepository(ABC):
         """
 
 
+class UnlinkResult(StrEnum):
+    """Чем закончилось открепление аккаунта соцсети."""
+
+    UNLINKED = 'unlinked'
+    # Такого аккаунта у пользователя не было.
+    NOT_LINKED = 'not_linked'
+    # Открепление оставило бы пользователя без единственного способа войти.
+    LAST_LOGIN_METHOD = 'last_login_method'
+
+
 class SocialAccountRepository(ABC):
     """Связи учётных записей с аккаунтами в соцсетях."""
 
@@ -193,8 +203,14 @@ class SocialAccountRepository(ABC):
         """Возвращает привязанные аккаунты пользователя по имени поставщика."""
 
     @abstractmethod
-    async def unlink(self, user_id: UUID, provider: str) -> bool:
-        """Открепляет аккаунт; False — такого аккаунта у пользователя не было."""
+    async def unlink(self, user_id: UUID, provider: str) -> UnlinkResult:
+        """Открепляет аккаунт, если у пользователя остаётся чем войти: пароль или другая соцсеть.
+
+        Проверка и удаление — одна операция, на время которой строка
+        пользователя заблокирована. Иначе два одновременных открепления
+        сняли бы две последние соцсети: каждое увидело бы, что другая ещё
+        на месте, и владелец остался бы без доступа к учётной записи.
+        """
 
 
 class ProviderRejectedError(Exception):

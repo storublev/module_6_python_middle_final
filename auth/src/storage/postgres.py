@@ -26,6 +26,7 @@ from storage.base import (
     RoleRepository,
     SocialAccountRepository,
     StorageUnavailableError,
+    UnlinkResult,
     UserRepository,
 )
 from storage.orm import (
@@ -328,15 +329,43 @@ class PostgresSocialAccountRepository(PostgresRepository, SocialAccountRepositor
             rows = await self.session.scalars(query)
         return [SocialAccount.model_validate(row) for row in rows]
 
-    async def unlink(self, user_id: UUID, provider: str) -> bool:
+    async def unlink(self, user_id: UUID, provider: str) -> UnlinkResult:
         async with self._errors():
-            result = await self.session.execute(
-                delete(SocialAccountRow).where(
-                    SocialAccountRow.user_id == user_id, SocialAccountRow.provider == provider,
-                ),
-            )
+            result = await self._unlink_locked(user_id, provider)
+            # Транзакция закрывается в любом случае: она держит блокировку
+            # строки пользователя, даже если ничего не удалила.
             await self.session.commit()
-        return result.rowcount > 0
+        return result
+
+    async def _unlink_locked(self, user_id: UUID, provider: str) -> UnlinkResult:
+        """Считает оставшиеся способы войти и удаляет аккаунт, заблокировав строку пользователя.
+
+        SELECT ... FOR UPDATE выстраивает одновременные открепления в очередь:
+        второй запрос дождётся первого и увидит уже обновлённый список
+        аккаунтов, а не тот, что был до него.
+        """
+        row = (
+            await self.session.execute(
+                select(UserRow.password_hash).where(UserRow.id == user_id).with_for_update(),
+            )
+        ).first()
+        if row is None:
+            return UnlinkResult.NOT_LINKED
+        linked = set(
+            await self.session.scalars(
+                select(SocialAccountRow.provider).where(SocialAccountRow.user_id == user_id),
+            ),
+        )
+        if provider not in linked:
+            return UnlinkResult.NOT_LINKED
+        if row.password_hash is None and linked == {provider}:
+            return UnlinkResult.LAST_LOGIN_METHOD
+        await self.session.execute(
+            delete(SocialAccountRow).where(
+                SocialAccountRow.user_id == user_id, SocialAccountRow.provider == provider,
+            ),
+        )
+        return UnlinkResult.UNLINKED
 
     @staticmethod
     def _values(user_id: UUID, provider: str, profile: SocialProfile) -> dict[str, Any]:
