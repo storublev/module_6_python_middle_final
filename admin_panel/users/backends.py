@@ -102,20 +102,28 @@ def _sync_user(profile: AuthProfile, tokens: Tokens) -> User | None:
 
     Вместе с данными сохраняется сессия сотрудника в сервисе авторизации: ею
     админка перепроверяет его доступ, пока он работает.
+
+    Признак «активен» принадлежит админке, а не сервису авторизации: им
+    закрывают доступ немедленно, не дожидаясь, пока в сервисе отберут право.
+    Поэтому у существующей записи он не трогается, а отключённого сотрудника
+    вход не пускает и не включает обратно; True ставится только новой записи.
     """
+    fields = {
+        'login': profile.login,
+        'is_staff': True,
+        'is_superuser': profile.is_superuser,
+        'auth_access_token': tokens.access,
+        'auth_refresh_token': tokens.refresh,
+        'auth_checked_at': timezone.now(),
+    }
     try:
         with transaction.atomic():
+            existing = User.objects.select_for_update().filter(pk=profile.id).first()
+            if existing is not None and not existing.is_active:
+                logger.info('Сотрудник %s отключён в админке, вход отклонён', existing.login)
+                return None
             user, created = User.objects.update_or_create(
-                id=profile.id,
-                defaults={
-                    'login': profile.login,
-                    'is_active': True,
-                    'is_staff': True,
-                    'is_superuser': profile.is_superuser,
-                    'auth_access_token': tokens.access,
-                    'auth_refresh_token': tokens.refresh,
-                    'auth_checked_at': timezone.now(),
-                },
+                id=profile.id, defaults=fields, create_defaults={**fields, 'is_active': True},
             )
     except IntegrityError:
         # Логин занят другой записью — почти наверняка аварийным локальным

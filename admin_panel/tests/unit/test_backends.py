@@ -171,6 +171,36 @@ def test_login_taken_by_another_record_is_rejected(client: FakeAuthClient, backe
     assert backend.authenticate(None, username='neo', password=PASSWORD) is None
 
 
+def test_deactivated_staff_cannot_log_in_again(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
+    """Отключённого в админке сотрудника вход не пускает, даже если право в сервисе у него осталось."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    assert backend.authenticate(None, username='neo', password=PASSWORD) is None
+
+
+def test_deactivated_staff_is_not_reactivated_by_login(backend: AuthServiceBackend) -> None:
+    """Вход не включает отключённого сотрудника обратно: признак «активен» ставит админка."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert not User.objects.get(pk=user.pk).is_active
+
+
+def test_rejected_deactivated_staff_keeps_no_session(
+    client: FakeAuthClient, backend: AuthServiceBackend,
+) -> None:
+    """Отказ отключённому сотруднику закрывает сессию, открытую его входом в сервисе авторизации."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert client.logged_out == [client.tokens.access]
+
+
 def test_deactivated_staff_is_not_restored_by_get_user(backend: AuthServiceBackend) -> None:
     """Отключённый в админке сотрудник не восстанавливается из сессии: доступ закрыт сразу."""
     user = backend.authenticate(None, username='neo', password=PASSWORD)
