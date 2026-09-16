@@ -1,63 +1,74 @@
-# Онлайн-кинотеатр: Async API и сервис авторизации
+# Онлайн-кинотеатр: Async API, сервис авторизации и админка
 
-Два сервиса онлайн-кинотеатра на FastAPI за общим nginx:
+Три сервиса онлайн-кинотеатра за общим nginx:
 
 * **Async API** — точка входа для клиентов каталога: отдаёт фильмы, жанры и
   персоны из Elasticsearch и кеширует ответы в Redis;
 * **сервис авторизации** ([auth/](auth/README.md)) — регистрация, вход по
   логину и паролю с парой JWT-токенов, выход (в том числе из остальных
   устройств), личный кабинет с историей входов, роли и проверка прав.
-  Архитектура — [auth/docs/architecture.md](auth/docs/architecture.md).
+  Архитектура — [auth/docs/architecture.md](auth/docs/architecture.md);
+* **админка каталога** ([admin_panel/](admin_panel/README.md)) — Django-админка,
+  через которую редакторы ведут фильмы, жанры и персоны. Сотрудники входят в
+  неё учётной записью кинотеатра: вход проверяет сервис авторизации, отдельного
+  пароля у админки нет.
 
 Роли нужны, чтобы ограничить доступ к категориям фильмов: фильмы, вышедшие
 менее трёх лет назад, ETL помечает `access_level=subscription`, а смотреть их
-может роль `subscribers` с правом `films.subscription`.
+может роль `subscribers` с правом `films.subscription`. Роль `staff` с правом
+`admin.access` пускает сотрудника в админку.
 
 ## Архитектура
 
 ```
                     ┌──► api (FastAPI) ───► redis (кеш)
-клиент ──► nginx :80┤  /api/     │
-                    │            └────────► elasticsearch ◄── etl ◄── postgres (фильмы)
-                    │
-                    └──► auth (FastAPI) ──► auth-redis (сессии, кеш прав)
-                       /auth/    │
-                                 └────────► auth-postgres (пользователи, роли, история входов)
+                    │  /api/     │
+                    │            └────────► elasticsearch ◄── etl ◄─┐
+клиент ──► nginx :80┤                                               │
+                    ├──► auth (FastAPI) ──► auth-redis (сессии, кеш прав)
+                    │  /auth/    │                                  │
+                    │            └────────► auth-postgres (пользователи, роли, история входов)
+                    │                 ▲                             │
+                    └──► django-admin ─┘ (вход сотрудника)          │
+                       /admin/  └──────────────────────────────► postgres (фильмы)
 ```
 
 Сервисы самостоятельны: у каждого свои хранилища, общий у них только nginx.
-API только читает индексы `movies`, `genres` и `persons`. Их заполняет ETL,
-который живёт в своём репозитории
+Async API только читает индексы `movies`, `genres` и `persons` — их заполняет
+ETL из базы фильмов, ту же базу правит админка, так что правка редактора
+доезжает до выдачи API через ETL и Elasticsearch. ETL живёт в своём репозитории
 [new_admin_panel_sprint_3](https://github.com/storublev/new_admin_panel_sprint_3)
 и в этот репозиторий не копируется. `docker-compose.yml` собирает ETL из соседнего
 каталога (переменная `ETL_PROJECT_PATH`), чтобы все сервисы поднимались одной командой.
 
 | Сервис | Назначение |
 |---|---|
-| `nginx` | Входная точка: `/api/` — в API, `/auth/` — в сервис авторизации, пулы keepalive-соединений |
+| `nginx` | Входная точка: `/api/` — в Async API, `/auth/` — в сервис авторизации, `/admin/` и `/static/` — в админку, пулы keepalive-соединений |
 | `api` | FastAPI + uvicorn (uvloop, httptools), несколько процессов-воркеров |
 | `redis` | Кеш ответов API, LRU-вытеснение, без персистентности |
 | `elasticsearch` | Хранилище для чтения и полнотекстового поиска |
-| `postgres` | Исходные данные о фильмах (дамп из репозитория ETL) |
+| `postgres` | Каталог фильмов: схема `content` из дампа ETL, схема `public` — таблицы админки |
 | `etl` | Перенос данных PostgreSQL → Elasticsearch с отслеживанием изменений и меткой доступа фильмов |
 | `auth` | Сервис авторизации: FastAPI + uvicorn, без состояния |
 | `auth-postgres` | Пользователи, роли, история входов — отдельно от данных о фильмах |
 | `auth-redis` | Сессии и кеш прав: без вытеснения ключей, с журналом AOF |
 | `auth-migrations` | Одноразовый контейнер с миграциями Alembic |
+| `django-admin` | Админка каталога: Django + gunicorn |
+| `django-admin-migrations` | Одноразовый контейнер: миграции админки и сборка статики в общий том |
 
 ## Запуск
 
-Нужны Docker и Docker Compose v2, а рядом с этим репозиторием — клон ETL на
-ветке с меткой доступа фильмов (`auth-sprint-1`, пока она не влита в `main`):
+Нужны Docker и Docker Compose v2, а рядом с этим репозиторием — клон ETL:
 
 ```bash
-git clone -b auth-sprint-1 git@github.com:storublev/new_admin_panel_sprint_3.git ../new_admin_panel_sprint_3
+git clone git@github.com:storublev/new_admin_panel_sprint_3.git ../new_admin_panel_sprint_3
 cp .env.example .env
 ```
 
-В `.env` задайте секреты сервиса авторизации — без них docker-compose не
-запустится: `AUTH_POSTGRES_PASSWORD` и `AUTH_JWT_SECRET_KEY` (не короче 32
-символов, например `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`).
+В `.env` задайте секреты — без них docker-compose не запустится:
+`AUTH_POSTGRES_PASSWORD`, `AUTH_JWT_SECRET_KEY` и `DJANGO_SECRET_KEY` (ключи —
+не короче 32 символов, например
+`python3 -c "import secrets; print(secrets.token_urlsafe(48))"`).
 При необходимости поправьте `ETL_PROJECT_PATH` и порты. Затем:
 
 ```bash
@@ -67,15 +78,32 @@ docker compose exec auth python cli.py createsuperuser --login admin
 
 После старта ETL загружает данные в Elasticsearch (при первом запуске — около
 минуты), дальше подхватывает изменения в PostgreSQL. Миграции сервиса
-авторизации применяет контейнер `auth-migrations` перед его запуском.
+авторизации применяет контейнер `auth-migrations`, миграции админки и сборку её
+статики — `django-admin-migrations`; оба отрабатывают до запуска своих сервисов.
 
 * Документация Async API: http://localhost/api/openapi
 * Документация сервиса авторизации: http://localhost/auth/api/openapi
+* Админка каталога: http://localhost/admin/
 * Спецификации: http://localhost/api/openapi.json, http://localhost/auth/api/openapi.json
 
 В документации для клиентов описаны пагинация, ошибки (404, 422, 503 с моделью
 `ErrorSchema`), назначение каждого эндпоинта и тега, поля ответов с примерами.
-Команды, тесты и настройки сервиса авторизации — в [auth/README.md](auth/README.md).
+Команды, тесты и настройки сервиса авторизации — в [auth/README.md](auth/README.md),
+админки — в [admin_panel/README.md](admin_panel/README.md).
+
+Учётных записей после запуска нет: их заводят в сервисе авторизации, а не в
+админке. Суперпользователь из команды выше (`createsuperuser`) входит в админку
+сразу. Обычного сотрудника надо зарегистрировать и выдать ему роль `staff` с
+правом `admin.access`:
+
+```bash
+# регистрация
+curl -s -X POST http://localhost/auth/api/v1/signup -H 'Content-Type: application/json' \
+    -d '{"login":"editor","password":"editor-password"}'
+```
+
+Команды назначения роли и отзыва доступа — в
+[admin_panel/README.md](admin_panel/README.md#как-завести-сотрудника).
 
 ### Локальный запуск без Docker
 
@@ -149,6 +177,9 @@ Elasticsearch строит запрос и как сервисы пережив�
 pip install -r tests/unit/requirements.txt
 pytest tests/unit
 ```
+
+Модульные тесты админки (бэкенд аутентификации, клиент сервиса авторизации,
+прерыватель) — в [admin_panel/README.md](admin_panel/README.md#тесты).
 
 ## Эндпоинты Async API
 
@@ -272,7 +303,8 @@ Redis на другой кеш не меняет поведения API при �
 
 ## Переменные окружения
 
-Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/README.md](auth/README.md#переменные-окружения).
+Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/README.md](auth/README.md#переменные-окружения),
+админки (с префиксом `DJANGO_`) — в [admin_panel/README.md](admin_panel/README.md#переменные-окружения).
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
@@ -290,14 +322,37 @@ Redis на другой кеш не меняет поведения API при �
 | `ELASTIC_BACKOFF_FACTOR` / `ELASTIC_BACKOFF_MAX_VALUE` | `0.1` / `1` | Первая и наибольшая пауза между повторами, с |
 | `REDIS_BACKOFF_RETRIES` | `1` | Повторы при обрыве соединения с Redis |
 | `REDIS_BACKOFF_BASE` / `REDIS_BACKOFF_CAP` | `0.01` / `0.1` | Первая и наибольшая пауза между повторами к Redis, с |
+| `ADMIN_WORKERS` | `2` | Количество процессов gunicorn у админки |
 
 ## Участники
 
 | Участник | Роль |
 |---|---|
-| [storublev](https://github.com/storublev) | Разработка всех сервисов: архитектура, Async API, ETL, сервис авторизации, тесты |
+| [storublev](https://github.com/storublev) | Разработка всех сервисов: архитектура, Async API, ETL, сервис авторизации, админка, тесты |
 
 ## Changelog
+
+### Спринт 7 — админка в общем стеке и единый вход сотрудников
+
+* Админка каталога переехала из репозитория модуля 1 в этот репозиторий
+  (`admin_panel/`) и поднимается вместе с остальными сервисами: nginx отдаёт ей
+  `/admin/` и раздаёт её статику из общего тома. Собственное API админки убрано —
+  каталог наружу отдаёт Async API.
+* База у админки общая с ETL и Async API, поэтому правка редактора доезжает до
+  выдачи API через ETL и Elasticsearch. Схему `content` создаёт дамп ETL,
+  а не Django: модели каталога объявлены `managed = False`, у них нет миграций,
+  и у схемы остаётся один владелец. Собственные таблицы админки — в `public`.
+* Сотрудники входят в админку учётной записью кинотеатра: бэкенд
+  аутентификации отдаёт логин и пароль сервису авторизации, читает профиль и
+  проверяет право `admin.access` по базе (`fresh=true`), после чего закрывает
+  сессию в сервисе — дальше работает сессия Django. Локальная запись сотрудника
+  заводится с идентификатором из сервиса авторизации и без пригодного пароля.
+  Право даёт роль `staff` (миграция `0005`).
+* Админка переживает недоступность сервиса авторизации: явные таймауты, повтор
+  только обрыва соединения (таймаут ответа не повторяется), прерыватель после
+  серии сбоев и аварийный вход локального суперпользователя.
+* База фильмов обновлена до `postgres:16-alpine` — как у базы сервиса
+  авторизации; Django 5.2 требует версию не ниже 14.
 
 ### Спринт 6 — исправления по ревью
 

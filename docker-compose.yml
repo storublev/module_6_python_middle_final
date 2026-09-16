@@ -18,9 +18,27 @@ x-auth-env: &auth-env
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
 
+# Настройки админки. База у неё общая с ETL и сервисом контента — это тот же
+# каталог фильмов; пароли сотрудников хранит сервис авторизации.
+x-admin-env: &admin-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?задайте DJANGO_SECRET_KEY в .env}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost,http://127.0.0.1}
+  DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+  DJANGO_POSTGRES_HOST: postgres
+  DJANGO_POSTGRES_PORT: 5432
+  DJANGO_POSTGRES_DB: ${POSTGRES_DB:-movies_database}
+  DJANGO_POSTGRES_USER: ${POSTGRES_USER:-app}
+  DJANGO_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
+  DJANGO_AUTH_API_URL: http://auth:8000
+  DJANGO_STATIC_ROOT: /opt/app/staticfiles
+
 services:
   postgres:
-    image: postgres:13
+    # Та же версия, что у базы сервиса авторизации: одна версия PostgreSQL на
+    # стек. Админке нужна не ниже 14 — столько требует Django 5.2.
+    image: postgres:16-alpine
     env_file: *env-file
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-movies_database}
@@ -172,17 +190,54 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Одноразовый контейнер админки: заводит свои таблицы (сотрудники, сессии,
+  # журнал действий) в схеме public базы фильмов и выкладывает статику в том,
+  # из которого её раздаёт nginx. Каталог (схема content) создаётся дампом ETL,
+  # и Django его не мигрирует.
+  django-admin-migrations:
+    build: ./admin_panel
+    image: movies-admin
+    environment: *admin-env
+    command: >
+      sh -c "python manage.py migrate --no-input &&
+             python manage.py collectstatic --no-input --clear"
+    volumes:
+      - admin_static:/opt/app/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  django-admin:
+    build: ./admin_panel
+    image: movies-admin
+    environment:
+      <<: *admin-env
+      WEB_CONCURRENCY: ${ADMIN_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      django-admin-migrations:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     env_file: *env-file
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # Статику админки отдаёт nginx, а не Django: так gunicorn занят только
+      # страницами, а браузер получает файлы с длинным сроком хранения.
+      - admin_static:/usr/share/nginx/html/static:ro
     ports:
       - "${NGINX_PORT:-80}:80"
     depends_on:
       - api
       - auth
+      - django-admin
     restart: unless-stopped
 
 volumes:
@@ -190,3 +245,4 @@ volumes:
   elasticsearch_data:
   auth_postgres_data:
   auth_redis_data:
+  admin_static:

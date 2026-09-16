@@ -21,6 +21,9 @@ MANAGE_ACCESS = 'access.manage'
 # Право смотреть фильмы по подписке: ETL помечает их access_level=subscription,
 # сервис контента проверяет это право перед выдачей такого фильма.
 FILMS_SUBSCRIPTION = 'films.subscription'
+# Право входить в админку каталога: её бэкенд аутентификации проверяет его
+# после того, как сервис принял логин и пароль сотрудника.
+ADMIN_ACCESS = 'admin.access'
 
 
 class Role(BaseModel):
