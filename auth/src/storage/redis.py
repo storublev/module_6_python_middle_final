@@ -14,7 +14,9 @@
   общая растёт при изменении и удалении ролей, личная — при назначении и
   отзыве роли у пользователя;
 * `auth:rate:<ключ>` — попытки входа и регистрации за скользящее окно:
-  сортированное множество, оценка — время попытки в миллисекундах.
+  сортированное множество, оценка — время попытки в миллисекундах;
+* `auth:oauth_state:<state>` — начатый вход через соцсеть: живёт минуты и
+  читается один раз.
 
 Redis сервиса авторизации — не кеш с вытеснением: без сессий пользователи
 окажутся разлогинены, поэтому он настроен без вытеснения и с журналом AOF.
@@ -32,7 +34,15 @@ from redis.exceptions import RedisError
 
 from models.role import UserAccess
 from models.session import Session
-from storage.base import AccessCache, RateLimit, RateLimiter, RotateResult, SessionStore, StorageUnavailableError
+from storage.base import (
+    AccessCache,
+    OAuthStateStore,
+    RateLimit,
+    RateLimiter,
+    RotateResult,
+    SessionStore,
+    StorageUnavailableError,
+)
 
 SESSION_KEY_PREFIX = 'auth:session:'
 SESSION_KEY = SESSION_KEY_PREFIX + '{session_id}'
@@ -41,6 +51,7 @@ ACCESS_KEY = 'auth:access:{user_id}'
 ACCESS_VERSION_KEY = 'auth:access_version'
 USER_ACCESS_VERSION_KEY = 'auth:access_version:{user_id}'
 RATE_KEY = 'auth:rate:{key}'
+OAUTH_STATE_KEY = 'auth:oauth_state:{state}'
 
 # Время во всех скриптах сессий передаётся строками в миллисекундах: так
 # оценки не теряют точность при переводе чисел Lua в аргументы команд.
@@ -291,3 +302,24 @@ class RedisRateLimiter(RateLimiter):
     async def reset(self, key: str) -> None:
         async with redis_errors():
             await self.redis.delete(RATE_KEY.format(key=key))
+
+
+class RedisOAuthStateStore(OAuthStateStore):
+    """Состояние начатых входов через соцсеть.
+
+    Ключ живёт недолго и читается один раз: GETDEL забирает значение и удаляет
+    его одной командой, поэтому повторно предъявленный state не сработает
+    даже при одновременных запросах.
+    """
+
+    def __init__(self, redis: Redis):
+        self.redis = redis
+
+    async def save(self, state: str, payload: str, ttl: timedelta) -> None:
+        async with redis_errors():
+            await self.redis.set(OAUTH_STATE_KEY.format(state=state), payload, ex=seconds(ttl))
+
+    async def pop(self, state: str) -> str | None:
+        async with redis_errors():
+            value = await self.redis.getdel(OAUTH_STATE_KEY.format(state=state))
+        return value.decode() if value is not None else None

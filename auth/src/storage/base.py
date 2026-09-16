@@ -11,13 +11,14 @@ SQLAlchemy, ни о Redis. Реализации выбираются в api/depe
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from models.role import Role, UserAccess
 from models.session import Session
+from models.social import SocialAccount, SocialProfile
 from models.user import LoginRecord, User
 
 
@@ -151,6 +152,102 @@ class LoginHistoryRepository(ABC):
     @abstractmethod
     async def get_page(self, user_id: UUID, offset: int, limit: int) -> list[LoginRecord]:
         """Возвращает страницу входов пользователя, от новых к старым."""
+
+    @abstractmethod
+    async def ensure_partitions(self, months: Sequence[date]) -> list[str]:
+        """Создаёт секции указанных месяцев, если их ещё нет; возвращает созданные.
+
+        История разбита на месячные секции, и секции будущих месяцев кто-то
+        должен завести заранее. Повторный вызов ничего не делает.
+        """
+
+
+class SocialAccountRepository(ABC):
+    """Связи учётных записей с аккаунтами в соцсетях."""
+
+    @abstractmethod
+    async def get_user(self, provider: str, social_id: str) -> User | None:
+        """Возвращает владельца аккаунта соцсети или None, если он ни к кому не привязан."""
+
+    @abstractmethod
+    async def create_user(self, login: str, provider: str, profile: SocialProfile) -> User:
+        """Заводит учётную запись без пароля и сразу привязывает к ней аккаунт соцсети.
+
+        Обе записи появляются в одной транзакции: учётная запись без связи
+        осталась бы недоступной — войти в неё нечем.
+
+        Raises:
+            AlreadyExistsError: логин занят или аккаунт соцсети уже привязан.
+        """
+
+    @abstractmethod
+    async def link(self, user_id: UUID, provider: str, profile: SocialProfile) -> SocialAccount:
+        """Привязывает аккаунт соцсети к существующей учётной записи.
+
+        Raises:
+            AlreadyExistsError: аккаунт уже привязан или у пользователя уже есть аккаунт этой соцсети.
+        """
+
+    @abstractmethod
+    async def list_for_user(self, user_id: UUID) -> list[SocialAccount]:
+        """Возвращает привязанные аккаунты пользователя по имени поставщика."""
+
+    @abstractmethod
+    async def unlink(self, user_id: UUID, provider: str) -> bool:
+        """Открепляет аккаунт; False — такого аккаунта у пользователя не было."""
+
+
+class ProviderRejectedError(Exception):
+    """Поставщик OAuth не принял запрос: код просрочен, уже использован или не наш."""
+
+
+class ProviderUnavailableError(Exception):
+    """Поставщик OAuth не ответил: сбой сети, таймаут или ошибка на его стороне."""
+
+
+class OAuthProvider(ABC):
+    """Соцсеть, через которую можно войти, — со стороны потребителя."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Короткое имя в адресах: yandex, google."""
+
+    @property
+    @abstractmethod
+    def title(self) -> str:
+        """Название для человека."""
+
+    @abstractmethod
+    async def authorization_url(self, state: str, redirect_uri: str) -> str:
+        """Адрес поставщика, куда отправляется пользователь."""
+
+    @abstractmethod
+    async def fetch_profile(self, code: str, redirect_uri: str) -> SocialProfile:
+        """Меняет код на токен и читает им данные пользователя.
+
+        Raises:
+            ProviderRejectedError: поставщик не принял код.
+            ProviderUnavailableError: поставщик не ответил.
+        """
+
+
+class OAuthStateStore(ABC):
+    """Состояние начатых входов через соцсеть (параметр state).
+
+    state связывает переход к поставщику с возвратом от него: без него чужой
+    ответ поставщика привязал бы к сессии жертвы чужой аккаунт (CSRF).
+    Поэтому state одноразовый — прочитанное значение сразу исчезает — и живёт
+    недолго: незавершённый вход не должен ждать вечно.
+    """
+
+    @abstractmethod
+    async def save(self, state: str, payload: str, ttl: timedelta) -> None:
+        """Запоминает начатый вход."""
+
+    @abstractmethod
+    async def pop(self, state: str) -> str | None:
+        """Читает и сразу удаляет состояние; None — его нет или оно уже использовано."""
 
 
 class RotateResult(StrEnum):

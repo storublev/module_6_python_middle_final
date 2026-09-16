@@ -12,6 +12,7 @@ from services.auth import AuthService, ClientInfo, RegistrationService, SignupSe
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
 from services.roles import RoleService
+from services.social import SocialAuthService
 from services.throttling import Limit, Throttle, ThrottlingPolicy
 from services.tokens import TokenService
 from tests.unit.fakes import (
@@ -19,9 +20,12 @@ from tests.unit.fakes import (
     FakeAccessCache,
     FakeAccessInvalidationQueue,
     FakeLoginHistoryRepository,
+    FakeOAuthStateStore,
+    FakeProvider,
     FakeRateLimiter,
     FakeRoleRepository,
     FakeSessionStore,
+    FakeSocialAccountRepository,
     FakeUserRepository,
 )
 
@@ -138,3 +142,31 @@ def role_service(
 @pytest.fixture
 def access(users: FakeUserRepository, cache: FakeAccessCache) -> AccessService:
     return AccessService(users, cache, cache_ttl=timedelta(minutes=10))
+
+
+@pytest.fixture
+def social_accounts(db: Database) -> FakeSocialAccountRepository:
+    return FakeSocialAccountRepository(db)
+
+
+@pytest.fixture
+def oauth_states() -> FakeOAuthStateStore:
+    return FakeOAuthStateStore()
+
+
+@pytest.fixture
+def provider() -> FakeProvider:
+    return FakeProvider()
+
+
+@pytest.fixture
+def social(
+    provider: FakeProvider,
+    oauth_states: FakeOAuthStateStore,
+    social_accounts: FakeSocialAccountRepository,
+    users: FakeUserRepository,
+    auth: AuthService,
+) -> SocialAuthService:
+    return SocialAuthService(
+        {provider.name: provider}, oauth_states, social_accounts, users, auth, state_ttl=timedelta(minutes=10),
+    )

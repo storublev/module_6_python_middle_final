@@ -104,13 +104,24 @@ class AuthService:
         """
         await self.throttle.login_attempt(login, client.ip)
         user = await self.users.get_by_login(login)
-        if user is None:
+        if user is None or not user.has_password:
+            # Пароля нет и у пользователя, заведённого соцсетью: сравниваем с
+            # заглушкой, чтобы по времени ответа нельзя было отличить такой
+            # аккаунт от несуществующего.
             await self.passwords.verify_dummy(password)
             raise InvalidCredentialsError
         if not await self.passwords.verify(password, user.password_hash):
             raise InvalidCredentialsError
         await self.throttle.login_succeeded(login)
+        return await self.open_session(user, client)
 
+    async def open_session(self, user: User, client: ClientInfo) -> TokenPair:
+        """Открывает сессию пользователю и записывает вход в историю.
+
+        Отдельно от login, потому что входом по паролю способы войти не
+        исчерпываются: вход через соцсеть подтверждает личность у поставщика,
+        а дальше сессия открывается точно так же.
+        """
         session_id = uuid4()
         tokens = self.tokens.issue(user.id, session_id)
         # Если пароль сменят, пока открывается сессия, она получит прежнюю

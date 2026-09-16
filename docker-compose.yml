@@ -17,6 +17,16 @@ x-auth-env: &auth-env
   AUTH_REDIS_PORT: 6379
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
+  # Вход через соцсети. Поставщик включается, только если заданы обе его
+  # переменные; без них его эндпоинты отвечают 404, а сервис работает как прежде.
+  AUTH_OAUTH_YANDEX_CLIENT_ID: ${AUTH_OAUTH_YANDEX_CLIENT_ID:-}
+  AUTH_OAUTH_YANDEX_CLIENT_SECRET: ${AUTH_OAUTH_YANDEX_CLIENT_SECRET:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_ID: ${AUTH_OAUTH_GOOGLE_CLIENT_ID:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_SECRET: ${AUTH_OAUTH_GOOGLE_CLIENT_SECRET:-}
+  # Адрес возврата собирается отсюда; он же прописывается у поставщика.
+  AUTH_OAUTH_REDIRECT_BASE_URL: ${AUTH_OAUTH_REDIRECT_BASE_URL:-http://localhost}
+  # Куда уходят спаны трассировки. Пустое значение выключает трассировку.
+  AUTH_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
 
 # Настройки админки. База у неё общая с ETL и сервисом контента — это тот же
 # каталог фильмов; пароли сотрудников хранит сервис авторизации.
@@ -117,6 +127,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       AUTH_API_URL: http://auth:8000
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       CACHE_EXPIRE_IN_SECONDS: ${CACHE_EXPIRE_IN_SECONDS:-300}
       WEB_CONCURRENCY: ${API_WORKERS:-2}
     expose:
@@ -131,6 +142,18 @@ services:
       # деградирует до публичных фильмов, а не упадёт.
       auth:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Собирает спаны всех сервисов и показывает по ним дерево запроса. Версия
+  # all-in-one держит трейсы в памяти: для разработки этого хватает, а
+  # отдельные agent, collector и хранилище не нужны.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Веб-интерфейс: http://localhost:16686
+      - "${JAEGER_UI_PORT:-16686}:16686"
     restart: unless-stopped
 
   # Сервис авторизации хранит персональные данные, поэтому его база отделена

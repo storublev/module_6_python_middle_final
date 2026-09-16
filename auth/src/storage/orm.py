@@ -13,6 +13,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    UniqueConstraint,
     false,
     func,
     text,
@@ -44,7 +45,9 @@ class UserRow(Timestamped, Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     login: Mapped[str] = mapped_column(String(64), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    # NULL — пароля нет: учётную запись завёл вход через соцсеть. Войти по
+    # паролю в неё нельзя, пока владелец его не задаст.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     # Растёт при смене пароля в той же транзакции. Сессия запоминает версию, с
     # которой открыта, и с устаревшей не действует — даже если удалить её из
     # Redis при смене пароля не удалось.
@@ -94,12 +97,53 @@ class AccessInvalidationRow(Timestamped, Base):
     user_id: Mapped[UUID | None]
 
 
-class LoginHistoryRow(Timestamped, Base):
-    __tablename__ = 'login_history'
-    # История читается постранично, от новых входов к старым, по одному пользователю.
-    __table_args__ = (Index(None, 'user_id', 'created_at'),)
+class SocialAccountRow(Timestamped, Base):
+    """Аккаунт в соцсети, привязанный к учётной записи.
+
+    Пара (provider, social_id) уникальна: один аккаунт соцсети принадлежит
+    одной учётной записи кинотеатра. Пара (user_id, provider) — тоже: два
+    аккаунта одной соцсети одному пользователю не нужны, а личный кабинет и
+    открепление работают по имени поставщика.
+    """
+
+    __tablename__ = 'social_accounts'
+    __table_args__ = (
+        UniqueConstraint('provider', 'social_id'),
+        UniqueConstraint('user_id', 'provider'),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    provider: Mapped[str] = mapped_column(String(32))
+    social_id: Mapped[str] = mapped_column(String(128))
+    # Только для показа в личном кабинете: опознаём пользователя по social_id.
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255))
+
+
+class LoginHistoryRow(Timestamped, Base):
+    """История входов, разбитая на месячные секции.
+
+    Зачем и почему именно по месяцу — в storage/partitions.py. Ключ
+    секционирования входит в первичный ключ: PostgreSQL иначе не даст создать
+    ни первичный ключ, ни уникальное ограничение на секционированной таблице.
+    """
+
+    __tablename__ = 'login_history'
+    # История читается постранично, от новых входов к старым, по одному
+    # пользователю. Индекс объявлен на родителе — PostgreSQL заводит такой же
+    # в каждой секции, в том числе в создаваемых позже.
+    __table_args__ = (
+        Index(None, 'user_id', 'created_at'),
+        {'postgresql_partition_by': 'RANGE (created_at)'},
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    # Ключ секционирования обязан входить в первичный ключ, поэтому created_at
+    # объявлен здесь, а не взят из Timestamped.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), primary_key=True,
+    )
     user_id: Mapped[UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
     user_agent: Mapped[str | None] = mapped_column(String(512))
     ip: Mapped[str | None] = mapped_column(String(45))

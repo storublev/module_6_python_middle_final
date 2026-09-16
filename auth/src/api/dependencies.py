@@ -21,24 +21,30 @@ from services.auth import AuthService, RegistrationService, SignupService
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
 from services.roles import RoleService
+from services.social import SocialAuthService
 from services.throttling import Limit, Throttle, ThrottlingPolicy
 from services.tokens import TokenService
 from storage.base import (
     AccessCache,
     AccessInvalidationQueue,
     LoginHistoryRepository,
+    OAuthProvider,
+    OAuthStateStore,
     RateLimiter,
     RoleRepository,
     SessionStore,
+    SocialAccountRepository,
     UserRepository,
 )
+from storage.oauth import PROVIDERS, AuthlibProvider, ProviderCredentials
 from storage.postgres import (
     PostgresAccessInvalidationQueue,
     PostgresLoginHistoryRepository,
     PostgresRoleRepository,
+    PostgresSocialAccountRepository,
     PostgresUserRepository,
 )
-from storage.redis import RedisAccessCache, RedisRateLimiter, RedisSessionStore
+from storage.redis import RedisAccessCache, RedisOAuthStateStore, RedisRateLimiter, RedisSessionStore
 
 
 @lru_cache
@@ -64,6 +70,28 @@ def get_throttling_policy() -> ThrottlingPolicy:
         login_per_account=Limit(settings.login_attempts_per_account, settings.login_attempts_per_account_period),
         signup_per_ip=Limit(settings.signup_attempts_per_ip, settings.signup_attempts_per_ip_period),
     )
+
+
+@lru_cache
+def get_providers() -> dict[str, OAuthProvider]:
+    """Поставщики, у которых заданы ключи приложения.
+
+    Поставщик без ключей не включается вовсе: лучше честный 404, чем попытка
+    уйти к нему с пустым client_id и невнятная ошибка на его стороне.
+    """
+    credentials = {
+        'yandex': (settings.oauth_yandex_client_id, settings.oauth_yandex_client_secret.get_secret_value()),
+        'google': (settings.oauth_google_client_id, settings.oauth_google_client_secret.get_secret_value()),
+    }
+    return {
+        name: AuthlibProvider(
+            PROVIDERS[name],
+            ProviderCredentials(client_id=client_id, client_secret=client_secret),
+            timeout=settings.oauth_request_timeout,
+        )
+        for name, (client_id, client_secret) in credentials.items()
+        if client_id and client_secret
+    }
 
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
@@ -101,6 +129,14 @@ def get_rate_limiter(redis: RedisClient) -> RateLimiter:
     return RedisRateLimiter(redis)
 
 
+def get_social_repository(session: DbSession) -> SocialAccountRepository:
+    return PostgresSocialAccountRepository(session)
+
+
+def get_oauth_state_store(redis: RedisClient) -> OAuthStateStore:
+    return RedisOAuthStateStore(redis)
+
+
 Users = Annotated[UserRepository, Depends(get_user_repository)]
 Roles = Annotated[RoleRepository, Depends(get_role_repository)]
 History = Annotated[LoginHistoryRepository, Depends(get_history_repository)]
@@ -108,6 +144,9 @@ Sessions = Annotated[SessionStore, Depends(get_session_store)]
 Cache = Annotated[AccessCache, Depends(get_access_cache)]
 Limiter = Annotated[RateLimiter, Depends(get_rate_limiter)]
 Invalidations = Annotated[AccessInvalidationQueue, Depends(get_invalidation_queue)]
+SocialAccounts = Annotated[SocialAccountRepository, Depends(get_social_repository)]
+OAuthStates = Annotated[OAuthStateStore, Depends(get_oauth_state_store)]
+Providers = Annotated[dict[str, OAuthProvider], Depends(get_providers)]
 
 
 def get_access_invalidator(queue: Invalidations, cache: Cache) -> AccessInvalidator:
@@ -154,3 +193,18 @@ AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 AccessServiceDep = Annotated[AccessService, Depends(get_access_service)]
+
+
+# Вход через соцсеть открывает такую же сессию, как вход по паролю, поэтому
+# сервис соцсетей собирается поверх готового AuthService.
+def get_social_auth_service(
+    providers: Providers,
+    states: OAuthStates,
+    accounts: SocialAccounts,
+    users: Users,
+    auth: AuthServiceDep,
+) -> SocialAuthService:
+    return SocialAuthService(providers, states, accounts, users, auth, state_ttl=settings.oauth_state_ttl)
+
+
+SocialAuthServiceDep = Annotated[SocialAuthService, Depends(get_social_auth_service)]

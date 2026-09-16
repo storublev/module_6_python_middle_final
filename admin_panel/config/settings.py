@@ -97,6 +97,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Первым: идентификатор запроса должен попасть в журнал любой записи,
+    # включая ошибки остальных middleware.
+    'users.request_id.RequestIdMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -180,11 +183,16 @@ CSRF_COOKIE_HTTPONLY = True
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'request_id': {'()': 'users.request_id.RequestIdFilter'},
+    },
     'formatters': {
-        'default': {'format': '%(asctime)s %(levelname)s %(name)s: %(message)s'},
+        # Идентификатор запроса в каждой записи: по нему собирается история
+        # запроса по всем сервисам сразу (см. users/request_id.py).
+        'default': {'format': '%(asctime)s %(levelname)s %(name)s: [%(request_id)s] %(message)s'},
     },
     'handlers': {
-        'console': {'class': 'logging.StreamHandler', 'formatter': 'default'},
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'default', 'filters': ['request_id']},
     },
     'root': {'handlers': ['console'], 'level': settings.log_level},
 }

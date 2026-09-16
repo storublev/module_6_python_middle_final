@@ -4,7 +4,17 @@ import httpx
 
 from tests.functional.settings import settings
 
-PUBLIC = {'/auth/api/v1/signup', '/auth/api/v1/login', '/auth/api/v1/token/refresh', '/auth/api/v1/access/check'}
+# Эндпоинты, которым access-токен не нужен вовсе или нужен необязательно:
+# у них нет ответа not_authenticated.
+PUBLIC = {
+    '/auth/api/v1/signup',
+    '/auth/api/v1/login',
+    '/auth/api/v1/token/refresh',
+    '/auth/api/v1/access/check',
+    '/auth/api/v1/oauth/providers',
+    '/auth/api/v1/oauth/{provider}/login',
+    '/auth/api/v1/oauth/{provider}/callback',
+}
 
 
 async def get_spec() -> dict:

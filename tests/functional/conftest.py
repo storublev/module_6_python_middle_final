@@ -24,6 +24,10 @@ from tests.functional.utils.helpers import Response
 
 API_PREFIX = '/api/v1'
 AUTH_PREFIX = '/auth/api/v1'
+# Сервисы требуют идентификатор запроса: в работе его ставит nginx, здесь —
+# тесты. Так они ходят теми же запросами, что и настоящие клиенты.
+REQUEST_ID_HEADER = 'X-Request-Id'
+REQUEST_ID = 'functional-tests'
 
 
 @pytest.fixture(scope='session')
@@ -42,7 +46,7 @@ async def redis_client() -> AsyncIterator[Redis]:
 
 @pytest.fixture(scope='session')
 async def http_session() -> AsyncIterator[aiohttp.ClientSession]:
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers={REQUEST_ID_HEADER: REQUEST_ID}) as session:
         yield session
 
 

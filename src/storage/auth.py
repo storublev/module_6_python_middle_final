@@ -20,6 +20,8 @@ from typing import Any, TypeVar
 import backoff
 import httpx
 
+from core.request_id import HEADER as REQUEST_ID_HEADER
+from core.request_id import get_request_id
 from storage.access import AccessGateway, AccessUnavailableError, TokenRejectedError
 from storage.resilience import BackoffPolicy, CircuitBreaker
 
@@ -60,7 +62,10 @@ class AuthAccessGateway(AccessGateway):
                 self._client.get,
                 url=CHECK_PATH,
                 params={'permission': permission, 'fresh': 'true'},
-                headers={'Authorization': f'Bearer {token}'},
+                # Идентификатор запроса передаётся дальше по цепочке: по нему
+                # запрос к каталогу и вызванная им проверка права собираются
+                # в одну историю — и в журналах, и в Jaeger.
+                headers={'Authorization': f'Bearer {token}', REQUEST_ID_HEADER: get_request_id()},
             )
         except httpx.HTTPError as exc:
             self._fail(str(exc))

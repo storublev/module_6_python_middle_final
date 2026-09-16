@@ -33,17 +33,24 @@ def normalize_login(login: str) -> str:
 
 
 class User(BaseModel):
-    """Учётная запись. Пароль хранится только в виде хеша."""
+    """Учётная запись. Пароль хранится только в виде хеша, а может и отсутствовать."""
 
     model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     login: str
-    password_hash: str
+    # None — пароля нет: учётную запись завёл вход через соцсеть. Такой
+    # пользователь входит только соцсетью, пока сам не задаст пароль.
+    password_hash: str | None
     # Растёт при смене пароля: сессии, открытые с прежней версией, не действуют.
     credentials_version: int
     is_superuser: bool
     created_at: datetime
+
+    @property
+    def has_password(self) -> bool:
+        """Может ли пользователь войти по логину и паролю."""
+        return self.password_hash is not None
 
 
 class LoginRecord(BaseModel):

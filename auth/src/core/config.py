@@ -85,6 +85,31 @@ class Settings(BaseSettings):
     signup_attempts_per_ip: int = Field(default=10, ge=1)
     signup_attempts_per_ip_period: Duration = timedelta(hours=1)
 
+    # Вход через соцсети. Поставщик включён, только если заданы обе его
+    # переменные: без ключей приложения ходить к нему не с чем, и тогда его
+    # эндпоинты отвечают 404. Ключи выдаёт сам поставщик при регистрации
+    # приложения — секретами они и остаются, значений по умолчанию нет.
+    oauth_yandex_client_id: str = ''
+    oauth_yandex_client_secret: SecretStr = SecretStr('')
+    oauth_google_client_id: str = ''
+    oauth_google_client_secret: SecretStr = SecretStr('')
+    # Адрес, на который поставщик возвращает пользователя. Он же прописывается
+    # в настройках приложения у поставщика и должен совпадать с ним посимвольно.
+    oauth_redirect_base_url: str = 'http://localhost'
+    # Сколько живёт начатый вход: пользователю хватит, чтобы войти у
+    # поставщика, а брошенный вход не будет ждать вечно.
+    oauth_state_ttl: Duration = timedelta(minutes=10)
+    # Ждать поставщика долго нельзя: пока он думает, ждёт и пользователь.
+    oauth_request_timeout: float = 5
+
+    # Распределённая трассировка. Пустой адрес выключает отправку спанов:
+    # сервис, запущенный локально без Jaeger, должен работать как обычно.
+    otlp_endpoint: str = ''
+    # Идентификатор запроса ставит nginx, поэтому его отсутствие значит, что
+    # запрос пришёл мимо шлюза. Без него запрос не найти ни в журналах, ни в
+    # Jaeger, поэтому по умолчанию такие запросы отклоняются.
+    require_request_id: bool = True
+
     @property
     def postgres_dsn(self) -> str:
         return (

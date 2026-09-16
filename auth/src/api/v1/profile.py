@@ -3,12 +3,26 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from api.dependencies import ProfileServiceDep
+from api.dependencies import ProfileServiceDep, SocialAuthServiceDep
 from api.errors import TOKEN_ERRORS, error_responses
 from api.security import PrincipalDep
-from api.v1.schemas import ChangeLoginSchema, ChangePasswordSchema, LoginRecordSchema, ProfileSchema, UserSchema
+from api.v1.schemas import (
+    ChangeLoginSchema,
+    ChangePasswordSchema,
+    LoginRecordSchema,
+    ProfileSchema,
+    SocialAccountSchema,
+    UserSchema,
+)
+from models.social import SocialAccount
 from models.user import LoginRecord, User
-from services.errors import LoginTakenError, WrongPasswordError
+from services.errors import (
+    LastLoginMethodError,
+    LoginTakenError,
+    PasswordAlreadySetError,
+    SocialAccountNotLinkedError,
+    WrongPasswordError,
+)
 from services.profile import Pagination
 
 router = APIRouter()
@@ -52,12 +66,37 @@ async def change_login(body: ChangeLoginSchema, principal: PrincipalDep, profile
     description='Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают '
                 'действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, '
                 'а войти заново придётся и на текущем устройстве.',
-    responses=error_responses(*TOKEN_ERRORS, WrongPasswordError),
+    responses=error_responses(*TOKEN_ERRORS, WrongPasswordError, PasswordAlreadySetError),
 )
 async def change_password(body: ChangePasswordSchema, principal: PrincipalDep, profiles: ProfileServiceDep) -> None:
     await profiles.change_password(
         principal, body.password, body.new_password,
     )
+
+
+@router.get(
+    '/me/social-accounts',
+    response_model=list[SocialAccountSchema],
+    summary='Связанные аккаунты соцсетей',
+    description='Аккаунты соцсетей, через которые можно войти в эту учётную запись.',
+    responses=error_responses(*TOKEN_ERRORS),
+)
+async def social_accounts(principal: PrincipalDep, social: SocialAuthServiceDep) -> list[SocialAccount]:
+    return await social.list_accounts(principal.user_id)
+
+
+@router.delete(
+    '/me/social-accounts/{provider}',
+    status_code=HTTPStatus.NO_CONTENT,
+    summary='Открепление аккаунта соцсети',
+    description='Отвязывает аккаунт: войти через эту соцсеть больше нельзя. Последний способ войти '
+                'открепить нельзя — сначала задайте пароль или привяжите другую соцсеть, иначе '
+                'доступ к учётной записи будет потерян.',
+    responses=error_responses(*TOKEN_ERRORS, SocialAccountNotLinkedError, LastLoginMethodError),
+)
+async def unlink_social_account(provider: str, principal: PrincipalDep, social: SocialAuthServiceDep) -> None:
+    if not await social.unlink(principal.user_id, provider):
+        raise SocialAccountNotLinkedError
 
 
 @router.get(

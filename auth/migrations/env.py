@@ -17,13 +17,28 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 VERSION_TABLE = 'alembic_version'
+# Секционированная таблица: её секции в моделях не описаны.
+PARTITIONED_TABLE = 'login_history'
 
 
 def include_name(name: str | None, type_: str, _: dict) -> bool:
-    """Автогенерация сравнивает только схему сервиса, без таблицы версий Alembic."""
+    """Что автогенерация сравнивает с моделями.
+
+    Из сравнения исключены таблица версий Alembic и секции истории входов:
+    секций в моделях нет и быть не может — они создаются миграцией и командой
+    `create-login-partitions` по мере надобности, — а увидев их, автогенерация
+    предложила бы их удалить.
+    """
     if type_ == 'schema':
         return name == SCHEMA
-    return not (type_ == 'table' and name == VERSION_TABLE)
+    if type_ != 'table':
+        return True
+    return name != VERSION_TABLE and not is_partition(name)
+
+
+def is_partition(name: str | None) -> bool:
+    """Секция истории входов: login_history_y2026m09 или login_history_default."""
+    return bool(name) and name.startswith(f'{PARTITIONED_TABLE}_')
 
 
 def run_migrations(connection: Connection) -> None:

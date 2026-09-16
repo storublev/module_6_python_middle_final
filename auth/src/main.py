@@ -19,9 +19,11 @@ from api.errors import (
     storage_unavailable_handler,
     validation_error_handler,
 )
-from api.v1 import access, auth, profile, roles
+from api.v1 import access, auth, oauth, profile, roles
 from core.config import settings
 from core.logger import LOGGING
+from core.middleware import RequestIdMiddleware
+from core.tracing import configure_tracing
 from db import postgres, redis
 from services.errors import ServiceError
 from storage.base import StorageUnavailableError
@@ -120,6 +122,7 @@ OPENAPI_TAGS = [
     {'name': 'profile', 'description': 'Личный кабинет: данные, смена логина и пароля, история входов.'},
     {'name': 'roles', 'description': 'Управление ролями. Нужно право `access.manage`.'},
     {'name': 'access', 'description': 'Назначение ролей пользователям и проверка прав.'},
+    {'name': 'oauth', 'description': 'Вход через соцсети: сторона потребителя OAuth 2.0.'},
 ]
 
 app = FastAPI(
@@ -132,6 +135,24 @@ app = FastAPI(
     openapi_url='/auth/api/openapi.json',
     lifespan=lifespan,
 )
+# Документация и её спецификация вызываются мимо nginx — в том числе проверкой
+# живости контейнера, — поэтому идентификатор запроса с них не спрашивается и
+# деревьев спанов они не порождают.
+DOCS_PATHS = frozenset({app.docs_url, app.openapi_url})
+
+configure_tracing(
+    app,
+    service_name=settings.project_name,
+    endpoint=settings.otlp_endpoint,
+    excluded_urls=','.join(DOCS_PATHS),
+)
+# Middleware добавляется после инструментирования: в ASGI обработчики
+# оборачивают друг друга, и добавленный последним отрабатывает первым — так
+# идентификатор попадает в спан, который создал инструментатор.
+app.add_middleware(
+    RequestIdMiddleware, required=settings.require_request_id, exempt_paths=DOCS_PATHS,
+)
+
 app.add_exception_handler(ServiceError, service_error_handler)
 app.add_exception_handler(StorageUnavailableError, storage_unavailable_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
@@ -141,6 +162,7 @@ app.include_router(profile.router, prefix=f'{API_PREFIX}/users', tags=['profile'
                    responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(roles.router, prefix=f'{API_PREFIX}/roles', tags=['roles'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(access.router, prefix=API_PREFIX, tags=['access'], responses=SERVICE_UNAVAILABLE_RESPONSE)
+app.include_router(oauth.router, prefix=API_PREFIX, tags=['oauth'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 
 
 if __name__ == '__main__':

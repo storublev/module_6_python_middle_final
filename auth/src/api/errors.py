@@ -23,6 +23,7 @@ from services.errors import (
     NotFoundError,
     PermissionDeniedError,
     ServiceError,
+    ServiceUnavailableError,
     TokenExpiredError,
     TokenInvalidError,
     TokenRevokedError,
@@ -37,6 +38,7 @@ STATUSES: dict[type[ServiceError], HTTPStatus] = {
     NotFoundError: HTTPStatus.NOT_FOUND,
     ConflictError: HTTPStatus.CONFLICT,
     TooManyRequestsError: HTTPStatus.TOO_MANY_REQUESTS,
+    ServiceUnavailableError: HTTPStatus.SERVICE_UNAVAILABLE,
 }
 RETRY_AFTER_HEADER = {
     'Retry-After': {

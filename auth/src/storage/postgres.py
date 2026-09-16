@@ -4,17 +4,19 @@
 Сессия SQLAlchemy одна на запрос, её создаёт и закрывает FastAPI.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.role import Role, UserAccess
+from models.social import SocialAccount, SocialProfile
 from models.user import LoginRecord, User
 from storage.base import (
     AccessInvalidation,
@@ -22,10 +24,20 @@ from storage.base import (
     AlreadyExistsError,
     LoginHistoryRepository,
     RoleRepository,
+    SocialAccountRepository,
     StorageUnavailableError,
     UserRepository,
 )
-from storage.orm import AccessInvalidationRow, LoginHistoryRow, RoleRow, UserRoleRow, UserRow
+from storage.orm import (
+    SCHEMA,
+    AccessInvalidationRow,
+    LoginHistoryRow,
+    RoleRow,
+    SocialAccountRow,
+    UserRoleRow,
+    UserRow,
+)
+from storage.partitions import TABLE, partition_bounds, partition_name
 
 # Сбои соединения: asyncpg поднимает OSError, если сервер не принимает
 # соединения, SQLAlchemy — OperationalError и InterfaceError, если оно оборвалось.
@@ -242,3 +254,96 @@ class PostgresLoginHistoryRepository(PostgresRepository, LoginHistoryRepository)
         async with self._errors():
             rows = await self.session.scalars(query)
         return [LoginRecord.model_validate(row) for row in rows]
+
+    async def ensure_partitions(self, months: Sequence[date]) -> list[str]:
+        """Создаёт недостающие месячные секции истории входов.
+
+        Имя секции нигде не приходит снаружи — оно собирается из месяца, —
+        поэтому подстановка в DDL безопасна: параметры в DDL PostgreSQL не
+        принимает.
+        """
+        created = []
+        async with self._errors():
+            for month in months:
+                name = partition_name(month)
+                if await self._partition_exists(name):
+                    continue
+                start, end = partition_bounds(month)
+                await self.session.execute(
+                    text(
+                        f'CREATE TABLE {SCHEMA}.{name} PARTITION OF {SCHEMA}.{TABLE} '
+                        f"FOR VALUES FROM ('{start}') TO ('{end}')",
+                    ),
+                )
+                created.append(name)
+            await self.session.commit()
+        return created
+
+    async def _partition_exists(self, name: str) -> bool:
+        found = await self.session.scalar(
+            text('SELECT to_regclass(:qualified)').bindparams(qualified=f'{SCHEMA}.{name}'),
+        )
+        return found is not None
+
+
+class PostgresSocialAccountRepository(PostgresRepository, SocialAccountRepository):
+    async def get_user(self, provider: str, social_id: str) -> User | None:
+        query = (
+            select(UserRow)
+            .join(SocialAccountRow, SocialAccountRow.user_id == UserRow.id)
+            .where(SocialAccountRow.provider == provider, SocialAccountRow.social_id == social_id)
+        )
+        async with self._errors():
+            row = await self.session.scalar(query)
+        return User.model_validate(row) if row else None
+
+    async def create_user(self, login: str, provider: str, profile: SocialProfile) -> User:
+        async with self._errors():
+            # Пароля нет: войти в такую учётную запись можно только соцсетью,
+            # пока владелец сам не задаст пароль в личном кабинете.
+            user_row = await self.session.scalar(
+                insert(UserRow).values(login=login, password_hash=None).returning(UserRow),
+            )
+            await self.session.execute(
+                insert(SocialAccountRow).values(**self._values(user_row.id, provider, profile)),
+            )
+            await self.session.commit()
+        return User.model_validate(user_row)
+
+    async def link(self, user_id: UUID, provider: str, profile: SocialProfile) -> SocialAccount:
+        async with self._errors():
+            row = await self.session.scalar(
+                insert(SocialAccountRow).values(**self._values(user_id, provider, profile)).returning(SocialAccountRow),
+            )
+            await self.session.commit()
+        return SocialAccount.model_validate(row)
+
+    async def list_for_user(self, user_id: UUID) -> list[SocialAccount]:
+        query = (
+            select(SocialAccountRow)
+            .where(SocialAccountRow.user_id == user_id)
+            .order_by(SocialAccountRow.provider)
+        )
+        async with self._errors():
+            rows = await self.session.scalars(query)
+        return [SocialAccount.model_validate(row) for row in rows]
+
+    async def unlink(self, user_id: UUID, provider: str) -> bool:
+        async with self._errors():
+            result = await self.session.execute(
+                delete(SocialAccountRow).where(
+                    SocialAccountRow.user_id == user_id, SocialAccountRow.provider == provider,
+                ),
+            )
+            await self.session.commit()
+        return result.rowcount > 0
+
+    @staticmethod
+    def _values(user_id: UUID, provider: str, profile: SocialProfile) -> dict[str, Any]:
+        return {
+            'user_id': user_id,
+            'provider': provider,
+            'social_id': profile.social_id,
+            'display_name': profile.display_name,
+            'email': profile.email,
+        }
