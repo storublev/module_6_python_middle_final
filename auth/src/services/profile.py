@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from models.role import Role
 from models.user import LoginRecord, User
 from services.auth import Principal
-from services.errors import LoginTakenError, TokenRevokedError, WrongPasswordError
+from services.errors import (
+    LoginTakenError,
+    PasswordAlreadySetError,
+    TokenRevokedError,
+    WrongPasswordError,
+)
 from services.passwords import PasswordHasher
 from storage.base import (
     AlreadyExistsError,
@@ -70,7 +75,7 @@ class ProfileService:
         except AlreadyExistsError as exc:
             raise LoginTakenError from exc
 
-    async def change_password(self, principal: Principal, password: str, new_password: str) -> None:
+    async def change_password(self, principal: Principal, password: str | None, new_password: str) -> None:
         """Меняет пароль и закрывает остальные сессии: если пароль узнал кто-то ещё, он потеряет доступ.
 
         Остальные сессии перестают действовать в момент смены пароля: вместе с
@@ -81,10 +86,15 @@ class ProfileService:
         действуют, а войти заново (уже с новым паролем) придётся и на текущем
         устройстве. Поэтому такой сбой не делает смену пароля неудачной.
 
+        У пользователя, заведённого входом через соцсеть, пароля нет и
+        подтверждать смену нечем: он задаёт первый пароль, не передавая
+        текущий. Личность в этом случае подтверждает сама сессия.
+
         Raises:
             WrongPasswordError: текущий пароль неверный.
+            PasswordAlreadySetError: пароль уже есть, но текущий не передан.
         """
-        user = await self._check_password(principal, password)
+        user = await self._authorize_password_change(principal, password)
         version = await self.users.update_password(user.id, await self.passwords.hash(new_password))
         try:
             await self.sessions.set_credentials_version(principal.session_id, version)
@@ -104,6 +114,18 @@ class ProfileService:
 
     async def _check_password(self, principal: Principal, password: str) -> User:
         user = await self._get_user(principal)
+        # Пароля нет — подтверждать им нечего, и проверка не пройдена.
+        if not user.has_password or not await self.passwords.verify(password, user.password_hash):
+            raise WrongPasswordError
+        return user
+
+    async def _authorize_password_change(self, principal: Principal, password: str | None) -> User:
+        user = await self._get_user(principal)
+        if not user.has_password:
+            # Первый пароль пользователя из соцсети: подтверждать нечем.
+            return user
+        if password is None:
+            raise PasswordAlreadySetError
         if not await self.passwords.verify(password, user.password_hash):
             raise WrongPasswordError
         return user

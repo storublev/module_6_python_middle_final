@@ -96,9 +96,15 @@ class ChangeLoginSchema(BaseModel):
 
 
 class ChangePasswordSchema(BaseModel):
-    """Смена пароля."""
+    """Смена пароля.
 
-    password: CurrentPassword
+    Текущий пароль не передаётся в одном случае: у пользователя, заведённого
+    входом через соцсеть, пароля ещё нет, и он задаёт первый.
+    """
+
+    password: CurrentPassword | None = Field(
+        default=None, description='Текущий пароль; не нужен, только если пароля ещё нет',
+    )
     new_password: PasswordField
 
 
@@ -142,3 +148,28 @@ class AccessCheckSchema(BaseModel):
     user_id: UUID | None = Field(description='Пользователь из токена; null — анонимный запрос')
     permission: str = Field(description='Проверенное право', examples=['films.subscription'])
     allowed: bool = Field(description='Есть ли у пользователя это право')
+
+
+class ProviderSchema(BaseModel):
+    """Соцсеть, через которую можно войти."""
+
+    name: str = Field(description='Имя поставщика в адресах', examples=['yandex'])
+    title: str = Field(description='Название для человека', examples=['Яндекс ID'])
+
+
+class SocialAccountSchema(Schema):
+    """Аккаунт в соцсети, привязанный к учётной записи."""
+
+    provider: str = Field(description='Имя поставщика', examples=['yandex'])
+    social_id: str = Field(description='Идентификатор аккаунта у поставщика', examples=['1234567890'])
+    display_name: str | None = Field(description='Имя владельца в соцсети', examples=['Нео'])
+    email: str | None = Field(description='Почта в соцсети', examples=['neo@example.com'])
+    created_at: datetime = Field(description='Когда аккаунт привязан')
+
+
+class SocialLoginSchema(Schema):
+    """Итог возврата от поставщика: вход или привязка аккаунта."""
+
+    tokens: TokenPairSchema | None = Field(description='Пара токенов; null — аккаунт привязан к текущему пользователю')
+    account: SocialAccountSchema | None = Field(description='Привязанный аккаунт; null — это был вход')
+    created: bool = Field(description='Учётная запись заведена этим входом')

@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from models.role import Role, UserAccess
 from models.session import Session
+from models.social import SocialAccount, SocialProfile
 from models.user import LoginRecord, User
 from storage.base import (
     AccessCache,
@@ -19,11 +20,16 @@ from storage.base import (
     AccessInvalidationQueue,
     AlreadyExistsError,
     LoginHistoryRepository,
+    OAuthProvider,
+    OAuthStateStore,
+    ProviderRejectedError,
+    ProviderUnavailableError,
     RateLimit,
     RateLimiter,
     RoleRepository,
     RotateResult,
     SessionStore,
+    SocialAccountRepository,
     StorageUnavailableError,
     UserRepository,
 )
@@ -41,6 +47,7 @@ class Database:
         self.roles: dict[UUID, Role] = {}
         self.user_roles: set[tuple[UUID, UUID]] = set()
         self.history: list[tuple[UUID, LoginRecord]] = []
+        self.social_accounts: dict[UUID, SocialAccount] = {}
         # Задания на сброс кеша прав: пишутся вместе с изменением ролей.
         self.invalidations: list[AccessInvalidation] = []
         self._invalidation_ids = count(1)
@@ -275,3 +282,105 @@ class FakeRateLimiter(RateLimiter):
 
     async def reset(self, key: str) -> None:
         self.attempts.pop(key, None)
+
+
+class FakeSocialAccountRepository(SocialAccountRepository):
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def get_user(self, provider: str, social_id: str) -> User | None:
+        account = self._find(provider=provider, social_id=social_id)
+        return self.db.users.get(account.user_id) if account else None
+
+    async def create_user(self, login: str, provider: str, profile: SocialProfile) -> User:
+        if any(user.login == login for user in self.db.users.values()):
+            raise AlreadyExistsError(login)
+        user = User(id=uuid4(), login=login, password_hash=None, credentials_version=0,
+                    is_superuser=False, created_at=now())
+        self.db.users[user.id] = user
+        await self.link(user.id, provider, profile)
+        return user
+
+    async def link(self, user_id: UUID, provider: str, profile: SocialProfile) -> SocialAccount:
+        if self._find(provider=provider, social_id=profile.social_id) or self._find(
+            provider=provider, user_id=user_id,
+        ):
+            raise AlreadyExistsError(f'{provider}:{profile.social_id}')
+        account = SocialAccount(
+            id=uuid4(),
+            user_id=user_id,
+            provider=provider,
+            social_id=profile.social_id,
+            display_name=profile.display_name,
+            email=profile.email,
+            created_at=now(),
+        )
+        self.db.social_accounts[account.id] = account
+        return account
+
+    async def list_for_user(self, user_id: UUID) -> list[SocialAccount]:
+        accounts = [a for a in self.db.social_accounts.values() if a.user_id == user_id]
+        return sorted(accounts, key=lambda account: account.provider)
+
+    async def unlink(self, user_id: UUID, provider: str) -> bool:
+        account = self._find(provider=provider, user_id=user_id)
+        if account is None:
+            return False
+        del self.db.social_accounts[account.id]
+        return True
+
+    def _find(self, **fields: Any) -> SocialAccount | None:
+        return next(
+            (a for a in self.db.social_accounts.values()
+             if all(getattr(a, key) == value for key, value in fields.items())),
+            None,
+        )
+
+
+class FakeOAuthStateStore(OAuthStateStore):
+    """Состояния в памяти. Срок жизни не моделируется: истечение проверяется удалением ключа."""
+
+    def __init__(self) -> None:
+        self.states: dict[str, str] = {}
+
+    async def save(self, state: str, payload: str, ttl: timedelta) -> None:
+        self.states[state] = payload
+
+    async def pop(self, state: str) -> str | None:
+        return self.states.pop(state, None)
+
+
+class FakeProvider(OAuthProvider):
+    """Поставщик, отвечающий заданным профилем или ошибкой."""
+
+    def __init__(
+        self,
+        name: str = 'yandex',
+        profile: SocialProfile | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._name = name
+        self.profile = profile or SocialProfile(social_id='1', display_name='Neo', email='neo@example.com')
+        self.error = error
+        self.codes: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def title(self) -> str:
+        return self._name.title()
+
+    async def authorization_url(self, state: str, redirect_uri: str) -> str:
+        return f'https://{self._name}.example.com/authorize?state={state}&redirect_uri={redirect_uri}'
+
+    async def fetch_profile(self, code: str, redirect_uri: str) -> SocialProfile:
+        self.codes.append(code)
+        if self.error:
+            raise self.error
+        return self.profile
+
+
+REJECTED = ProviderRejectedError('code is invalid')
+UNAVAILABLE = ProviderUnavailableError('provider is down')

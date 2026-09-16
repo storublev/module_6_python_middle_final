@@ -27,6 +27,12 @@ x-auth-env: &auth-env
   AUTH_MAX_SESSIONS_PER_USER: 5
   # Фоновый повтор сброса кеша прав — раз в секунду, чтобы тест не ждал долго.
   AUTH_ACCESS_INVALIDATION_INTERVAL: 1
+  # Ключи-заглушки: настоящего поставщика в тестах нет, но с ними включаются
+  # его эндпоинты — проверяется всё, что видно снаружи до ухода к поставщику.
+  # Обмен кода на данные пользователя проверяют модульные тесты.
+  AUTH_OAUTH_YANDEX_CLIENT_ID: functional-tests-client-id
+  AUTH_OAUTH_YANDEX_CLIENT_SECRET: functional-tests-client-secret
+  AUTH_OAUTH_REDIRECT_BASE_URL: http://auth:8000
 
 services:
   postgres:

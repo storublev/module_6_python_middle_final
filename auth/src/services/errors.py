@@ -80,6 +80,16 @@ class RoleNotAssignedError(NotFoundError):
     message = 'User does not have this role'
 
 
+class ProviderNotFoundError(NotFoundError):
+    code = 'provider_not_found'
+    message = 'Unknown social provider or it is not configured'
+
+
+class SocialAccountNotLinkedError(NotFoundError):
+    code = 'social_account_not_linked'
+    message = 'No account of this social provider is linked'
+
+
 class ConflictError(ServiceError):
     """Запрос противоречит текущему состоянию данных."""
 
@@ -92,6 +102,46 @@ class LoginTakenError(ConflictError):
 class RoleNameTakenError(ConflictError):
     code = 'role_name_taken'
     message = 'Role with this name already exists'
+
+
+class SocialAccountTakenError(ConflictError):
+    code = 'social_account_taken'
+    message = 'This social account is already linked to another user'
+
+
+class LastLoginMethodError(ConflictError):
+    # Открепив последний способ войти, пользователь потерял бы доступ к аккаунту.
+    code = 'last_login_method'
+    message = 'Set a password or link another social account before unlinking this one'
+
+
+class PasswordAlreadySetError(ConflictError):
+    code = 'password_already_set'
+    message = 'Current password is required to change an existing password'
+
+
+class OAuthStateInvalidError(AuthenticationError):
+    # Возврат от поставщика не соответствует начатому входу: просрочен, уже
+    # использован или пришёл не от нас.
+    code = 'oauth_state_invalid'
+    message = 'Login through the social provider has expired, start again'
+
+
+class OAuthRejectedError(AuthenticationError):
+    code = 'oauth_rejected'
+    message = 'Social provider did not confirm the login, start again'
+
+
+class ServiceUnavailableError(ServiceError):
+    """Внешняя система временно недоступна: запрос стоит повторить позже."""
+
+    code = 'service_unavailable'
+    message = 'Service temporarily unavailable, retry later'
+
+
+class OAuthProviderUnavailableError(ServiceUnavailableError):
+    code = 'oauth_provider_unavailable'
+    message = 'Social provider is unavailable, try again later'
 
 
 class TooManyRequestsError(ServiceError):

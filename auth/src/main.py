@@ -19,7 +19,7 @@ from api.errors import (
     storage_unavailable_handler,
     validation_error_handler,
 )
-from api.v1 import access, auth, profile, roles
+from api.v1 import access, auth, oauth, profile, roles
 from core.config import settings
 from core.logger import LOGGING
 from db import postgres, redis
@@ -120,6 +120,7 @@ OPENAPI_TAGS = [
     {'name': 'profile', 'description': 'Личный кабинет: данные, смена логина и пароля, история входов.'},
     {'name': 'roles', 'description': 'Управление ролями. Нужно право `access.manage`.'},
     {'name': 'access', 'description': 'Назначение ролей пользователям и проверка прав.'},
+    {'name': 'oauth', 'description': 'Вход через соцсети: сторона потребителя OAuth 2.0.'},
 ]
 
 app = FastAPI(
@@ -141,6 +142,7 @@ app.include_router(profile.router, prefix=f'{API_PREFIX}/users', tags=['profile'
                    responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(roles.router, prefix=f'{API_PREFIX}/roles', tags=['roles'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(access.router, prefix=API_PREFIX, tags=['access'], responses=SERVICE_UNAVAILABLE_RESPONSE)
+app.include_router(oauth.router, prefix=API_PREFIX, tags=['oauth'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 
 
 if __name__ == '__main__':

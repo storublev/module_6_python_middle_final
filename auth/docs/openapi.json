@@ -764,6 +764,25 @@
               }
             }
           },
+          "409": {
+            "description": "`password_already_set`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "password_already_set": {
+                    "summary": "Current password is required to change an existing password",
+                    "value": {
+                      "code": "password_already_set",
+                      "detail": "Current password is required to change an existing password"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -780,6 +799,224 @@
             "accessToken": []
           }
         ]
+      }
+    },
+    "/auth/api/v1/users/me/social-accounts": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Связанные аккаунты соцсетей",
+        "description": "Аккаунты соцсетей, через которые можно войти в эту учётную запись.",
+        "operationId": "social_accounts_auth_api_v1_users_me_social_accounts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SocialAccountSchema"
+                  },
+                  "type": "array",
+                  "title": "Response Social Accounts Auth Api V1 Users Me Social Accounts Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/social-accounts/{provider}": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Открепление аккаунта соцсети",
+        "description": "Отвязывает аккаунт: войти через эту соцсеть больше нельзя. Последний способ войти открепить нельзя — сначала задайте пароль или привяжите другую соцсеть, иначе доступ к учётной записи будет потерян.",
+        "operationId": "unlink_social_account_auth_api_v1_users_me_social_accounts__provider__delete",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`social_account_not_linked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "social_account_not_linked": {
+                    "summary": "No account of this social provider is linked",
+                    "value": {
+                      "code": "social_account_not_linked",
+                      "detail": "No account of this social provider is linked"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`last_login_method`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "last_login_method": {
+                    "summary": "Set a password or link another social account before unlinking this one",
+                    "value": {
+                      "code": "last_login_method",
+                      "detail": "Set a password or link another social account before unlinking this one"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/auth/api/v1/users/me/login-history": {
@@ -2148,6 +2385,326 @@
           }
         }
       }
+    },
+    "/auth/api/v1/oauth/providers": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Доступные соцсети",
+        "description": "Поставщики, через которых можно войти. Список зависит от настроек: поставщик без ключей приложения в него не попадает.",
+        "operationId": "providers_auth_api_v1_oauth_providers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderSchema"
+                  },
+                  "type": "array",
+                  "title": "Response Providers Auth Api V1 Oauth Providers Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/oauth/{provider}/login": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Вход через соцсеть",
+        "description": "Перенаправляет к поставщику. После согласия пользователя тот вернёт его на callback, и сервис выдаст пару токенов. С access-токеном в заголовке вместо входа выполняется привязка аккаунта соцсети к текущему пользователю.",
+        "operationId": "oauth_login_auth_api_v1_oauth__provider__login_get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "307": {
+            "description": "Переход на страницу входа поставщика",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`provider_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "provider_not_found": {
+                    "summary": "Unknown social provider or it is not configured",
+                    "value": {
+                      "code": "provider_not_found",
+                      "detail": "Unknown social provider or it is not configured"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/oauth/{provider}/callback": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Возврат от соцсети",
+        "description": "Меняет код поставщика на пару токенов. Если вход начинали с access-токеном, аккаунт привязывается к текущему пользователю, и токены не выдаются. Первый вход через соцсеть заводит учётную запись без пароля: задать его можно в личном кабинете.",
+        "operationId": "oauth_callback_auth_api_v1_oauth__provider__callback_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Одноразовый код от поставщика",
+              "default": "",
+              "title": "Code"
+            },
+            "description": "Одноразовый код от поставщика"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Значение, с которым начинали вход",
+              "default": "",
+              "title": "State"
+            },
+            "description": "Значение, с которым начинали вход"
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Причина отказа, если поставщик его вернул",
+              "title": "Error"
+            },
+            "description": "Причина отказа, если поставщик его вернул"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialLoginSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`oauth_provider_unavailable`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "oauth_provider_unavailable": {
+                    "summary": "Social provider is unavailable, try again later",
+                    "value": {
+                      "code": "oauth_provider_unavailable",
+                      "detail": "Social provider is unavailable, try again later"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`oauth_state_invalid`, `oauth_rejected`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "oauth_state_invalid": {
+                    "summary": "Login through the social provider has expired, start again",
+                    "value": {
+                      "code": "oauth_state_invalid",
+                      "detail": "Login through the social provider has expired, start again"
+                    }
+                  },
+                  "oauth_rejected": {
+                    "summary": "Social provider did not confirm the login, start again",
+                    "value": {
+                      "code": "oauth_rejected",
+                      "detail": "Social provider did not confirm the login, start again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`social_account_taken`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "social_account_taken": {
+                    "summary": "This social account is already linked to another user",
+                    "value": {
+                      "code": "social_account_taken",
+                      "detail": "This social account is already linked to another user"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`provider_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "provider_not_found": {
+                    "summary": "Unknown social provider or it is not configured",
+                    "value": {
+                      "code": "provider_not_found",
+                      "detail": "Unknown social provider or it is not configured"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2225,14 +2782,22 @@
       "ChangePasswordSchema": {
         "properties": {
           "password": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "description": "Текущий пароль",
+                "examples": [
+                  "followtherabbit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Password",
-            "description": "Текущий пароль",
-            "examples": [
-              "followtherabbit"
-            ]
+            "description": "Текущий пароль; не нужен, только если пароля ещё нет"
           },
           "new_password": {
             "type": "string",
@@ -2247,11 +2812,10 @@
         },
         "type": "object",
         "required": [
-          "password",
           "new_password"
         ],
         "title": "ChangePasswordSchema",
-        "description": "Смена пароля."
+        "description": "Смена пароля.\n\nТекущий пароль не передаётся в одном случае: у пользователя, заведённого\nвходом через соцсеть, пароля ещё нет, и он задаёт первый."
       },
       "ErrorSchema": {
         "properties": {
@@ -2418,6 +2982,33 @@
         ],
         "title": "ProfileSchema",
         "description": "Данные пользователя в личном кабинете."
+      },
+      "ProviderSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Имя поставщика в адресах",
+            "examples": [
+              "yandex"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Название для человека",
+            "examples": [
+              "Яндекс ID"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "title"
+        ],
+        "title": "ProviderSchema",
+        "description": "Соцсеть, через которую можно войти."
       },
       "RefreshSchema": {
         "properties": {
@@ -2669,6 +3260,111 @@
         "title": "SignupSchema",
         "description": "Регистрация."
       },
+      "SocialAccountSchema": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Имя поставщика",
+            "examples": [
+              "yandex"
+            ]
+          },
+          "social_id": {
+            "type": "string",
+            "title": "Social Id",
+            "description": "Идентификатор аккаунта у поставщика",
+            "examples": [
+              "1234567890"
+            ]
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name",
+            "description": "Имя владельца в соцсети",
+            "examples": [
+              "Нео"
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта в соцсети",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Когда аккаунт привязан"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "social_id",
+          "display_name",
+          "email",
+          "created_at"
+        ],
+        "title": "SocialAccountSchema",
+        "description": "Аккаунт в соцсети, привязанный к учётной записи."
+      },
+      "SocialLoginSchema": {
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenPairSchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Пара токенов; null — аккаунт привязан к текущему пользователю"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SocialAccountSchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Привязанный аккаунт; null — это был вход"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created",
+            "description": "Учётная запись заведена этим входом"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tokens",
+          "account",
+          "created"
+        ],
+        "title": "SocialLoginSchema",
+        "description": "Итог возврата от поставщика: вход или привязка аккаунта."
+      },
       "TokenPairSchema": {
         "properties": {
           "access_token": {
@@ -2802,6 +3498,10 @@
     {
       "name": "access",
       "description": "Назначение ролей пользователям и проверка прав."
+    },
+    {
+      "name": "oauth",
+      "description": "Вход через соцсети: сторона потребителя OAuth 2.0."
     }
   ]
 }

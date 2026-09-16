@@ -17,6 +17,14 @@ x-auth-env: &auth-env
   AUTH_REDIS_PORT: 6379
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
+  # Вход через соцсети. Поставщик включается, только если заданы обе его
+  # переменные; без них его эндпоинты отвечают 404, а сервис работает как прежде.
+  AUTH_OAUTH_YANDEX_CLIENT_ID: ${AUTH_OAUTH_YANDEX_CLIENT_ID:-}
+  AUTH_OAUTH_YANDEX_CLIENT_SECRET: ${AUTH_OAUTH_YANDEX_CLIENT_SECRET:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_ID: ${AUTH_OAUTH_GOOGLE_CLIENT_ID:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_SECRET: ${AUTH_OAUTH_GOOGLE_CLIENT_SECRET:-}
+  # Адрес возврата собирается отсюда; он же прописывается у поставщика.
+  AUTH_OAUTH_REDIRECT_BASE_URL: ${AUTH_OAUTH_REDIRECT_BASE_URL:-http://localhost}
 
 # Настройки админки. База у неё общая с ETL и сервисом контента — это тот же
 # каталог фильмов; пароли сотрудников хранит сервис авторизации.
