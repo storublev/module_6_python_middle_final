@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# У сервиса авторизации и админки свои конфигурации линтеров.
+extend-exclude = ["auth", "admin_panel"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "N", "S", "ASYNC"]
+ignore = [
+    # FastAPI объявляет зависимости через Depends в значениях по умолчанию.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах assert — основной инструмент, а пароли и ключи — заглушки.
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+# Модули сервиса импортируются от src, как при запуске.
+known-first-party = ["api", "core", "db", "main", "models", "services", "storage", "tests"]
