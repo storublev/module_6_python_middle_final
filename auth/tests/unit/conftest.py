@@ -40,6 +40,8 @@ POLICY = ThrottlingPolicy(
     login_per_ip=Limit(attempts=5, period=timedelta(minutes=1)),
     login_per_account=Limit(attempts=3, period=timedelta(minutes=15)),
     signup_per_ip=Limit(attempts=2, period=timedelta(hours=1)),
+    password_check_per_ip=Limit(attempts=4, period=timedelta(minutes=15)),
+    password_check_per_account=Limit(attempts=2, period=timedelta(minutes=15)),
 )
 
 
@@ -123,8 +125,9 @@ def profiles(
     history: FakeLoginHistoryRepository,
     sessions: FakeSessionStore,
     passwords: PasswordHasher,
+    throttle: Throttle,
 ) -> ProfileService:
-    return ProfileService(users, roles_repo, history, sessions, passwords)
+    return ProfileService(users, roles_repo, history, sessions, passwords, throttle)
 
 
 @pytest.fixture

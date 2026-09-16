@@ -14,6 +14,11 @@ email нельзя: email в соцсети меняют и не всегда п
 Тот же `complete` и заводит нового пользователя, и привязывает аккаунт к уже
 вошедшему — разница лишь в том, был ли начат вход с токеном. Так поставщику
 всё равно, чем закончится возврат, и второй обратный адрес не нужен.
+
+Привязка длится дольше одного запроса, поэтому вместе со state запоминается и
+вход, с которого её начали: перед самой привязкой сервис убеждается, что он
+ещё действует. Иначе завладевший токеном закончил бы начатую привязку уже
+после того, как владелец сменил пароль, и завёл бы себе способ входить снова.
 """
 
 import json
@@ -25,12 +30,14 @@ from uuid import UUID, uuid4
 
 from models.social import SocialAccount, SocialProfile
 from models.user import LOGIN_MAX_LENGTH, User
-from services.auth import AuthService, ClientInfo
+from services.auth import AuthService, ClientInfo, Principal
 from services.errors import (
     LastLoginMethodError,
     OAuthStateInvalidError,
     ProviderNotFoundError,
     SocialAccountTakenError,
+    SocialLinkExpiredError,
+    TokenRevokedError,
 )
 from services.tokens import TokenPair
 from storage.base import (
@@ -38,6 +45,7 @@ from storage.base import (
     OAuthProvider,
     OAuthStateStore,
     SocialAccountRepository,
+    UnlinkResult,
     UserRepository,
 )
 
@@ -49,6 +57,21 @@ STATE_BYTES = 32
 # Уникален по построению — пара (поставщик, social_id) уникальна, — но
 # на всякий случай при столкновении к нему добавляется случайный хвост.
 LOGIN_SUFFIX_BYTES = 4
+
+
+@dataclass(frozen=True)
+class LinkTarget:
+    """Кому привязать аккаунт и каким входом это начато.
+
+    Привязка занимает два запроса, между которыми проходят минуты: за это
+    время вход, с которого её начали, может закончиться — пользователь вышел
+    или сменил пароль, потому что токен украли. Поэтому вместе с state
+    запоминается сессия и версия учётных данных на момент начала, и перед
+    самой привязкой они сверяются с текущими.
+    """
+
+    principal: Principal
+    credentials_version: int
 
 
 @dataclass(frozen=True)
@@ -91,20 +114,29 @@ class SocialAuthService:
             raise ProviderNotFoundError(f'Unknown or not configured provider: {name}')
         return provider
 
-    async def start(self, provider_name: str, redirect_uri: str, link_to: UUID | None = None) -> str:
+    async def start(self, provider_name: str, redirect_uri: str, link_to: Principal | None = None) -> str:
         """Начинает вход: запоминает state и возвращает адрес поставщика.
 
         `link_to` — привязать аккаунт к уже вошедшему пользователю, а не
         входить: решение принимается здесь, а не на возврате, иначе чужой
-        ответ поставщика мог бы привязаться к чужой учётной записи.
+        ответ поставщика мог бы привязаться к чужой учётной записи. Вместе с
+        ним запоминается, каким входом начата привязка (см. LinkTarget).
 
         Raises:
             ProviderNotFoundError: такого поставщика нет.
         """
         provider = self.get_provider(provider_name)
         state = secrets.token_urlsafe(STATE_BYTES)
-        payload = json.dumps({'provider': provider.name, 'link_to': str(link_to) if link_to else None})
-        await self.states.save(state, payload, ttl=self.state_ttl)
+        link = None
+        if link_to is not None:
+            link = {
+                'user_id': str(link_to.user_id),
+                'session_id': str(link_to.session_id),
+                'credentials_version': await self.users.get_credentials_version(link_to.user_id),
+            }
+        await self.states.save(
+            state, json.dumps({'provider': provider.name, 'link_to': link}), ttl=self.state_ttl,
+        )
         return await provider.authorization_url(state, redirect_uri)
 
     async def complete(
@@ -120,6 +152,7 @@ class SocialAuthService:
         Raises:
             ProviderNotFoundError: такого поставщика нет.
             OAuthStateInvalidError: state не наш, просрочен или уже использован.
+            SocialLinkExpiredError: вход, с которого начали привязку, больше не действует.
             ProviderRejectedError: поставщик не принял код.
             ProviderUnavailableError: поставщик не ответил.
             SocialAccountTakenError: аккаунт уже привязан к другой учётной записи.
@@ -128,7 +161,9 @@ class SocialAuthService:
         link_to = await self._take_state(state, provider.name)
         profile = await provider.fetch_profile(code, redirect_uri)
         if link_to is not None:
-            return SocialLogin(tokens=None, account=await self._link(link_to, provider.name, profile), created=False)
+            await self._check_link_session(link_to)
+            account = await self._link(link_to.principal.user_id, provider.name, profile)
+            return SocialLogin(tokens=None, account=account, created=False)
         return await self._login(provider.name, profile, client)
 
     async def discard(self, state: str, provider_name: str) -> None:
@@ -152,20 +187,20 @@ class SocialAuthService:
         соцсетью, пароля не знает и остался бы без доступа к аккаунту. Сначала
         пусть задаст пароль или привяжет другую соцсеть.
 
+        Считает оставшиеся способы войти и открепляет аккаунт само хранилище,
+        одной операцией: посчитай их здесь — и два одновременных запроса
+        сняли бы две последние соцсети разом.
+
         Raises:
             LastLoginMethodError: это единственный способ войти.
         """
-        user = await self.users.get(user_id)
-        if user is None:
-            return False
-        if not user.has_password:
-            linked = {account.provider for account in await self.accounts.list_for_user(user_id)}
-            if linked == {provider_name}:
-                raise LastLoginMethodError
-        return await self.accounts.unlink(user_id, provider_name)
+        result = await self.accounts.unlink(user_id, provider_name)
+        if result is UnlinkResult.LAST_LOGIN_METHOD:
+            raise LastLoginMethodError
+        return result is UnlinkResult.UNLINKED
 
-    async def _take_state(self, state: str, provider_name: str) -> UUID | None:
-        """Проверяет и гасит state; возвращает пользователя, к которому привязать аккаунт."""
+    async def _take_state(self, state: str, provider_name: str) -> LinkTarget | None:
+        """Проверяет и гасит state; возвращает, кому привязать аккаунт, или None для входа."""
         payload = await self.states.pop(state) if state else None
         if payload is None:
             raise OAuthStateInvalidError
@@ -174,7 +209,34 @@ class SocialAuthService:
         if data.get('provider') != provider_name:
             raise OAuthStateInvalidError
         link_to = data.get('link_to')
-        return UUID(link_to) if link_to else None
+        if not link_to:
+            return None
+        return LinkTarget(
+            principal=Principal(
+                user_id=UUID(link_to['user_id']),
+                session_id=UUID(link_to['session_id']),
+            ),
+            credentials_version=link_to['credentials_version'],
+        )
+
+    async def _check_link_session(self, link: LinkTarget) -> None:
+        """Вход, с которого начали привязку, всё ещё действует.
+
+        Иначе завладевший токеном закончил бы привязку и после того, как
+        владелец сменил пароль или вышел, — и получил бы собственный способ
+        входить в чужую учётную запись. Версия учётных данных проверяется
+        отдельно от сессии: смену пароля с этого же устройства сессия
+        переживает, а начатую привязку она всё равно отменяет.
+
+        Raises:
+            SocialLinkExpiredError: сессия закрыта или учётные данные сменились.
+        """
+        try:
+            version = await self.auth.ensure_session(link.principal)
+        except TokenRevokedError as exc:
+            raise SocialLinkExpiredError from exc
+        if version != link.credentials_version:
+            raise SocialLinkExpiredError
 
     async def _link(self, user_id: UUID, provider_name: str, profile: SocialProfile) -> SocialAccount:
         try:

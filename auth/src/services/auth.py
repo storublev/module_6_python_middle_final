@@ -173,20 +173,33 @@ class AuthService:
         await self._check_session(claims)
         return Principal(user_id=claims.user_id, session_id=claims.session_id)
 
-    async def _check_session(self, claims: TokenClaims) -> None:
-        """Сессия токена жива и открыта с текущей версией учётных данных пользователя.
+    async def ensure_session(self, principal: Principal) -> int:
+        """Проверяет, что сессия жива и открыта с текущей версией учётных данных; возвращает версию.
 
         Версия хранится в PostgreSQL и меняется в одной транзакции с паролем.
         Поэтому смена пароля закрывает остальные сессии, даже если удалить
         их из Redis не удалось: такие сессии отвергаются здесь.
+
+        Проверка нужна не только при аутентификации: операция, начатая с
+        действующим токеном, может завершиться сильно позже — к этому времени
+        вход, с которого её начали, мог уже не действовать.
+
+        Raises:
+            TokenRevokedError: сессия закрыта или открыта до смены пароля.
         """
-        session = await self.sessions.get(claims.session_id)
-        if session is None or session.user_id != claims.user_id:
+        session = await self.sessions.get(principal.session_id)
+        if session is None or session.user_id != principal.user_id:
             raise TokenRevokedError
         # None — пользователя удалили, пока его сессия ещё жила.
-        if await self.users.get_credentials_version(claims.user_id) != session.credentials_version:
-            await self.sessions.delete(claims.user_id, claims.session_id)
+        version = await self.users.get_credentials_version(principal.user_id)
+        if version != session.credentials_version:
+            await self.sessions.delete(principal.user_id, principal.session_id)
             raise TokenRevokedError
+        return version
+
+    async def _check_session(self, claims: TokenClaims) -> None:
+        """Сессия токена жива и открыта с текущей версией учётных данных пользователя."""
+        await self.ensure_session(Principal(user_id=claims.user_id, session_id=claims.session_id))
 
     async def logout(self, principal: Principal) -> None:
         """Закрывает текущую сессию: её access- и refresh-токены перестают действовать."""

@@ -107,8 +107,27 @@ def test_empty_credentials_do_not_reach_auth_service(client: FakeAuthClient, bac
     assert backend.authenticate(None, username='', password='') is None
 
 
-def test_session_in_auth_service_is_closed(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
-    """После входа сессия в сервисе закрывается: дальше сотрудника пускает сессия Django."""
+def test_session_in_auth_service_is_kept(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
+    """После входа сессия в сервисе остаётся: ею админка перепроверяет доступ сотрудника."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert client.logged_out == []
+    assert (user.auth_access_token, user.auth_refresh_token) == (client.tokens.access, client.tokens.refresh)
+
+
+def test_login_remembers_when_access_was_checked(backend: AuthServiceBackend) -> None:
+    """Вход — тоже проверка доступа: её время запоминается, чтобы не перепроверять сразу же."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert user.auth_checked_at is not None
+
+
+def test_session_is_closed_when_permission_is_missing(
+    client: FakeAuthClient, backend: AuthServiceBackend,
+) -> None:
+    """Отказ во входе не оставляет открытую сессию в сервисе авторизации."""
+    client.allowed = False
+
     backend.authenticate(None, username='neo', password=PASSWORD)
 
     assert client.logged_out == [client.token]
@@ -150,6 +169,36 @@ def test_login_taken_by_another_record_is_rejected(client: FakeAuthClient, backe
     User.objects.create_superuser(login='neo', password=PASSWORD)
 
     assert backend.authenticate(None, username='neo', password=PASSWORD) is None
+
+
+def test_deactivated_staff_cannot_log_in_again(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
+    """Отключённого в админке сотрудника вход не пускает, даже если право в сервисе у него осталось."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    assert backend.authenticate(None, username='neo', password=PASSWORD) is None
+
+
+def test_deactivated_staff_is_not_reactivated_by_login(backend: AuthServiceBackend) -> None:
+    """Вход не включает отключённого сотрудника обратно: признак «активен» ставит админка."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert not User.objects.get(pk=user.pk).is_active
+
+
+def test_rejected_deactivated_staff_keeps_no_session(
+    client: FakeAuthClient, backend: AuthServiceBackend,
+) -> None:
+    """Отказ отключённому сотруднику закрывает сессию, открытую его входом в сервисе авторизации."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+    User.objects.filter(pk=user.pk).update(is_active=False)
+
+    backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert client.logged_out == [client.tokens.access]
 
 
 def test_deactivated_staff_is_not_restored_by_get_user(backend: AuthServiceBackend) -> None:

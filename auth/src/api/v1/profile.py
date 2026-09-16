@@ -1,11 +1,12 @@
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import ProfileServiceDep, SocialAuthServiceDep
 from api.errors import TOKEN_ERRORS, error_responses
 from api.security import PrincipalDep
+from api.v1.auth import client_info
 from api.v1.schemas import (
     ChangeLoginSchema,
     ChangePasswordSchema,
@@ -21,6 +22,7 @@ from services.errors import (
     LoginTakenError,
     PasswordAlreadySetError,
     SocialAccountNotLinkedError,
+    TooManyRequestsError,
     WrongPasswordError,
 )
 from services.profile import Pagination
@@ -52,11 +54,15 @@ async def me(principal: PrincipalDep, profiles: ProfileServiceDep) -> ProfileSch
     '/me/login',
     response_model=UserSchema,
     summary='Смена логина',
-    description='Меняет логин. Смену подтверждает текущий пароль.',
-    responses=error_responses(*TOKEN_ERRORS, WrongPasswordError, LoginTakenError),
+    description='Меняет логин. Смену подтверждает текущий пароль. Число проверок пароля ограничено '
+                'для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After, '
+                'и пароль при этом не проверяется.',
+    responses=error_responses(*TOKEN_ERRORS, WrongPasswordError, LoginTakenError, TooManyRequestsError),
 )
-async def change_login(body: ChangeLoginSchema, principal: PrincipalDep, profiles: ProfileServiceDep) -> User:
-    return await profiles.change_login(principal, body.new_login, body.password)
+async def change_login(
+    body: ChangeLoginSchema, request: Request, principal: PrincipalDep, profiles: ProfileServiceDep,
+) -> User:
+    return await profiles.change_login(principal, body.new_login, body.password, client_info(request))
 
 
 @router.put(
@@ -65,12 +71,17 @@ async def change_login(body: ChangeLoginSchema, principal: PrincipalDep, profile
     summary='Смена пароля',
     description='Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают '
                 'действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, '
-                'а войти заново придётся и на текущем устройстве.',
-    responses=error_responses(*TOKEN_ERRORS, WrongPasswordError, PasswordAlreadySetError),
+                'а войти заново придётся и на текущем устройстве. Число проверок текущего пароля ограничено '
+                'для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After.',
+    responses=error_responses(
+        *TOKEN_ERRORS, WrongPasswordError, PasswordAlreadySetError, TooManyRequestsError,
+    ),
 )
-async def change_password(body: ChangePasswordSchema, principal: PrincipalDep, profiles: ProfileServiceDep) -> None:
+async def change_password(
+    body: ChangePasswordSchema, request: Request, principal: PrincipalDep, profiles: ProfileServiceDep,
+) -> None:
     await profiles.change_password(
-        principal, body.password, body.new_password,
+        principal, body.password, body.new_password, client_info(request),
     )
 
 

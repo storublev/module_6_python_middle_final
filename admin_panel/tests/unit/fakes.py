@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from users.auth_client import AuthProfile
+from users.auth_client import AuthProfile, SessionExpiredError, Tokens
 
 
 def make_response(status_code: int, payload: Any = None) -> requests.Response:
@@ -53,33 +53,62 @@ class FakeSession:
 
 @dataclass
 class FakeAuthClient:
-    """Сервис авторизации, отвечающий заданными значениями."""
+    """Сервис авторизации, отвечающий заданными значениями.
 
-    token: str = 'access-token'
+    Ошибки задаются полями: так проверяется, что делает админка, когда сервис
+    не отвечает, не признаёт токен или отказывает в праве.
+    """
+
+    tokens: Tokens = field(default_factory=lambda: Tokens(access='access-token', refresh='refresh-token'))
     profile: AuthProfile | None = None
     allowed: bool = True
     login_error: Exception | None = None
     profile_error: Exception | None = None
+    refresh_error: Exception | None = None
+    logout_error: Exception | None = None
     logged_out: list[str] = field(default_factory=list)
+    refreshed: list[str] = field(default_factory=list)
+    permission_checks: list[str] = field(default_factory=list)
+    # Токены, которые клиент выдаст на обновление пары.
+    next_tokens: Tokens | None = None
 
-    def login(self, login: str, password: str) -> str:
+    @property
+    def token(self) -> str:
+        return self.tokens.access
+
+    def login(self, login: str, password: str) -> Tokens:
         if self.login_error:
             raise self.login_error
-        return self.token
+        return self.tokens
+
+    def refresh(self, refresh_token: str) -> Tokens:
+        self.refreshed.append(refresh_token)
+        if self.refresh_error:
+            raise self.refresh_error
+        self.tokens = self.next_tokens or Tokens(access='new-access-token', refresh='new-refresh-token')
+        return self.tokens
 
     def get_profile(self, access_token: str) -> AuthProfile:
-        if self.profile_error:
-            raise self.profile_error
+        self._check_token(access_token)
         assert self.profile is not None
         return self.profile
 
     def check_permission(self, access_token: str, permission: str) -> bool:
-        if self.profile_error:
-            raise self.profile_error
+        self._check_token(access_token)
+        self.permission_checks.append(permission)
         return self.allowed
 
     def logout(self, access_token: str) -> None:
+        if self.logout_error:
+            raise self.logout_error
         self.logged_out.append(access_token)
+
+    def _check_token(self, access_token: str) -> None:
+        if self.profile_error:
+            raise self.profile_error
+        if access_token != self.tokens.access:
+            # Так ведёт себя сервис: по устаревшему токену он отвечает 401.
+            raise SessionExpiredError('token_expired')
 
 
 def iter_calls(session: FakeSession) -> Iterable[str]:

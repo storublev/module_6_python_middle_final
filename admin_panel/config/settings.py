@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # авторизации и на сколько секунд.
     auth_breaker_failures: int = 5
     auth_breaker_reset_timeout: float = 30.0
+    # Как часто перепроверять доступ сотрудника, пока он работает в админке:
+    # отозванное право закрывает её в пределах этого интервала. Чаще незачем —
+    # страница админки тянет за собой несколько запросов.
+    auth_recheck_interval: float = 60.0
+    # Сколько сотрудник может работать, пока сервис авторизации недоступен и
+    # перепроверить доступ нечем. Дальше сессия админки закрывается.
+    auth_unavailable_grace: float = 300.0
 
     static_root: Path = BASE_DIR / 'staticfiles'
     static_url: str = '/static/'
@@ -105,6 +112,9 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Сразу за аутентификацией: доступ сотрудника перепроверяется в сервисе
+    # авторизации, прежде чем запрос дойдёт до страниц админки.
+    'users.recheck.AccessRecheckMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

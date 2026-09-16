@@ -69,6 +69,12 @@ def get_throttling_policy() -> ThrottlingPolicy:
         login_per_ip=Limit(settings.login_attempts_per_ip, settings.login_attempts_per_ip_period),
         login_per_account=Limit(settings.login_attempts_per_account, settings.login_attempts_per_account_period),
         signup_per_ip=Limit(settings.signup_attempts_per_ip, settings.signup_attempts_per_ip_period),
+        password_check_per_ip=Limit(
+            settings.password_check_attempts_per_ip, settings.password_check_attempts_per_ip_period,
+        ),
+        password_check_per_account=Limit(
+            settings.password_check_attempts_per_account, settings.password_check_attempts_per_account_period,
+        ),
     )
 
 
@@ -175,9 +181,9 @@ def get_auth_service(
 
 
 def get_profile_service(
-    users: Users, roles: Roles, history: History, sessions: Sessions, passwords: Passwords,
+    users: Users, roles: Roles, history: History, sessions: Sessions, passwords: Passwords, throttle: ThrottleDep,
 ) -> ProfileService:
-    return ProfileService(users, roles, history, sessions, passwords)
+    return ProfileService(users, roles, history, sessions, passwords, throttle)
 
 
 def get_role_service(roles: Roles, users: Users, invalidator: Invalidator) -> RoleService:

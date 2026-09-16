@@ -12,6 +12,8 @@ from users.auth_client import (
     AuthServiceError,
     AuthServiceUnavailableError,
     InvalidCredentialsError,
+    SessionExpiredError,
+    Tokens,
     TooManyRequestsError,
 )
 from users.circuit_breaker import CircuitBreaker
@@ -35,16 +37,16 @@ def build_client(session: FakeSession, breaker: CircuitBreaker | None = None) ->
     )
 
 
-def test_login_returns_access_token() -> None:
-    """Успешный вход отдаёт access-токен из ответа сервиса."""
-    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c', 'refresh_token': 'r'})])
+def test_login_returns_token_pair() -> None:
+    """Успешный вход отдаёт пару токенов из ответа сервиса: ею живёт сессия сотрудника."""
+    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c', 'refresh_token': 'r.s.t'})])
 
-    assert build_client(session).login('neo', 'followtherabbit') == 'a.b.c'
+    assert build_client(session).login('neo', 'followtherabbit') == Tokens(access='a.b.c', refresh='r.s.t')
 
 
 def test_login_sends_credentials_in_body_only() -> None:
     """Логин и пароль уходят только в теле запроса: в URL они попали бы в журналы."""
-    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c'})])
+    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c', 'refresh_token': 'r.s.t'})])
 
     build_client(session).login('neo', 'followtherabbit')
 
@@ -55,11 +57,53 @@ def test_login_sends_credentials_in_body_only() -> None:
 
 def test_login_applies_both_timeouts() -> None:
     """У запроса явные таймауты соединения и ответа: сервис не подвесит форму входа."""
-    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c'})])
+    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'a.b.c', 'refresh_token': 'r.s.t'})])
 
     build_client(session).login('neo', 'followtherabbit')
 
     assert session.requests_log[0].kwargs['timeout'] == (CONNECT_TIMEOUT, READ_TIMEOUT)
+
+
+def test_refresh_returns_new_pair() -> None:
+    """Обновление отдаёт новую пару: прежний refresh-токен одноразовый."""
+    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'new.a', 'refresh_token': 'new.r'})])
+
+    assert build_client(session).refresh('old.r') == Tokens(access='new.a', refresh='new.r')
+
+
+def test_refresh_sends_token_in_body() -> None:
+    """refresh-токен уходит в теле запроса: в URL он попал бы в журналы."""
+    session = FakeSession([make_response(HTTPStatus.OK, {'access_token': 'new.a', 'refresh_token': 'new.r'})])
+
+    build_client(session).refresh('old.r')
+
+    call = session.requests_log[0]
+    assert call.url == f'{BASE_URL}/auth/api/v1/token/refresh'
+    assert call.kwargs['json'] == {'refresh_token': 'old.r'}
+
+
+def test_refresh_of_closed_session_is_reported() -> None:
+    """401 на обновление — сессия в сервисе закрыта: сотруднику пора выйти из админки."""
+    session = FakeSession([make_response(HTTPStatus.UNAUTHORIZED, {'code': 'token_revoked'})])
+
+    with pytest.raises(SessionExpiredError):
+        build_client(session).refresh('old.r')
+
+
+def test_expired_token_is_reported_separately() -> None:
+    """401 на проверке права — истёкший или отозванный токен, а не сбой сервиса."""
+    session = FakeSession([make_response(HTTPStatus.UNAUTHORIZED, {'code': 'token_expired'})])
+
+    with pytest.raises(SessionExpiredError):
+        build_client(session).check_permission('a.b.c', 'admin.access')
+
+
+def test_expired_token_is_reported_for_profile() -> None:
+    """401 на чтении данных сотрудника — тоже истёкший токен: его меняют по refresh."""
+    session = FakeSession([make_response(HTTPStatus.UNAUTHORIZED, {'code': 'token_expired'})])
+
+    with pytest.raises(SessionExpiredError):
+        build_client(session).get_profile('a.b.c')
 
 
 def test_wrong_password_raises_invalid_credentials() -> None:

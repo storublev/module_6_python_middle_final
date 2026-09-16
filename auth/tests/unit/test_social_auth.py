@@ -13,6 +13,7 @@ from services.errors import (
     OAuthStateInvalidError,
     ProviderNotFoundError,
     SocialAccountTakenError,
+    SocialLinkExpiredError,
 )
 from services.tokens import TokenType
 from tests.unit.conftest import CLIENT, PASSWORD
@@ -40,6 +41,19 @@ async def start(social, provider_name='yandex', link_to=None) -> str:
     """Начинает вход и возвращает state из ссылки на поставщика."""
     url = await social.start(provider_name, redirect_uri=REDIRECT_URI, link_to=link_to)
     return parse_qs(urlparse(url).query)['state'][0]
+
+
+async def sign_in(auth, tokens, login='neo') -> Principal:
+    """Входит по паролю и возвращает пользователя и сессию выданного токена."""
+    pair = await auth.login(login, PASSWORD, CLIENT)
+    claims = tokens.decode(pair.access_token, TokenType.ACCESS)
+    return Principal(user_id=claims.user_id, session_id=claims.session_id)
+
+
+async def signed_in(registration, auth, tokens, login='neo') -> Principal:
+    """Регистрирует пользователя и входит: привязку начинают из действующей сессии."""
+    await registration.register(login, PASSWORD)
+    return await sign_in(auth, tokens, login)
 
 
 # Начало входа
@@ -201,21 +215,21 @@ async def test_provider_receives_the_code(social, provider):
 
 # Привязка к существующей учётной записи
 
-async def test_link_attaches_account_to_current_user(social, registration):
+async def test_link_attaches_account_to_current_user(social, registration, auth, tokens):
     """Вход, начатый с токеном, привязывает аккаунт, а не заводит нового пользователя."""
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
 
     result = await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
     assert result.tokens is None
-    assert result.account.user_id == user.id
+    assert result.account.user_id == principal.user_id
 
 
-async def test_linked_account_logs_into_the_same_user(social, registration):
+async def test_linked_account_logs_into_the_same_user(social, registration, auth, tokens):
     """После привязки вход через соцсеть ведёт в ту же учётную запись."""
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
     await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
     state = await start(social)
 
@@ -224,51 +238,103 @@ async def test_linked_account_logs_into_the_same_user(social, registration):
     assert not result.created
 
 
-async def test_account_cannot_be_linked_twice(social, registration):
+async def test_account_cannot_be_linked_twice(social, registration, auth, tokens):
     """Аккаунт соцсети нельзя привязать ко второй учётной записи."""
-    first = await registration.register('neo', PASSWORD)
-    second = await registration.register('trinity', PASSWORD)
-    state = await start(social, link_to=first.id)
+    first = await signed_in(registration, auth, tokens)
+    second = await signed_in(registration, auth, tokens, login='trinity')
+    state = await start(social, link_to=first)
     await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
-    state = await start(social, link_to=second.id)
+    state = await start(social, link_to=second)
 
     with pytest.raises(SocialAccountTakenError):
         await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
 
-async def test_link_target_is_decided_at_start(social, registration, oauth_states):
+async def test_link_target_is_decided_at_start(social, registration, auth, tokens, oauth_states):
     """К кому привязывать, решается в начале входа, а не на возврате.
 
     Иначе чужой ответ поставщика мог бы привязаться к учётной записи того, кто
     в этот момент просто вошёл на сайт.
     """
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
 
-    assert json.loads(oauth_states.states[state])['link_to'] == str(user.id)
+    assert json.loads(oauth_states.states[state])['link_to']['user_id'] == str(principal.user_id)
+
+
+async def test_link_remembers_the_session_it_started_from(social, registration, auth, tokens, oauth_states):
+    """Вместе со state запоминается сессия и версия учётных данных: по ним привязка сверяется."""
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
+
+    link = json.loads(oauth_states.states[state])['link_to']
+
+    assert link['session_id'] == str(principal.session_id)
+    assert link['credentials_version'] == 0
+
+
+async def test_link_is_cancelled_by_password_change(social, registration, auth, tokens, profiles):
+    """Смена пароля отменяет начатую привязку: украденным токеном её не закончить."""
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
+    await profiles.change_password(principal, PASSWORD, 'newpassword123', CLIENT)
+
+    with pytest.raises(SocialLinkExpiredError):
+        await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
+
+
+async def test_cancelled_link_leaves_no_account(social, registration, auth, tokens, profiles, db):
+    """Отменённая привязка не оставляет за собой связанного аккаунта."""
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
+    await profiles.change_password(principal, PASSWORD, 'newpassword123', CLIENT)
+    with pytest.raises(SocialLinkExpiredError):
+        await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
+
+    assert db.social_accounts == {}
+
+
+async def test_link_is_cancelled_by_logout(social, registration, auth, tokens):
+    """Выход отменяет начатую привязку: сессии, из которой её начали, больше нет."""
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
+    await auth.logout(principal)
+
+    with pytest.raises(SocialLinkExpiredError):
+        await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
+
+
+async def test_link_is_cancelled_by_logout_from_other_sessions(social, registration, auth, tokens):
+    """«Выйти из остальных устройств» отменяет привязку, начатую в одной из закрытых сессий."""
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
+    await auth.logout_others(await sign_in(auth, tokens))
+
+    with pytest.raises(SocialLinkExpiredError):
+        await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
 
 # Личный кабинет
 
-async def test_linked_accounts_are_listed(social, registration):
+async def test_linked_accounts_are_listed(social, registration, auth, tokens):
     """Привязанные аккаунты видны в личном кабинете."""
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
     await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
-    accounts = await social.list_accounts(user.id)
+    accounts = await social.list_accounts(principal.user_id)
 
     assert [(account.provider, account.social_id) for account in accounts] == [('yandex', NEO.social_id)]
 
 
-async def test_account_can_be_unlinked(social, registration):
+async def test_account_can_be_unlinked(social, registration, auth, tokens):
     """Аккаунт с паролем открепляется: способ войти у пользователя остаётся."""
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
     await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
-    assert await social.unlink(user.id, 'yandex')
-    assert await social.list_accounts(user.id) == []
+    assert await social.unlink(principal.user_id, 'yandex')
+    assert await social.list_accounts(principal.user_id) == []
 
 
 async def test_unlinking_missing_account_is_reported(social, registration):
@@ -288,23 +354,35 @@ async def test_last_login_method_cannot_be_unlinked(social, db):
         await social.unlink(user_id, 'yandex')
 
 
+async def test_last_of_two_accounts_cannot_be_unlinked(social, social_accounts, db):
+    """Из двух соцсетей открепить можно одну: вторая остаётся единственным способом войти."""
+    state = await start(social)
+    await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
+    user_id = next(iter(db.users))
+    await social_accounts.link(user_id, 'google', TRINITY)
+
+    assert await social.unlink(user_id, 'google')
+    with pytest.raises(LastLoginMethodError):
+        await social.unlink(user_id, 'yandex')
+
+
 async def test_unlink_is_allowed_after_password_is_set(social, profiles, tokens):
     """Задав пароль, пользователь из соцсети может открепить аккаунт: способ войти остаётся."""
     state = await start(social)
     result = await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
     principal = principal_of(result, tokens)
-    await profiles.change_password(principal, None, 'newpassword123')
+    await profiles.change_password(principal, None, 'newpassword123', CLIENT)
 
     assert await social.unlink(principal.user_id, 'yandex')
 
 
-async def test_unlink_is_allowed_with_another_account_linked(social, registration):
+async def test_unlink_is_allowed_with_another_account_linked(social, registration, auth, tokens):
     """Пока есть пароль, открепить соцсеть можно: она не единственный способ войти."""
-    user = await registration.register('neo', PASSWORD)
-    state = await start(social, link_to=user.id)
+    principal = await signed_in(registration, auth, tokens)
+    state = await start(social, link_to=principal)
     await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
-    assert await social.unlink(user.id, 'yandex')
+    assert await social.unlink(principal.user_id, 'yandex')
 
 
 # Сбои поставщика
