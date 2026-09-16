@@ -17,7 +17,8 @@ from api.v1.films import SUBSCRIPTION_REQUIRED, SUBSCRIPTION_UNVERIFIABLE
 from api.v1.schemas import error_response
 from core.config import settings
 from core.logger import LOGGING
-from core.middleware import TrailingSlashMiddleware
+from core.middleware import RequestIdMiddleware, TrailingSlashMiddleware
+from core.tracing import configure_tracing
 from db import auth, elastic, redis
 from services.errors import AccessCheckUnavailableError, SubscriptionRequiredError
 from storage.access import TokenRejectedError
@@ -116,6 +117,22 @@ app = FastAPI(
     docs_url='/api/openapi',
     openapi_url='/api/openapi.json',
     lifespan=lifespan,
+)
+# Документация вызывается мимо nginx, в том числе проверками готовности:
+# идентификатор запроса с неё не спрашивается, спаны по ней не строятся.
+DOCS_PATHS = frozenset({app.docs_url, app.openapi_url})
+
+configure_tracing(
+    app,
+    service_name=settings.project_name,
+    endpoint=settings.otlp_endpoint,
+    excluded_urls=','.join(DOCS_PATHS),
+)
+# Порядок важен: добавленный последним отрабатывает первым. Косая черта в
+# конце пути отбрасывается до всего остального, а идентификатор запроса
+# попадает в спан, который создал инструментатор.
+app.add_middleware(
+    RequestIdMiddleware, required=settings.require_request_id, exempt_paths=DOCS_PATHS,
 )
 app.add_middleware(TrailingSlashMiddleware)
 

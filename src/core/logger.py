@@ -1,12 +1,17 @@
 from core.config import settings
 
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Идентификатор запроса в каждой записи: по нему собирается история
+# запроса по всем сервисам сразу (см. core/request_id.py).
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s'
 LOG_DEFAULT_HANDLERS = ['console']
 
 # Конфигурация логирования для uvicorn и приложения.
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'request_id': {'()': 'core.request_id.RequestIdFilter'},
+    },
     'formatters': {
         'verbose': {'format': LOG_FORMAT},
         'default': {
@@ -24,6 +29,7 @@ LOGGING = {
             'level': 'DEBUG',
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
+            'filters': ['request_id'],
         },
         'default': {
             'formatter': 'default',

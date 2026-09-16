@@ -17,6 +17,8 @@ from redis.asyncio import Redis
 
 from tests.functional.settings import settings
 
+REQUEST_ID_HEADER = 'X-Request-Id'
+
 API = '/auth/api/v1'
 PASSWORD = 'followtherabbit'
 SEEDED_ROLE = 'subscribers'
@@ -43,7 +45,10 @@ def bearer(token: str) -> dict[str, str]:
 
 @pytest.fixture(scope='session')
 async def client() -> AsyncIterator[httpx.AsyncClient]:
-    async with httpx.AsyncClient(base_url=f'{settings.service_url}{API}', timeout=10) as http:
+    # Сервис требует идентификатор запроса: в работе его ставит nginx, здесь —
+    # тесты. Так они ходят к сервису теми же запросами, что и настоящие клиенты.
+    headers = {REQUEST_ID_HEADER: 'functional-tests'}
+    async with httpx.AsyncClient(base_url=f'{settings.service_url}{API}', timeout=10, headers=headers) as http:
         yield http
 
 

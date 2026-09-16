@@ -11,3 +11,7 @@ proxy_set_header   X-Real-IP $remote_addr;
 # попыток по адресу, и записать в историю входов не тот адрес.
 proxy_set_header   X-Forwarded-For $remote_addr;
 proxy_set_header   X-Forwarded-Proto $scheme;
+# Идентификатор запроса генерирует nginx и перезаписывает им присланный
+# клиентом: иначе клиент мог бы слить свои запросы с чужими в журналах.
+# Тот же идентификатор виден в access-логе nginx и в спанах в Jaeger.
+proxy_set_header   X-Request-Id $request_id;

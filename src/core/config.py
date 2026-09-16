@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     auth_breaker_failures: int = 5
     auth_breaker_reset_timeout: float = 30
 
+    # Распределённая трассировка. Пустой адрес выключает отправку спанов.
+    otlp_endpoint: str = ''
+    # Идентификатор запроса ставит nginx; без него запрос не найти ни в
+    # журналах, ни в Jaeger.
+    require_request_id: bool = True
+
     @property
     def elastic_url(self) -> str:
         return f'http://{self.elastic_host}:{self.elastic_port}'

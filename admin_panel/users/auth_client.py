@@ -20,6 +20,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from users.circuit_breaker import CircuitBreaker
+from users.request_id import HEADER as REQUEST_ID_HEADER
+from users.request_id import NO_REQUEST, get_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,11 @@ class AuthClient:
         if not self._breaker.allows():
             raise AuthServiceUnavailableError('circuit breaker is open')
         headers = {'Authorization': f'Bearer {token}'} if token else {}
+        # Идентификатор запроса идёт дальше по цепочке: вход сотрудника и
+        # вызванная им проверка права собираются в одну историю.
+        request_id = get_request_id()
+        if request_id != NO_REQUEST:
+            headers[REQUEST_ID_HEADER] = request_id
         try:
             response = self._session.request(
                 method, f'{self._base_url}{API_PREFIX}{path}', headers=headers, timeout=self._timeout, **kwargs,
