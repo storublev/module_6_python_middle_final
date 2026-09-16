@@ -2,6 +2,7 @@ import logging.config
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 
+import httpx
 import uvicorn
 from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI, Request
@@ -12,11 +13,14 @@ from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from api.v1 import films, genres, persons
+from api.v1.films import SUBSCRIPTION_REQUIRED, SUBSCRIPTION_UNVERIFIABLE
 from api.v1.schemas import error_response
 from core.config import settings
 from core.logger import LOGGING
 from core.middleware import TrailingSlashMiddleware
-from db import elastic, redis
+from db import auth, elastic, redis
+from services.errors import AccessCheckUnavailableError, SubscriptionRequiredError
+from storage.access import TokenRejectedError
 from storage.base import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
@@ -49,14 +53,27 @@ async def lifespan(_: FastAPI):
         request_timeout=settings.elastic_request_timeout,
         max_retries=0,
     )
+    # Пул постоянных соединений с сервисом авторизации: на каждую проверку
+    # прав не тратим рукопожатие TCP. Повторы и прерыватель — в AuthAccessGateway.
+    auth.client = httpx.AsyncClient(
+        base_url=settings.auth_api_url,
+        timeout=httpx.Timeout(settings.auth_request_timeout, connect=settings.auth_connect_timeout),
+    )
     yield
+    await auth.client.aclose()
     await redis.redis.aclose()
     await elastic.es.close()
 
 
-API_DESCRIPTION = """
+API_DESCRIPTION = f"""
 Информация о фильмах, жанрах и людях, участвовавших в создании произведения.
-Все пользователи анонимные, авторизация не нужна.
+
+**Доступ.** Жанры и персоны открыты всем. Фильмы делятся на публичные и
+доступные по подписке: фильм, вышедший менее трёх лет назад, виден только
+пользователю с правом `films.subscription`. Токен передаётся заголовком
+`Authorization: Bearer <access-токен>` из `POST /auth/api/v1/login`; без него
+запрос считается анонимным, и доступны только публичные фильмы. Списки и
+поиск недоступные фильмы не показывают, карточка такого фильма отвечает 403.
 
 **Списки** постраничные: `page_number` — номер страницы с 1, `page_size` —
 от 1 до 100 элементов (по умолчанию 50). Произведение `page_number * page_size`
@@ -64,14 +81,25 @@ API_DESCRIPTION = """
 
 **Ошибки** возвращаются в поле `detail`:
 
+* 401 — сервис авторизации не принял токен: он истёк, повреждён или его сессия
+  закрыта. Обновите пару токенов или войдите заново;
+* 403 — фильм доступен только по подписке, а у пользователя её нет;
 * 404 — фильма, жанра или персоны с таким `uuid` нет;
 * 422 — параметры запроса не прошли проверку: невалидный `uuid`, неизвестная
   сортировка, пустая строка поиска, страница за пределами выдачи;
-* 503 — хранилище временно не может ответить, запрос стоит повторить позже.
+* 503 — хранилище или сервис авторизации временно не могут ответить, запрос
+  стоит повторить позже.
 
-**Кеш.** Ответы кешируются на {cache_expire} с: изменения в каталоге появляются
-в API с этой задержкой.
-""".format(cache_expire=settings.cache_expire_in_seconds)
+**Если сервис авторизации недоступен**, каталог продолжает работать: списки и
+поиск отдают публичные фильмы, как анонимному пользователю, а карточка
+подписочного фильма отвечает 503 — подписку не подтвердить, но и отказывать
+в ней неверно.
+
+**Кеш.** Ответы кешируются на {settings.cache_expire_in_seconds} с: изменения
+в каталоге появляются в API с этой задержкой. Права в кеш не попадают — они
+спрашиваются у сервиса авторизации на каждый запрос с токеном, поэтому
+отозванная подписка закрывает доступ сразу.
+"""
 
 OPENAPI_TAGS = [
     {'name': 'films', 'description': 'Фильмы: популярные, похожие, поиск и полная информация.'},
@@ -98,6 +126,29 @@ async def storage_unavailable_handler(_: Request, __: StorageUnavailableError) -
     return JSONResponse(status_code=HTTPStatus.SERVICE_UNAVAILABLE, content={'detail': SERVICE_UNAVAILABLE})
 
 
+@app.exception_handler(SubscriptionRequiredError)
+async def subscription_required_handler(_: Request, __: SubscriptionRequiredError) -> JSONResponse:
+    return JSONResponse(status_code=HTTPStatus.FORBIDDEN, content={'detail': SUBSCRIPTION_REQUIRED})
+
+
+@app.exception_handler(AccessCheckUnavailableError)
+async def access_check_unavailable_handler(_: Request, __: AccessCheckUnavailableError) -> JSONResponse:
+    # Подписка не подтверждена, но и не опровергнута: 503, а не 403, — клиенту
+    # стоит повторить запрос, а не решать, что доступ закрыт.
+    return JSONResponse(status_code=HTTPStatus.SERVICE_UNAVAILABLE, content={'detail': SUBSCRIPTION_UNVERIFIABLE})
+
+
+@app.exception_handler(TokenRejectedError)
+async def token_rejected_handler(_: Request, exc: TokenRejectedError) -> JSONResponse:
+    # Причину отказа формулирует сервис авторизации — по ней клиент решает,
+    # обновлять пару токенов или входить заново.
+    return JSONResponse(
+        status_code=HTTPStatus.UNAUTHORIZED,
+        content={'detail': exc.detail},
+        headers={'WWW-Authenticate': 'Bearer'},
+    )
+
+
 # 503 возможен у любого эндпоинта, поэтому описан для роутеров целиком.
 storage_responses = {HTTPStatus.SERVICE_UNAVAILABLE: error_response(SERVICE_UNAVAILABLE)}
 app.include_router(films.router, prefix='/api/v1/films', tags=['films'], responses=storage_responses)
@@ -106,4 +157,5 @@ app.include_router(persons.router, prefix='/api/v1/persons', tags=['persons'], r
 
 
 if __name__ == '__main__':
-    uvicorn.run('main:app', host='0.0.0.0', port=8000, log_config=LOGGING, reload=True)
+    # Локальный запуск для разработки; в Docker сервис запускает uvicorn из CMD.
+    uvicorn.run('main:app', host='127.0.0.1', port=8000, log_config=LOGGING, reload=True)

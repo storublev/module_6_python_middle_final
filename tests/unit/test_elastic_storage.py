@@ -4,8 +4,9 @@ from typing import Any
 
 import pytest
 
-from storage.base import SearchField, SearchRequest, TextQuery
-from storage.elastic import BackoffPolicy, ElasticStorage
+from storage.base import FieldIn, SearchField, SearchRequest, TextQuery
+from storage.elastic import ElasticStorage
+from storage.resilience import BackoffPolicy
 
 
 class FakeElastic:
@@ -45,3 +46,35 @@ async def test_field_weight_in_elastic_syntax(fields, expected):
 def test_field_weight_must_be_positive(weight):
     with pytest.raises(ValueError):
         SearchField('title', weight=weight)
+
+
+async def search_query(request: SearchRequest) -> dict[str, Any]:
+    elastic = FakeElastic()
+    storage = ElasticStorage(elastic, retry=BackoffPolicy(max_time=0, factor=0, max_value=0))
+
+    await storage.search('movies', request)
+
+    return elastic.search_params['query']
+
+
+async def test_field_filter_becomes_terms():
+    """Отбор по значениям поля переводится в terms — фильтр, не влияющий на релевантность."""
+    request = SearchRequest(fields=('id',), filters=(FieldIn('access_level', ('public', 'subscription')),))
+
+    query = await search_query(request)
+
+    assert query['bool']['filter'] == [{'terms': {'access_level': ['public', 'subscription']}}]
+
+
+async def test_field_filter_combines_with_text_search():
+    """Отбор и поиск уживаются: искомое ищется, а выдача ограничивается отбором."""
+    request = SearchRequest(
+        fields=('id',),
+        text=TextQuery('star', (SearchField('title'),)),
+        filters=(FieldIn('access_level', ('public',)),),
+    )
+
+    query = await search_query(request)
+
+    assert len(query['bool']['must']) == 1
+    assert query['bool']['filter'] == [{'terms': {'access_level': ['public']}}]

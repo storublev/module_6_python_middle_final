@@ -70,14 +70,27 @@ class RelatedTo:
 
 
 @dataclass(frozen=True)
+class FieldIn:
+    """Значение поля документа входит в перечисленные.
+
+    Отбор, а не поиск: на релевантность не влияет. Так сервисы ограничивают
+    выдачу — например, уровнями доступа, открытыми пользователю.
+    """
+
+    field: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SearchRequest:
-    """Страница документов: какие поля вернуть, что искать и как сортировать."""
+    """Страница документов: какие поля вернуть, что искать, чем ограничить и как сортировать."""
 
     fields: tuple[str, ...]
     offset: int = 0
     size: int = 50
     text: TextQuery | None = None
     related_to: RelatedTo | None = None
+    filters: tuple[FieldIn, ...] = ()
     sort: tuple[Sort, ...] = ()
 
 

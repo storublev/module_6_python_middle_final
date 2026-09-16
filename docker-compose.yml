@@ -116,6 +116,7 @@ services:
       ELASTIC_PORT: 9200
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      AUTH_API_URL: http://auth:8000
       CACHE_EXPIRE_IN_SECONDS: ${CACHE_EXPIRE_IN_SECONDS:-300}
       WEB_CONCURRENCY: ${API_WORKERS:-2}
     expose:
@@ -124,6 +125,11 @@ services:
       elasticsearch:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Права на подписочные фильмы спрашиваются у сервиса авторизации. Ждать
+      # его готовности удобно, но не обязательно: откажи он позже, выдача
+      # деградирует до публичных фильмов, а не упадёт.
+      auth:
         condition: service_healthy
     restart: unless-stopped
 

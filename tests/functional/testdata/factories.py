@@ -11,6 +11,10 @@ from uuid import uuid4
 
 Doc = dict[str, Any]
 
+# Метки доступа, которые ETL проставляет фильмам.
+PUBLIC = 'public'
+SUBSCRIPTION = 'subscription'
+
 
 def new_id() -> str:
     return str(uuid4())
@@ -29,6 +33,7 @@ def make_film(
     actors: Iterable[Doc] = (),
     writers: Iterable[Doc] = (),
     directors: Iterable[Doc] = (),
+    access_level: str = PUBLIC,
 ) -> Doc:
     actors, writers = list(actors), list(writers)
     return {
@@ -36,6 +41,7 @@ def make_film(
         'title': title,
         'imdb_rating': imdb_rating,
         'description': description,
+        'access_level': access_level,
         'genres': list(genres),
         'actors': actors,
         'writers': writers,

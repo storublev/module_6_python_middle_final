@@ -1,7 +1,6 @@
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import backoff
@@ -11,6 +10,7 @@ from elasticsearch import ConnectionError as ElasticConnectionError
 from storage.base import (
     Document,
     DocumentStorage,
+    FieldIn,
     RelatedTo,
     SearchField,
     SearchRequest,
@@ -18,6 +18,7 @@ from storage.base import (
     StorageUnavailableError,
     TextQuery,
 )
+from storage.resilience import BackoffPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +35,6 @@ CONNECTION_ERRORS = (ElasticConnectionError, ConnectionTimeout)
 # сеть моргнула. Таймаут не повторяется — каждая попытка заняла бы ещё
 # request_timeout, а зависший Elasticsearch вряд ли ответит на вторую.
 RETRYABLE_ERRORS = (ElasticConnectionError,)
-
-
-@dataclass(frozen=True)
-class BackoffPolicy:
-    """Повторы с экспоненциальной паузой: factor * 2^n секунд, но не больше
-    max_value; на все попытки одного запроса — не больше max_time секунд.
-    Между паузами добавляется случайный разброс, чтобы воркеры не повторяли
-    запросы одновременно.
-    """
-
-    max_time: float
-    factor: float
-    max_value: float
 
 
 class ElasticStorage(DocumentStorage):
@@ -109,9 +97,16 @@ class ElasticStorage(DocumentStorage):
     def _query(self, request: SearchRequest) -> dict[str, Any]:
         must = [self._text(request.text)] if request.text else []
         filters = [self._related(request.related_to)] if request.related_to else []
+        filters += [self._field_in(condition) for condition in request.filters]
         if not must and not filters:
             return {'match_all': {}}
         return {'bool': {'must': must, 'filter': filters}}
+
+    @staticmethod
+    def _field_in(condition: FieldIn) -> dict[str, Any]:
+        # terms по keyword-полю: фильтр не влияет на релевантность и кешируется
+        # Elasticsearch, поэтому отбор по уровню доступа почти ничего не стоит.
+        return {'terms': {condition.field: list(condition.values)}}
 
     @staticmethod
     def _text(text: TextQuery) -> dict[str, Any]:

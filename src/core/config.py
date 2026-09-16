@@ -35,6 +35,27 @@ class Settings(BaseSettings):
     redis_backoff_base: float = 0.01
     redis_backoff_cap: float = 0.1
 
+    # Сервис авторизации: у него спрашиваются права на подписочные фильмы.
+    auth_api_url: str = 'http://auth:8000'
+    # Ждать сервис авторизации долго нельзя: пока он думает, ждёт и клиент
+    # каталога. Не ответил вовремя — отдаём публичные фильмы.
+    auth_connect_timeout: float = 0.5
+    auth_request_timeout: float = 1
+
+    # Повторы при обрыве соединения с сервисом авторизации. Повторяется только
+    # то, что заведомо не дошло: таймаут ответа не повторяется, иначе самому
+    # нагруженному сервису сайта досталось бы вдвое больше запросов ровно
+    # тогда, когда ему тяжело.
+    auth_backoff_max_time: float = 1
+    auth_backoff_factor: float = 0.05
+    auth_backoff_max_value: float = 0.5
+
+    # Прерыватель: после скольких сбоев подряд перестать ходить в сервис
+    # авторизации и на сколько секунд. Пока он открыт, выдача деградирует до
+    # публичных фильмов сразу, не тратя таймаут на каждый запрос.
+    auth_breaker_failures: int = 5
+    auth_breaker_reset_timeout: float = 30
+
     @property
     def elastic_url(self) -> str:
         return f'http://{self.elastic_host}:{self.elastic_port}'
