@@ -29,6 +29,7 @@ from services.errors import (
     OAuthStateInvalidError,
     ProviderNotFoundError,
     SocialAccountTakenError,
+    SocialLinkExpiredError,
     TokenExpiredError,
     TokenInvalidError,
     TokenRevokedError,
@@ -66,7 +67,8 @@ async def providers(social: SocialAuthServiceDep) -> list[ProviderSchema]:
     summary='Вход через соцсеть',
     description='Перенаправляет к поставщику. После согласия пользователя тот вернёт его на callback, '
                 'и сервис выдаст пару токенов. С access-токеном в заголовке вместо входа выполняется '
-                'привязка аккаунта соцсети к текущему пользователю.',
+                'привязка аккаунта соцсети к текущему пользователю: завершить её может только тот же '
+                'вход, пока он действует.',
     responses={
         HTTPStatus.TEMPORARY_REDIRECT: {'description': 'Переход на страницу входа поставщика'},
         # Токен здесь необязателен, поэтому not_authenticated быть не может,
@@ -79,11 +81,7 @@ async def oauth_login(
     principal: OptionalPrincipalDep,
     social: SocialAuthServiceDep,
 ) -> RedirectResponse:
-    url = await social.start(
-        provider,
-        redirect_uri=callback_url(provider),
-        link_to=principal.user_id if principal else None,
-    )
+    url = await social.start(provider, redirect_uri=callback_url(provider), link_to=principal)
     return RedirectResponse(url, status_code=HTTPStatus.TEMPORARY_REDIRECT)
 
 
@@ -92,13 +90,15 @@ async def oauth_login(
     response_model=SocialLoginSchema,
     summary='Возврат от соцсети',
     description='Меняет код поставщика на пару токенов. Если вход начинали с access-токеном, '
-                'аккаунт привязывается к текущему пользователю, и токены не выдаются. '
-                'Первый вход через соцсеть заводит учётную запись без пароля: задать его можно '
-                'в личном кабинете.',
+                'аккаунт привязывается к текущему пользователю, и токены не выдаются; привязка '
+                'не состоится, если к этому времени тот вход закончился — сессию закрыли или '
+                'сменили пароль. Первый вход через соцсеть заводит учётную запись без пароля: '
+                'задать его можно в личном кабинете.',
     # Токен на возврате не читается: это переход браузера от поставщика.
     responses=error_responses(
         OAuthStateInvalidError,
         OAuthRejectedError,
+        SocialLinkExpiredError,
         SocialAccountTakenError,
         ProviderNotFoundError,
         OAuthProviderUnavailableError,

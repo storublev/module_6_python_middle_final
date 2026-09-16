@@ -132,6 +132,13 @@ class OAuthRejectedError(AuthenticationError):
     message = 'Social provider did not confirm the login, start again'
 
 
+class SocialLinkExpiredError(AuthenticationError):
+    # Вход, с которого начали привязку аккаунта, за это время закончился:
+    # пользователь вышел или сменил пароль.
+    code = 'social_link_expired'
+    message = 'The session that started linking is no longer valid, log in and start again'
+
+
 class ServiceUnavailableError(ServiceError):
     """Внешняя система временно недоступна: запрос стоит повторить позже."""
 
