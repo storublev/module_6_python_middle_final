@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY manage.py .
 COPY config/ config/
 COPY movies/ movies/
+COPY users/ users/
 
 # Статика админки собирается в образ, а раздаёт её nginx из общего тома:
 # одноразовый контейнер копирует её туда при запуске стека.

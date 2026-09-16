@@ -52,6 +52,23 @@ class Settings(BaseSettings):
     postgres_password: SecretStr
     postgres_schema: str = 'content'
 
+    # Сервис авторизации: вход сотрудников проверяется в нём, а не по локальным паролям.
+    auth_api_url: str = 'http://auth:8000'
+    # Право, дающее вход в админку. Его выдаёт роль staff (миграция 0005 сервиса авторизации).
+    auth_admin_permission: str = 'admin.access'
+    # Ждать ответа сервиса авторизации дольше нескольких секунд бессмысленно:
+    # столько же ждёт человек у формы входа.
+    auth_connect_timeout: float = 1.0
+    auth_read_timeout: float = 3.0
+    # Повторяется только обрыв соединения: запрос, на который сервис не ответил
+    # за read_timeout, повторять нельзя — вход мог уже состояться.
+    auth_connect_retries: int = 2
+    auth_backoff_factor: float = 0.2
+    # Прерыватель: после скольких сбоев подряд перестать ходить в сервис
+    # авторизации и на сколько секунд.
+    auth_breaker_failures: int = 5
+    auth_breaker_reset_timeout: float = 30.0
+
     static_root: Path = BASE_DIR / 'staticfiles'
     static_url: str = '/static/'
 
@@ -76,6 +93,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'movies.apps.MoviesConfig',
+    'users.apps.UsersConfig',
 ]
 
 MIDDLEWARE = [
@@ -123,6 +141,17 @@ DATABASES = {
         },
     },
 }
+
+AUTH_USER_MODEL = 'users.User'
+# Первым идёт вход через сервис авторизации: логин и пароль сотрудника хранятся
+# только там. ModelBackend оставлен вторым как аварийный вход: локальный
+# суперпользователь (manage.py createsuperuser) войдёт, даже если сервис
+# авторизации недоступен. У сотрудников из сервиса пароль в базе админки не
+# хранится, поэтому ModelBackend их не пропустит.
+AUTHENTICATION_BACKENDS = [
+    'users.backends.AuthServiceBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
