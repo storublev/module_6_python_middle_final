@@ -91,9 +91,19 @@ docker compose exec auth python cli.py createsuperuser --login admin
 Команды, тесты и настройки сервиса авторизации — в [auth/README.md](auth/README.md),
 админки — в [admin_panel/README.md](admin_panel/README.md).
 
-Суперпользователь сервиса авторизации входит в админку сразу. Остальным
-сотрудникам нужна роль `staff` с правом `admin.access` — как её назначить,
-описано в [admin_panel/README.md](admin_panel/README.md#вход-через-сервис-авторизации).
+Учётных записей после запуска нет: их заводят в сервисе авторизации, а не в
+админке. Суперпользователь из команды выше (`createsuperuser`) входит в админку
+сразу. Обычного сотрудника надо зарегистрировать и выдать ему роль `staff` с
+правом `admin.access`:
+
+```bash
+# регистрация
+curl -s -X POST http://localhost/auth/api/v1/signup -H 'Content-Type: application/json' \
+    -d '{"login":"editor","password":"editor-password"}'
+```
+
+Команды назначения роли и отзыва доступа — в
+[admin_panel/README.md](admin_panel/README.md#как-завести-сотрудника).
 
 ### Локальный запуск без Docker
 

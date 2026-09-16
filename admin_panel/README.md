@@ -53,20 +53,6 @@ Django-админка онлайн-кинотеатра: через неё ре�
 поэтому доступ живёт не дольше сессии Django; закрыть его немедленно можно,
 сняв галочку «активен» у сотрудника в админке.
 
-Право `admin.access` даёт роль `staff` (миграция `0005` сервиса авторизации).
-Назначить её сотруднику:
-
-```bash
-docker compose exec auth python cli.py createsuperuser --login admin   # если суперпользователя ещё нет
-TOKEN=$(curl -s -X POST http://localhost/auth/api/v1/login \
-    -H 'Content-Type: application/json' -d '{"login":"admin","password":"..."}' \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
-ROLE=$(curl -s http://localhost/auth/api/v1/roles -H "Authorization: Bearer $TOKEN" \
-    | python3 -c 'import sys,json; print([r["id"] for r in json.load(sys.stdin) if r["name"]=="staff"][0])')
-curl -X PUT "http://localhost/auth/api/v1/users/<id сотрудника>/roles/$ROLE" \
-    -H "Authorization: Bearer $TOKEN"
-```
-
 ### Если сервис авторизации недоступен
 
 Сервис авторизации — внешняя зависимость, и админка не должна вставать вместе
@@ -89,6 +75,82 @@ curl -X PUT "http://localhost/auth/api/v1/users/<id сотрудника>/roles/
 совпадать с логином из сервиса авторизации — иначе записи столкнутся на
 уникальном логине, и вход через сервис будет отклонён.
 
+## Как завести сотрудника
+
+Учётных записей в админке нет, пока их не заведут: сразу после `docker compose
+up` войти некому. Заводят их в сервисе авторизации, а не в админке.
+
+### Первый вход: суперпользователь
+
+Суперпользователю сервиса авторизации разрешено всё, отдельное право ему не
+нужно, — с него удобно начать:
+
+```bash
+docker compose exec auth python cli.py createsuperuser --login admin
+```
+
+Пароль команда спросит без отображения на экране (или возьмёт из переменной
+`AUTH_SUPERUSER_PASSWORD`; минимум 8 символов). После этого `admin` входит на
+http://localhost/admin/ — запись сотрудника в базе админки создастся сама при
+первом входе.
+
+### Обычный сотрудник: регистрация и роль `staff`
+
+Остальным нужно право `admin.access`, а его даёт роль `staff` (её создаёт
+миграция `0005` сервиса авторизации). Регистрируем пользователя:
+
+```bash
+curl -s -X POST http://localhost/auth/api/v1/signup \
+    -H 'Content-Type: application/json' \
+    -d '{"login":"editor","password":"editor-password"}'
+# {"id":"<id сотрудника>","login":"editor","created_at":"..."}
+```
+
+Логин — латиница, цифры и `_.@+-`, от 3 до 64 символов, регистр не
+учитывается; пароль — от 8 до 128 символов. Идентификатор из ответа
+понадобится дальше.
+
+Назначаем роль от имени суперпользователя (нужно право `access.manage`, оно
+есть у суперпользователя):
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost/auth/api/v1/login \
+    -H 'Content-Type: application/json' -d '{"login":"admin","password":"<пароль admin>"}' \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+
+ROLE=$(curl -s http://localhost/auth/api/v1/roles -H "Authorization: Bearer $TOKEN" \
+    | python3 -c 'import sys,json; print([r["id"] for r in json.load(sys.stdin) if r["name"]=="staff"][0])')
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+    -X PUT "http://localhost/auth/api/v1/users/<id сотрудника>/roles/$ROLE" \
+    -H "Authorization: Bearer $TOKEN"   # 204 — роль назначена
+```
+
+Теперь `editor` входит в админку тем же логином и паролем. Права действуют
+сразу: перевходить или ждать истечения кеша не нужно.
+
+### Как закрыть доступ
+
+| Что нужно | Как |
+|---|---|
+| Отозвать доступ в админку | `DELETE /auth/api/v1/users/<id>/roles/<id роли>` — следующий вход не пройдёт |
+| Закрыть доступ немедленно | Снять галочку «активен» у сотрудника в самой админке: текущая сессия Django перестаёт действовать на следующем же запросе |
+
+Отзыв роли действует со следующего входа: право проверяется при входе, а не при
+каждом клике, поэтому уже открытая сессия Django живёт до своего конца.
+
+### Аварийный вход
+
+Если сервис авторизации недоступен, ни один из заведённых так сотрудников войти
+не сможет: их пароли лежат только в нём. На такой случай заводится локальный
+суперпользователь админки со своим паролем в её базе — зачем он нужен, описано
+выше, в разделе
+[«Если сервис авторизации недоступен»](#если-сервис-авторизации-недоступен):
+
+```bash
+docker compose exec django-admin python manage.py createsuperuser --login rescue
+```
+
 ## Запуск
 
 Админка поднимается вместе со стеком из корня репозитория (см.
@@ -96,11 +158,8 @@ curl -X PUT "http://localhost/auth/api/v1/users/<id сотрудника>/roles/
 Миграции и сборку статики выполняет одноразовый контейнер
 `django-admin-migrations`, статику раздаёт nginx из тома `admin_static`.
 
-Аварийный локальный суперпользователь:
-
-```bash
-docker compose exec django-admin python manage.py createsuperuser --login rescue
-```
+Учётных записей после запуска нет — как завести первую, описано в разделе
+[«Как завести сотрудника»](#как-завести-сотрудника).
 
 ### Локальный запуск без Docker
 
