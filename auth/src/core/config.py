@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     login_attempts_per_account_period: Duration = timedelta(minutes=15)
     signup_attempts_per_ip: int = Field(default=10, ge=1)
     signup_attempts_per_ip_period: Duration = timedelta(hours=1)
+    # Подтверждение пароля в личном кабинете (смена логина и пароля) — та же
+    # проверка пароля, что и вход, поэтому ограничено так же. Лимит учётной
+    # записи строже лимита входа: свой пароль владелец знает, а перебирать
+    # его здесь можно только с действующим токеном.
+    password_check_attempts_per_account: int = Field(default=5, ge=1)
+    password_check_attempts_per_account_period: Duration = timedelta(minutes=15)
+    password_check_attempts_per_ip: int = Field(default=20, ge=1)
+    password_check_attempts_per_ip_period: Duration = timedelta(minutes=15)
 
     # Вход через соцсети. Поставщик включён, только если заданы обе его
     # переменные: без ключей приложения ходить к нему не с чем, и тогда его

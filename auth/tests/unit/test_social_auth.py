@@ -277,7 +277,7 @@ async def test_link_is_cancelled_by_password_change(social, registration, auth, 
     """Смена пароля отменяет начатую привязку: украденным токеном её не закончить."""
     principal = await signed_in(registration, auth, tokens)
     state = await start(social, link_to=principal)
-    await profiles.change_password(principal, PASSWORD, 'newpassword123')
+    await profiles.change_password(principal, PASSWORD, 'newpassword123', CLIENT)
 
     with pytest.raises(SocialLinkExpiredError):
         await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
@@ -287,7 +287,7 @@ async def test_cancelled_link_leaves_no_account(social, registration, auth, toke
     """Отменённая привязка не оставляет за собой связанного аккаунта."""
     principal = await signed_in(registration, auth, tokens)
     state = await start(social, link_to=principal)
-    await profiles.change_password(principal, PASSWORD, 'newpassword123')
+    await profiles.change_password(principal, PASSWORD, 'newpassword123', CLIENT)
     with pytest.raises(SocialLinkExpiredError):
         await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
 
@@ -359,7 +359,7 @@ async def test_unlink_is_allowed_after_password_is_set(social, profiles, tokens)
     state = await start(social)
     result = await social.complete('yandex', code=CODE, state=state, redirect_uri=REDIRECT_URI, client=CLIENT)
     principal = principal_of(result, tokens)
-    await profiles.change_password(principal, None, 'newpassword123')
+    await profiles.change_password(principal, None, 'newpassword123', CLIENT)
 
     assert await social.unlink(principal.user_id, 'yandex')
 

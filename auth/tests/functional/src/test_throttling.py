@@ -1,4 +1,4 @@
-"""Ограничение частоты входа и регистрации: 429 по IP и по логину.
+"""Ограничение частоты входа, регистрации и проверок пароля: 429 по IP, логину и учётной записи.
 
 Адрес клиента сервис берёт из X-Forwarded-For (в работе его выставляет
 nginx), поэтому тесты «приходят с разных IP» через этот заголовок.
@@ -7,7 +7,7 @@ nginx), поэтому тесты «приходят с разных IP» чер
 import asyncpg
 import httpx
 
-from tests.functional.conftest import PASSWORD, MakeAccount, signup
+from tests.functional.conftest import PASSWORD, Account, MakeAccount, signup
 from tests.functional.settings import settings
 
 
@@ -85,6 +85,67 @@ async def test_signup_limit_per_ip(client: httpx.AsyncClient) -> None:
     response = await client.post('/signup', json={'login': 'late', 'password': PASSWORD},
                                  headers=from_ip('203.0.113.11'))
     assert response.status_code == 201
+
+
+async def attempt_password_change(
+    client: httpx.AsyncClient, account: Account, password: str, ip: str,
+) -> httpx.Response:
+    """Смена пароля в личном кабинете с подтверждением паролем `password`."""
+    return await client.put(
+        '/users/me/password',
+        json={'password': password, 'new_password': 'newpassword123'},
+        headers={**account.headers, **from_ip(ip)},
+    )
+
+
+async def test_password_check_limit_per_account(client: httpx.AsyncClient, make_account: MakeAccount) -> None:
+    """429 после лимита неверных паролей в кабинете: перебирать пароль там нельзя."""
+    neo = await make_account('neo')
+    for number in range(settings.password_check_attempts_per_account):
+        response = await attempt_password_change(client, neo, 'wrong-password', f'203.0.113.{number + 30}')
+        assert response.status_code == 403, response.text
+
+    assert_too_many_requests(await attempt_password_change(client, neo, PASSWORD, '203.0.113.40'))
+
+
+async def test_password_check_limit_per_ip(
+    client: httpx.AsyncClient, make_account: MakeAccount,
+) -> None:
+    """429 после лимита неверных паролей с одного IP, даже если аккаунты разные."""
+    ip = '203.0.113.50'
+    for number in range(settings.password_check_attempts_per_ip):
+        account = await make_account(f'user{number}')
+        response = await attempt_password_change(client, account, 'wrong-password', ip)
+        assert response.status_code == 403, response.text
+
+    late = await make_account('late')
+    assert_too_many_requests(await attempt_password_change(client, late, PASSWORD, ip))
+
+
+async def test_password_check_limit_covers_login_change(
+    client: httpx.AsyncClient, make_account: MakeAccount,
+) -> None:
+    """Смена логина считается тем же лимитом: перебирать пароль по очереди в двух местах нельзя."""
+    neo = await make_account('neo')
+    for number in range(settings.password_check_attempts_per_account):
+        response = await client.patch(
+            '/users/me/login',
+            json={'new_login': f'theone{number}', 'password': 'wrong-password'},
+            headers={**neo.headers, **from_ip(f'203.0.113.{number + 60}')},
+        )
+        assert response.status_code == 403, response.text
+
+    assert_too_many_requests(await attempt_password_change(client, neo, PASSWORD, '203.0.113.70'))
+
+
+async def test_profile_limit_does_not_block_login(client: httpx.AsyncClient, make_account: MakeAccount) -> None:
+    """Исчерпанный лимит кабинета не мешает войти по паролю с того же адреса."""
+    ip = '203.0.113.80'
+    neo = await make_account('neo')
+    for _ in range(settings.password_check_attempts_per_account):
+        await attempt_password_change(client, neo, 'wrong-password', ip)
+
+    assert (await attempt_login(client, 'neo', PASSWORD, ip)).status_code == 200
 
 
 async def test_signup_limit_does_not_block_login(client: httpx.AsyncClient) -> None:

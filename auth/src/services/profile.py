@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from models.role import Role
 from models.user import LoginRecord, User
-from services.auth import Principal
+from services.auth import ClientInfo, Principal
 from services.errors import (
     LoginTakenError,
     PasswordAlreadySetError,
@@ -11,6 +11,7 @@ from services.errors import (
     WrongPasswordError,
 )
 from services.passwords import PasswordHasher
+from services.throttling import Throttle
 from storage.base import (
     AlreadyExistsError,
     LoginHistoryRepository,
@@ -49,25 +50,29 @@ class ProfileService:
         history: LoginHistoryRepository,
         sessions: SessionStore,
         passwords: PasswordHasher,
+        throttle: Throttle,
     ):
         self.users = users
         self.roles = roles
         self.history = history
         self.sessions = sessions
         self.passwords = passwords
+        self.throttle = throttle
 
     async def get_profile(self, principal: Principal) -> Profile:
         user = await self._get_user(principal)
         return Profile(user=user, roles=await self.roles.list_for_user(user.id))
 
-    async def change_login(self, principal: Principal, new_login: str, password: str) -> User:
+    async def change_login(self, principal: Principal, new_login: str, password: str, client: ClientInfo) -> User:
         """Меняет логин. Смену подтверждает текущий пароль: одного украденного токена мало.
 
         Raises:
+            TooManyRequestsError: слишком много проверок пароля для учётной записи или адреса.
             WrongPasswordError: текущий пароль неверный.
             LoginTakenError: логин занят другим пользователем.
         """
-        user = await self._check_password(principal, password)
+        user = await self._get_user(principal)
+        await self._check_password(user, password, client)
         if new_login == user.login:
             return user
         try:
@@ -75,7 +80,9 @@ class ProfileService:
         except AlreadyExistsError as exc:
             raise LoginTakenError from exc
 
-    async def change_password(self, principal: Principal, password: str | None, new_password: str) -> None:
+    async def change_password(
+        self, principal: Principal, password: str | None, new_password: str, client: ClientInfo,
+    ) -> None:
         """Меняет пароль и закрывает остальные сессии: если пароль узнал кто-то ещё, он потеряет доступ.
 
         Остальные сессии перестают действовать в момент смены пароля: вместе с
@@ -91,10 +98,11 @@ class ProfileService:
         текущий. Личность в этом случае подтверждает сама сессия.
 
         Raises:
+            TooManyRequestsError: слишком много проверок пароля для учётной записи или адреса.
             WrongPasswordError: текущий пароль неверный.
             PasswordAlreadySetError: пароль уже есть, но текущий не передан.
         """
-        user = await self._authorize_password_change(principal, password)
+        user = await self._authorize_password_change(principal, password, client)
         version = await self.users.update_password(user.id, await self.passwords.hash(new_password))
         try:
             await self.sessions.set_credentials_version(principal.session_id, version)
@@ -112,20 +120,31 @@ class ProfileService:
             raise TokenRevokedError('User no longer exists')
         return user
 
-    async def _check_password(self, principal: Principal, password: str) -> User:
-        user = await self._get_user(principal)
+    async def _check_password(self, user: User, password: str, client: ClientInfo) -> None:
+        """Сверяет текущий пароль, засчитывая попытку до самой проверки.
+
+        Иначе завладевший токеном перебирал бы пароль здесь: у личного
+        кабинета свои эндпоинты, и лимиты входа их не прикрывают. Попытка
+        засчитывается первой, поэтому сверх лимита Argon2 не считается вовсе.
+
+        Raises:
+            TooManyRequestsError: исчерпан лимит проверок.
+            WrongPasswordError: пароль неверный или его вовсе нет.
+        """
+        await self.throttle.password_check_attempt(user.id, client.ip)
         # Пароля нет — подтверждать им нечего, и проверка не пройдена.
         if not user.has_password or not await self.passwords.verify(password, user.password_hash):
             raise WrongPasswordError
-        return user
+        await self.throttle.password_check_succeeded(user.id)
 
-    async def _authorize_password_change(self, principal: Principal, password: str | None) -> User:
+    async def _authorize_password_change(
+        self, principal: Principal, password: str | None, client: ClientInfo,
+    ) -> User:
         user = await self._get_user(principal)
         if not user.has_password:
             # Первый пароль пользователя из соцсети: подтверждать нечем.
             return user
         if password is None:
             raise PasswordAlreadySetError
-        if not await self.passwords.verify(password, user.password_hash):
-            raise WrongPasswordError
+        await self._check_password(user, password, client)
         return user

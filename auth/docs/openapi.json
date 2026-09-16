@@ -536,7 +536,7 @@
           "profile"
         ],
         "summary": "Смена логина",
-        "description": "Меняет логин. Смену подтверждает текущий пароль.",
+        "description": "Меняет логин. Смену подтверждает текущий пароль. Число проверок пароля ограничено для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After, и пароль при этом не проверяется.",
         "operationId": "change_login_auth_api_v1_users_me_login_patch",
         "requestBody": {
           "content": {
@@ -651,6 +651,34 @@
               }
             }
           },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -675,7 +703,7 @@
           "profile"
         ],
         "summary": "Смена пароля",
-        "description": "Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, а войти заново придётся и на текущем устройстве.",
+        "description": "Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, а войти заново придётся и на текущем устройстве. Число проверок текущего пароля ограничено для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After.",
         "operationId": "change_password_auth_api_v1_users_me_password_put",
         "requestBody": {
           "content": {
@@ -777,6 +805,34 @@
                     "value": {
                       "code": "password_already_set",
                       "detail": "Current password is required to change an existing password"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
                     }
                   }
                 }
