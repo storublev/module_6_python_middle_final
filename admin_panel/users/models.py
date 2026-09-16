@@ -10,6 +10,9 @@
 createsuperuser`: у него пароль есть, и он входит через ModelBackend, когда
 сервис авторизации недоступен. Его логин не должен совпадать с логином из
 сервиса авторизации, иначе записи столкнутся на уникальном логине.
+
+Вместе с записью хранится сессия сотрудника в сервисе авторизации: ею админка
+перепроверяет его доступ, пока он работает, и закрывает её при выходе.
 """
 
 import uuid
@@ -48,6 +51,14 @@ class User(AbstractBaseUser):
     is_active = models.BooleanField(_('active'), default=True)
     is_staff = models.BooleanField(_('staff status'), default=True)
     is_superuser = models.BooleanField(_('superuser status'), default=False)
+    # Токены сессии сотрудника в сервисе авторизации: ими админка
+    # перепроверяет его доступ, пока он работает (users/recheck.py). Хранятся
+    # у сотрудника, а не в сессии Django, чтобы проверку и обновление
+    # одноразового refresh-токена можно было выстроить в очередь блокировкой
+    # строки: параллельные запросы одной страницы иначе гасят сессию друг другу.
+    auth_access_token = models.TextField(_('access token'), blank=True, default='')
+    auth_refresh_token = models.TextField(_('refresh token'), blank=True, default='')
+    auth_checked_at = models.DateTimeField(_('access checked'), null=True, blank=True)
     created_at = models.DateTimeField(_('created'), auto_now_add=True)
     updated_at = models.DateTimeField(_('modified'), auto_now=True)
 

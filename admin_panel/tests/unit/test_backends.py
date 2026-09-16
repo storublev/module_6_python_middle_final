@@ -107,8 +107,27 @@ def test_empty_credentials_do_not_reach_auth_service(client: FakeAuthClient, bac
     assert backend.authenticate(None, username='', password='') is None
 
 
-def test_session_in_auth_service_is_closed(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
-    """После входа сессия в сервисе закрывается: дальше сотрудника пускает сессия Django."""
+def test_session_in_auth_service_is_kept(client: FakeAuthClient, backend: AuthServiceBackend) -> None:
+    """После входа сессия в сервисе остаётся: ею админка перепроверяет доступ сотрудника."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert client.logged_out == []
+    assert (user.auth_access_token, user.auth_refresh_token) == (client.tokens.access, client.tokens.refresh)
+
+
+def test_login_remembers_when_access_was_checked(backend: AuthServiceBackend) -> None:
+    """Вход — тоже проверка доступа: её время запоминается, чтобы не перепроверять сразу же."""
+    user = backend.authenticate(None, username='neo', password=PASSWORD)
+
+    assert user.auth_checked_at is not None
+
+
+def test_session_is_closed_when_permission_is_missing(
+    client: FakeAuthClient, backend: AuthServiceBackend,
+) -> None:
+    """Отказ во входе не оставляет открытую сессию в сервисе авторизации."""
+    client.allowed = False
+
     backend.authenticate(None, username='neo', password=PASSWORD)
 
     assert client.logged_out == [client.token]

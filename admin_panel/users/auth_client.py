@@ -44,6 +44,18 @@ class TooManyRequestsError(AuthServiceError):
     """Исчерпан лимит попыток входа."""
 
 
+class SessionExpiredError(AuthServiceError):
+    """Токен больше не действует: сессия в сервисе авторизации закрыта или срок токена истёк."""
+
+
+@dataclass(frozen=True)
+class Tokens:
+    """Пара токенов сотрудника в сервисе авторизации."""
+
+    access: str
+    refresh: str
+
+
 @dataclass(frozen=True)
 class AuthProfile:
     """Данные сотрудника, полученные от сервиса авторизации."""
@@ -93,8 +105,8 @@ class AuthClient:
         session.mount('https://', adapter)
         return session
 
-    def login(self, login: str, password: str) -> str:
-        """Меняет логин и пароль на access-токен.
+    def login(self, login: str, password: str) -> Tokens:
+        """Меняет логин и пароль на пару токенов.
 
         Пароль уходит только в теле запроса и в журнал не попадает.
         """
@@ -104,11 +116,25 @@ class AuthClient:
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             raise TooManyRequestsError(self._error_code(response))
         self._raise_for_unexpected(response, HTTPStatus.OK)
-        return response.json()['access_token']
+        return self._tokens(response)
+
+    def refresh(self, refresh_token: str) -> Tokens:
+        """Меняет refresh-токен на новую пару: прежний после этого не действует.
+
+        Raises:
+            SessionExpiredError: сессия в сервисе авторизации закрыта — сотрудник
+                вышел, сменил пароль или его сессии закрыл кто-то ещё.
+        """
+        response = self._request('POST', '/token/refresh', json={'refresh_token': refresh_token})
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
+            raise SessionExpiredError(self._error_code(response))
+        self._raise_for_unexpected(response, HTTPStatus.OK)
+        return self._tokens(response)
 
     def get_profile(self, access_token: str) -> AuthProfile:
         """Читает данные владельца токена."""
         response = self._request('GET', '/users/me', token=access_token)
+        self._raise_for_expired_token(response)
         self._raise_for_unexpected(response, HTTPStatus.OK)
         payload = response.json()
         return AuthProfile(
@@ -126,6 +152,7 @@ class AuthClient:
         response = self._request(
             'GET', '/access/check', token=access_token, params={'permission': permission, 'fresh': 'true'},
         )
+        self._raise_for_expired_token(response)
         self._raise_for_unexpected(response, HTTPStatus.OK)
         return bool(response.json()['allowed'])
 
@@ -177,9 +204,35 @@ class AuthClient:
             return ''
 
     @staticmethod
+    def _tokens(response: requests.Response) -> Tokens:
+        payload = response.json()
+        return Tokens(access=payload['access_token'], refresh=payload['refresh_token'])
+
+    @staticmethod
+    def _raise_for_expired_token(response: requests.Response) -> None:
+        """Отдельная ошибка на 401: такой токен не чинится повтором, его меняют по refresh."""
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
+            raise SessionExpiredError(AuthClient._error_code(response))
+
+    @staticmethod
     def _raise_for_unexpected(response: requests.Response, expected: HTTPStatus) -> None:
         if response.status_code != expected:
             raise AuthServiceError(f'unexpected status {response.status_code}')
+
+
+_shared: AuthClient | None = None
+
+
+def shared_client() -> AuthClient:
+    """Клиент, общий для процесса: у прерывателя должен быть один счётчик сбоев на всех.
+
+    Бэкенд входа Django создаёт заново на каждую попытку, а middleware — раз
+    на процесс; со своим клиентом у каждого счётчик сбоев обнулялся бы.
+    """
+    global _shared
+    if _shared is None:
+        _shared = build_client()
+    return _shared
 
 
 def build_client() -> AuthClient:
