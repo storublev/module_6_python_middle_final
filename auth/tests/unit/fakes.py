@@ -5,7 +5,7 @@
 """
 
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import count
 from typing import Any
 from uuid import UUID, uuid4
@@ -33,6 +33,7 @@ from storage.base import (
     StorageUnavailableError,
     UserRepository,
 )
+from storage.partitions import partition_name
 
 
 def now() -> datetime:
@@ -48,6 +49,7 @@ class Database:
         self.user_roles: set[tuple[UUID, UUID]] = set()
         self.history: list[tuple[UUID, LoginRecord]] = []
         self.social_accounts: dict[UUID, SocialAccount] = {}
+        self.partitions: set[date] = set()
         # Задания на сброс кеша прав: пишутся вместе с изменением ролей.
         self.invalidations: list[AccessInvalidation] = []
         self._invalidation_ids = count(1)
@@ -189,6 +191,12 @@ class FakeLoginHistoryRepository(LoginHistoryRepository):
     async def get_page(self, user_id: UUID, offset: int, limit: int) -> list[LoginRecord]:
         records = [record for owner, record in reversed(self.db.history) if owner == user_id]
         return records[offset:offset + limit]
+
+    async def ensure_partitions(self, months: Sequence[date]) -> list[str]:
+        """Секции — свойство PostgreSQL; в памяти запоминаем только запрошенные месяцы."""
+        created = [partition_name(month) for month in months if month not in self.db.partitions]
+        self.db.partitions.update(months)
+        return created
 
 
 class FakeSessionStore(SessionStore):

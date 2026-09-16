@@ -11,7 +11,7 @@ SQLAlchemy, ни о Redis. Реализации выбираются в api/depe
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -152,6 +152,14 @@ class LoginHistoryRepository(ABC):
     @abstractmethod
     async def get_page(self, user_id: UUID, offset: int, limit: int) -> list[LoginRecord]:
         """Возвращает страницу входов пользователя, от новых к старым."""
+
+    @abstractmethod
+    async def ensure_partitions(self, months: Sequence[date]) -> list[str]:
+        """Создаёт секции указанных месяцев, если их ещё нет; возвращает созданные.
+
+        История разбита на месячные секции, и секции будущих месяцев кто-то
+        должен завести заранее. Повторный вызов ничего не делает.
+        """
 
 
 class SocialAccountRepository(ABC):

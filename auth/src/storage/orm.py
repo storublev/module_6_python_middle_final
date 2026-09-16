@@ -122,11 +122,28 @@ class SocialAccountRow(Timestamped, Base):
 
 
 class LoginHistoryRow(Timestamped, Base):
+    """История входов, разбитая на месячные секции.
+
+    Зачем и почему именно по месяцу — в storage/partitions.py. Ключ
+    секционирования входит в первичный ключ: PostgreSQL иначе не даст создать
+    ни первичный ключ, ни уникальное ограничение на секционированной таблице.
+    """
+
     __tablename__ = 'login_history'
-    # История читается постранично, от новых входов к старым, по одному пользователю.
-    __table_args__ = (Index(None, 'user_id', 'created_at'),)
+    # История читается постранично, от новых входов к старым, по одному
+    # пользователю. Индекс объявлен на родителе — PostgreSQL заводит такой же
+    # в каждой секции, в том числе в создаваемых позже.
+    __table_args__ = (
+        Index(None, 'user_id', 'created_at'),
+        {'postgresql_partition_by': 'RANGE (created_at)'},
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    # Ключ секционирования обязан входить в первичный ключ, поэтому created_at
+    # объявлен здесь, а не взят из Timestamped.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), primary_key=True,
+    )
     user_id: Mapped[UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
     user_agent: Mapped[str | None] = mapped_column(String(512))
     ip: Mapped[str | None] = mapped_column(String(45))

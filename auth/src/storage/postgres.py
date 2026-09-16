@@ -4,12 +4,13 @@
 Сессия SQLAlchemy одна на запрос, её создаёт и закрывает FastAPI.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,7 @@ from storage.base import (
     UserRepository,
 )
 from storage.orm import (
+    SCHEMA,
     AccessInvalidationRow,
     LoginHistoryRow,
     RoleRow,
@@ -35,6 +37,7 @@ from storage.orm import (
     UserRoleRow,
     UserRow,
 )
+from storage.partitions import TABLE, partition_bounds, partition_name
 
 # Сбои соединения: asyncpg поднимает OSError, если сервер не принимает
 # соединения, SQLAlchemy — OperationalError и InterfaceError, если оно оборвалось.
@@ -251,6 +254,36 @@ class PostgresLoginHistoryRepository(PostgresRepository, LoginHistoryRepository)
         async with self._errors():
             rows = await self.session.scalars(query)
         return [LoginRecord.model_validate(row) for row in rows]
+
+    async def ensure_partitions(self, months: Sequence[date]) -> list[str]:
+        """Создаёт недостающие месячные секции истории входов.
+
+        Имя секции нигде не приходит снаружи — оно собирается из месяца, —
+        поэтому подстановка в DDL безопасна: параметры в DDL PostgreSQL не
+        принимает.
+        """
+        created = []
+        async with self._errors():
+            for month in months:
+                name = partition_name(month)
+                if await self._partition_exists(name):
+                    continue
+                start, end = partition_bounds(month)
+                await self.session.execute(
+                    text(
+                        f'CREATE TABLE {SCHEMA}.{name} PARTITION OF {SCHEMA}.{TABLE} '
+                        f"FOR VALUES FROM ('{start}') TO ('{end}')",
+                    ),
+                )
+                created.append(name)
+            await self.session.commit()
+        return created
+
+    async def _partition_exists(self, name: str) -> bool:
+        found = await self.session.scalar(
+            text('SELECT to_regclass(:qualified)').bindparams(qualified=f'{SCHEMA}.{name}'),
+        )
+        return found is not None
 
 
 class PostgresSocialAccountRepository(PostgresRepository, SocialAccountRepository):
