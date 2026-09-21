@@ -138,3 +138,30 @@ def test_to_rows_is_lazy(make_event) -> None:
     rows = to_rows([make_event('click')])
 
     assert iter(rows) is rows
+
+
+@pytest.mark.parametrize('field', ['client', 'filters'])
+@pytest.mark.parametrize('value', [['web'], 'web', 42])
+def test_nested_field_of_wrong_type_is_rejected(make_event, field, value) -> None:
+    """Вложенное поле не того типа отбраковывается, а не роняет разбор.
+
+    До проверки `.get()` у списка давал AttributeError — он не ловился как
+    ошибка формата, ETL падал до подтверждения смещений и после перезапуска
+    падал на той же записи снова.
+    """
+    with pytest.raises(EventFormatError):
+        to_row(make_event('search_filters_applied', **{field: value}))
+
+
+def test_broken_nested_field_does_not_take_the_batch_down(make_event) -> None:
+    """В потоке событие с испорченным вложенным полем пропускается, соседние едут дальше."""
+    events = [
+        make_event('click'),
+        make_event('click', client=['web']),
+        make_event('search_filters_applied', filters=['genre']),
+        make_event('page_view'),
+    ]
+
+    rows = list(to_rows(events))
+
+    assert len(rows) == 2

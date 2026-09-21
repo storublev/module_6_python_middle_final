@@ -73,7 +73,11 @@ def to_row(event: dict) -> Sequence[Any]:
     """
     if not isinstance(event, dict):
         raise EventFormatError(f'ожидался объект, получено {type(event).__name__}')
-    client = event.get('client') or {}
+    # Вложенные поля проверяются по типу до обращения к ним: сообщение с
+    # client: ["web"] иначе уронило бы разбор на .get() у списка, а это
+    # AttributeError — он не ловится как ошибка формата и вынес бы весь
+    # перенос. После перезапуска ETL прочитал бы то же сообщение и упал снова.
+    client = _mapping(event.get('client'), 'client')
     try:
         return (
             _uuid(event.get('event_id'), required=True),
@@ -93,14 +97,23 @@ def to_row(event: dict) -> Sequence[Any]:
             _text(event.get('quality_from')),
             _text(event.get('quality_to')),
             _text(event.get('query')),
-            {str(name): str(value) for name, value in (event.get('filters') or {}).items()},
+            {str(name): str(value) for name, value in _mapping(event.get('filters'), 'filters').items()},
             _number(event.get('results_count')),
             _text(client.get('platform')),
             _text(client.get('device')),
             _text(client.get('app_version')),
         )
-    except (TypeError, ValueError) as error:
+    except (AttributeError, TypeError, ValueError) as error:
         raise EventFormatError(str(error)) from error
+
+
+def _mapping(value: Any, name: str) -> dict:
+    """Вложенный объект события: пустой, если его нет, и ошибка, если это не объект."""
+    if value in (None, '', {}):
+        return {}
+    if not isinstance(value, dict):
+        raise EventFormatError(f'поле {name}: ожидался объект, получено {type(value).__name__}')
+    return value
 
 
 def _uuid(value: Any, required: bool = False) -> UUID:
