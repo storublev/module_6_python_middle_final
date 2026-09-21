@@ -1,20 +1,42 @@
 """Преобразование события из брокера в строку аналитического хранилища."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
-from models.event import COLUMN_TYPES, COLUMNS, NO_UUID, EventFormatError, to_row, to_rows
+from models.event import COLUMN_NAMES, COLUMNS, NO_UUID, EventFormatError, to_row, to_rows
 
 
 def column(row, name: str):
-    return row[COLUMNS.index(name)]
+    return row[COLUMN_NAMES.index(name)]
 
 
-def test_columns_and_types_match() -> None:
-    """Имена и типы колонок идут парами: строки передаются драйверу позиционно."""
-    assert len(COLUMNS) == len(COLUMN_TYPES)
+def test_row_follows_the_column_order(make_event) -> None:
+    """Длина строки совпадает с числом колонок: строка строится по тому же списку."""
+    row = to_row(make_event('click'))
+
+    assert len(row) == len(COLUMNS)
+
+
+def test_storage_schema_matches_the_columns() -> None:
+    """Имена и порядок колонок совпадают со схемой в schema/001_events.sql.
+
+    Схема живёт в SQL-файле, а строки собираются в Python: единственное, что
+    удерживает их вместе, — этот тест. Без него добавленное в SQL поле молча
+    сдвинуло бы значения соседних колонок.
+    """
+    sql = (Path(__file__).parents[2] / 'schema' / '001_events.sql').read_text(encoding='utf-8')
+    body = sql.split('CREATE TABLE IF NOT EXISTS ugc.events', 1)[1]
+    body = body[body.index('(') + 1:body.index(')\n')]
+    names = [
+        line.strip().split()[0]
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith('--')
+    ]
+
+    assert names == list(COLUMN_NAMES)
 
 
 def test_click_event_becomes_a_row(make_event) -> None:

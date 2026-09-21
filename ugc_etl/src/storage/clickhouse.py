@@ -21,7 +21,7 @@ from clickhouse_connect.driver.exceptions import (
     ProgrammingError,
 )
 
-from models.event import COLUMN_TYPES, COLUMNS
+from models.event import COLUMN_NAMES, COLUMN_TYPES
 from storage.base import EventSink, SinkDataError, SinkUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class ClickHouseEventSink(EventSink):
             self._client.insert(
                 self._table,
                 rows,
-                column_names=COLUMNS,
+                column_names=COLUMN_NAMES,
                 column_type_names=COLUMN_TYPES,
                 database=self._database,
             )
