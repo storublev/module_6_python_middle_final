@@ -1,0 +1,6 @@
+# Свой список для образа тестов: общий ugc/.dockerignore исключает tests.
+.env
+**/__pycache__
+**/*.pyc
+src
+docs

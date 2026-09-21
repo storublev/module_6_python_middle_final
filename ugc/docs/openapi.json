@@ -1,0 +1,730 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Сервис сбора пользовательских действий",
+    "version": "1.0.0",
+    "description": "Принимает события онлайн-кинотеатра — клики, просмотры страниц и события плеера — и складывает их в Kafka, откуда ETL переносит их в аналитическое хранилище.\n\nСобытия отправляются пачками: клиент копит их и шлёт одним запросом не реже раза в 10 секунд. Пользователь определяется по access-токену сервиса авторизации, поэтому `user_id` в теле не передаётся — он будет взят из токена."
+  },
+  "servers": [
+    {
+      "url": "/ugc/api/v1",
+      "description": "Через шлюз кинотеатра"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "ClickEvent": {
+        "additionalProperties": false,
+        "description": "Клик по элементу интерфейса: карточке фильма, трейлеру, категории (ФТ-1).",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "event_type": {
+            "const": "click",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "element_type": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Element Type",
+            "type": "string"
+          },
+          "element_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Element Id"
+          },
+          "page": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Page",
+            "type": "string"
+          },
+          "film_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Film Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "occurred_at",
+          "client",
+          "event_type",
+          "element_type",
+          "page"
+        ],
+        "title": "ClickEvent",
+        "type": "object"
+      },
+      "ClientInfo": {
+        "additionalProperties": false,
+        "description": "Откуда пришло событие: по этим полям аналитика режет данные по платформам.",
+        "properties": {
+          "platform": {
+            "enum": [
+              "web",
+              "ios",
+              "android",
+              "smart_tv"
+            ],
+            "title": "Platform",
+            "type": "string"
+          },
+          "device": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Device"
+          },
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "App Version"
+          }
+        },
+        "required": [
+          "platform"
+        ],
+        "title": "ClientInfo",
+        "type": "object"
+      },
+      "PageViewEvent": {
+        "additionalProperties": false,
+        "description": "Просмотр страницы и время, проведённое на ней (ФТ-2).\n\nВремя присылается вместе с уходом со страницы, поэтому событие приходит\nпозже самого просмотра — на порядок сортировки в аналитике это не влияет,\nтам используется `occurred_at`.",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "event_type": {
+            "const": "page_view",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "page": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Page",
+            "type": "string"
+          },
+          "referrer": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Referrer"
+          },
+          "duration_ms": {
+            "maximum": 86400000,
+            "minimum": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "occurred_at",
+          "client",
+          "event_type",
+          "page",
+          "duration_ms"
+        ],
+        "title": "PageViewEvent",
+        "type": "object"
+      },
+      "QualityChangedEvent": {
+        "additionalProperties": false,
+        "description": "Смена качества видео, например 720p → 1080p (ФТ-3).",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "event_type": {
+            "const": "quality_changed",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "film_id": {
+            "format": "uuid",
+            "title": "Film Id",
+            "type": "string"
+          },
+          "quality_from": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Quality From",
+            "type": "string"
+          },
+          "quality_to": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Quality To",
+            "type": "string"
+          },
+          "position_ms": {
+            "minimum": 0,
+            "title": "Position Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "occurred_at",
+          "client",
+          "event_type",
+          "film_id",
+          "quality_from",
+          "quality_to",
+          "position_ms"
+        ],
+        "title": "QualityChangedEvent",
+        "type": "object"
+      },
+      "SearchFiltersAppliedEvent": {
+        "additionalProperties": false,
+        "description": "Применение фильтров поиска (ФТ-3).",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "event_type": {
+            "const": "search_filters_applied",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "filters": {
+            "additionalProperties": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 20,
+            "propertyNames": {
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "title": "Filters",
+            "type": "object"
+          },
+          "results_count": {
+            "minimum": 0,
+            "title": "Results Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "occurred_at",
+          "client",
+          "event_type",
+          "results_count"
+        ],
+        "title": "SearchFiltersAppliedEvent",
+        "type": "object"
+      },
+      "VideoCompletedEvent": {
+        "additionalProperties": false,
+        "description": "Досмотр фильма (ФТ-3).\n\n`watched_ratio` — доля просмотренного, от 0 до 1. Именно по ней считаются\nнедосмотренные фильмы: событие приходит и тогда, когда зритель бросил\nфильм, — тогда доля меньше единицы.",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "event_type": {
+            "const": "video_completed",
+            "title": "Event Type",
+            "type": "string"
+          },
+          "film_id": {
+            "format": "uuid",
+            "title": "Film Id",
+            "type": "string"
+          },
+          "watched_ratio": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Watched Ratio",
+            "type": "number"
+          },
+          "duration_ms": {
+            "minimum": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "occurred_at",
+          "client",
+          "event_type",
+          "film_id",
+          "watched_ratio",
+          "duration_ms"
+        ],
+        "title": "VideoCompletedEvent",
+        "type": "object"
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Машиночитаемый код ошибки",
+            "example": "token_expired"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Пояснение для журнала",
+            "example": "Access token has expired"
+          }
+        }
+      },
+      "CollectResult": {
+        "type": "object",
+        "required": [
+          "accepted",
+          "rejected"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "description": "Сколько событий принято и записано в брокер",
+            "example": 19
+          },
+          "rejected": {
+            "type": "array",
+            "description": "События, не прошедшие проверку контракта; остальные из той же пачки приняты",
+            "items": {
+              "type": "object",
+              "required": [
+                "index",
+                "code",
+                "detail"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "description": "Место события в присланной пачке",
+                  "example": 3
+                },
+                "code": {
+                  "type": "string",
+                  "example": "invalid_event"
+                },
+                "detail": {
+                  "type": "string",
+                  "example": "watched_ratio: Input should be less than or equal to 1"
+                }
+              }
+            }
+          }
+        }
+      },
+      "EventsRequest": {
+        "additionalProperties": false,
+        "description": "Пачка событий: клиент копит их и отправляет одним запросом (ФТ-4).\n\nСобытия здесь — ещё не разобранные словари: каждое проверяется отдельно,\nчтобы одно испорченное не отменило остальные. Ограничение на размер пачки\nзадаётся настройкой и проверяется в обработчике.",
+        "properties": {
+          "events": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "click": "#/components/schemas/ClickEvent",
+                  "page_view": "#/components/schemas/PageViewEvent",
+                  "quality_changed": "#/components/schemas/QualityChangedEvent",
+                  "search_filters_applied": "#/components/schemas/SearchFiltersAppliedEvent",
+                  "video_completed": "#/components/schemas/VideoCompletedEvent"
+                },
+                "propertyName": "event_type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ClickEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/PageViewEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/QualityChangedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/VideoCompletedEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/SearchFiltersAppliedEvent"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "EventsRequest",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access-токен сервиса авторизации"
+      }
+    }
+  },
+  "paths": {
+    "/events": {
+      "post": {
+        "summary": "Принять пачку событий",
+        "description": "Каждое событие проверяется отдельно: непрошедшее контракт не отменяет остальные. Ответ 202 значит, что события записаны в брокер, — в аналитическом хранилище они появятся в течение нескольких минут.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsRequest"
+              },
+              "example": {
+                "events": [
+                  {
+                    "event_type": "click",
+                    "event_id": "2a4f2f4e-4b7d-4a3a-9c1e-8f4b6a2d1c00",
+                    "session_id": "d3f1b4c2-51f9-4a1f-9f0e-2b6c1a7e4d11",
+                    "occurred_at": "2026-09-21T19:04:11+03:00",
+                    "client": {
+                      "platform": "web",
+                      "device": "Chrome 140",
+                      "app_version": "2.14.0"
+                    },
+                    "element_type": "film_card",
+                    "element_id": "recommended-3",
+                    "page": "/catalog/drama",
+                    "film_id": "b1a1d6f2-4f2a-4f0b-8f27-6b0a0e5f3f10"
+                  },
+                  {
+                    "event_type": "page_view",
+                    "session_id": "d3f1b4c2-51f9-4a1f-9f0e-2b6c1a7e4d11",
+                    "occurred_at": "2026-09-21T19:05:02+03:00",
+                    "client": {
+                      "platform": "web"
+                    },
+                    "page": "/film/b1a1d6f2-4f2a-4f0b-8f27-6b0a0e5f3f10",
+                    "referrer": "/catalog/drama",
+                    "duration_ms": 51000
+                  },
+                  {
+                    "event_type": "video_completed",
+                    "session_id": "d3f1b4c2-51f9-4a1f-9f0e-2b6c1a7e4d11",
+                    "occurred_at": "2026-09-21T20:41:38+03:00",
+                    "client": {
+                      "platform": "smart_tv",
+                      "device": "LG WebOS"
+                    },
+                    "film_id": "b1a1d6f2-4f2a-4f0b-8f27-6b0a0e5f3f10",
+                    "watched_ratio": 0.34,
+                    "duration_ms": 2140000
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Принято хотя бы одно событие",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectResult"
+                },
+                "example": {
+                  "accepted": 3,
+                  "rejected": []
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Тело запроса не разобрано или запрос пришёл мимо шлюза",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "request_id_required",
+                  "detail": "X-Request-Id header is required; it is set by the gateway"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Токена нет, он истёк или не принят",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "token_expired",
+                  "detail": "Access token has expired"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "В пачке больше событий, чем сервис принимает за раз",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "batch_too_large",
+                  "detail": "At most 200 events are accepted per request"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Не принято ни одного события: все не прошли проверку",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectResult"
+                },
+                "example": {
+                  "accepted": 0,
+                  "rejected": [
+                    {
+                      "index": 0,
+                      "code": "invalid_event",
+                      "detail": "event_type: Input tag 'like' found using 'event_type' does not match any of the expected tags"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Брокер не принял события; клиенту следует повторить запрос",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "queue_unavailable",
+                  "detail": "Event queue is unavailable, retry later"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Непредвиденная ошибка сервиса",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "internal_error",
+                  "detail": "Internal server error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Жив ли процесс",
+        "description": "Используется healthcheck контейнера; заголовок X-Request-Id не требуется.",
+        "responses": {
+          "200": {
+            "description": "Сервис жив",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Готов ли сервис принимать события",
+        "description": "Проверяет соединение с брокером: без него принимать события бессмысленно.",
+        "responses": {
+          "200": {
+            "description": "Соединение с брокером есть",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Соединения с брокером нет",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "unavailable",
+                  "detail": "event queue is not connected"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
