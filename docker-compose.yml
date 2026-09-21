@@ -55,6 +55,19 @@ x-ugc-env: &ugc-env
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   UGC_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
 
+# Настройки ETL событий. Топик тот же, что у сервиса приёма: это две стороны
+# одной трубы, и расходиться им нельзя.
+x-ugc-etl-env: &ugc-etl-env
+  UGC_ETL_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  UGC_ETL_KAFKA_TOPIC: ${UGC_KAFKA_TOPIC:-ugc.events}
+  UGC_ETL_KAFKA_GROUP_ID: ${UGC_ETL_GROUP_ID:-ugc-etl}
+  UGC_ETL_CLICKHOUSE_HOST: clickhouse
+  UGC_ETL_CLICKHOUSE_PORT: 8123
+  UGC_ETL_CLICKHOUSE_DATABASE: ${CLICKHOUSE_DB:-ugc}
+  UGC_ETL_BATCH_SIZE: ${UGC_ETL_BATCH_SIZE:-10000}
+  UGC_ETL_POLL_TIMEOUT: ${UGC_ETL_POLL_TIMEOUT:-5}
+  UGC_ETL_MEMORY_LIMIT_MB: ${UGC_ETL_MEMORY_LIMIT_MB:-512}
+  UGC_ETL_LOG_LEVEL: ${UGC_ETL_LOG_LEVEL:-INFO}
 
 services:
   postgres:
@@ -333,6 +346,45 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Аналитическое хранилище событий. Схему (таблицу, витрину и материализованное
+  # представление) заводит сам образ: файлы из /docker-entrypoint-initdb.d он
+  # выполняет при первом запуске — так же, как postgres накатывает дамп ETL.
+  # Правка схемы после этого применяется вручную или пересозданием тома.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-ugc}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./ugc_etl/schema:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # Именно 127.0.0.1, а не localhost: имя резолвится сначала в ::1,
+      # а ClickHouse слушает только IPv4 — проверка врала бы всегда.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # Непрерывный перенос событий из Kafka в ClickHouse.
+  ugc-etl:
+    build: ./ugc_etl
+    image: movies-ugc-etl
+    environment: *ugc-etl-env
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     env_file: *env-file
@@ -354,6 +406,7 @@ services:
 volumes:
   postgres_data:
   kafka_data:
+  clickhouse_data:
   elasticsearch_data:
   auth_postgres_data:
   auth_redis_data:
