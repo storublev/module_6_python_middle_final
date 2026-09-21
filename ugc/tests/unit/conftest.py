@@ -94,6 +94,7 @@ def headers(make_token: Callable[..., str], user_id: UUID) -> dict[str, str]:
 def click_event() -> dict:
     return {
         'event_type': 'click',
+        'event_id': str(uuid4()),
         'session_id': str(SESSION_ID),
         'occurred_at': '2026-09-21T19:04:11+03:00',
         'client': {'platform': 'web', 'device': 'Chrome 140', 'app_version': '2.14.0'},
@@ -108,6 +109,7 @@ def click_event() -> dict:
 def page_view_event() -> dict:
     return {
         'event_type': 'page_view',
+        'event_id': str(uuid4()),
         'session_id': str(SESSION_ID),
         'occurred_at': '2026-09-21T19:05:02+03:00',
         'client': {'platform': 'ios'},

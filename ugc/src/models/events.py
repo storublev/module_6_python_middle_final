@@ -16,7 +16,7 @@
 
 from enum import StrEnum
 from typing import Annotated, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -61,10 +61,13 @@ class ClientInfo(BaseModel):
 class BaseEvent(BaseModel):
     """Общая часть любого события.
 
-    `event_id` генерирует клиент: доставка в брокер даёт at-least-once, и
-    аналитика дедуплицирует повторы именно по нему. Если клиент его не прислал,
-    сервис подставит свой — тогда повтор запроса превратится в два события, и
-    это честнее, чем молча склеить разные действия.
+    `event_id` **обязателен и генерируется клиентом**, а не сервисом. Это
+    единственное, по чему аналитика узнаёт повтор: событие может записаться в
+    брокер, а ответ — не дойти (оборвалась сеть, истёк таймаут), и клиент
+    отправит пачку заново. Подставляй сервис свой идентификатор, повтор стал бы
+    новым событием, и просмотры посчитались бы дважды. По той же причине клиент
+    обязан сохранять `event_id` между попытками: отправка пачки в брокер не
+    транзакционна, часть событий может записаться, а часть — нет.
 
     `occurred_at` — время на стороне клиента и обязательно с часовым поясом:
     зрители в разных поясах, а сравнивать события нужно по одной шкале.
@@ -73,7 +76,7 @@ class BaseEvent(BaseModel):
 
     model_config = ConfigDict(extra='forbid')
 
-    event_id: UUID = Field(default_factory=uuid4)
+    event_id: UUID
     session_id: UUID
     occurred_at: AwareDatetime
     client: ClientInfo

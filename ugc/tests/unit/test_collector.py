@@ -2,7 +2,7 @@
 
 import json
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -53,11 +53,21 @@ def test_partition_key_is_the_viewing_session(collector, queue, click_event, use
     assert queue.published[0].key == str(SESSION_ID)
 
 
-def test_event_id_is_generated_when_missing(collector, queue, page_view_event, user_id) -> None:
-    """Событию без идентификатора он присваивается — по нему аналитика убирает повторы."""
+def test_event_id_from_the_client_is_kept(collector, queue, page_view_event, user_id) -> None:
+    """Идентификатор клиента доезжает до очереди неизменным: по нему аналитика убирает повторы."""
     collector.collect([page_view_event], user_id=user_id)
 
-    assert UUID(published_payloads(queue)[0]['event_id'])
+    assert published_payloads(queue)[0]['event_id'] == page_view_event['event_id']
+
+
+def test_event_without_event_id_is_rejected(collector, queue, page_view_event, user_id) -> None:
+    """Событие без идентификатора не принимается: повтор запроса иначе стал бы новым событием."""
+    del page_view_event['event_id']
+
+    result = collector.collect([page_view_event], user_id=user_id)
+
+    assert result.accepted == 0
+    assert queue.published == []
 
 
 def test_broken_event_does_not_take_the_batch_down(collector, queue, click_event, user_id) -> None:
@@ -84,6 +94,7 @@ def test_rejection_reason_names_the_field(collector, user_id) -> None:
     """В причине отказа названо поле, из-за которого событие не принято."""
     broken = {
         'event_type': 'page_view',
+        'event_id': str(uuid4()),
         'session_id': str(SESSION_ID),
         'occurred_at': '2026-09-21T19:05:02+03:00',
         'client': {'platform': 'web'},
