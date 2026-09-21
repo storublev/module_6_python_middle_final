@@ -8,7 +8,13 @@
 from collections.abc import Iterator, Sequence
 from typing import Any
 
-from storage.base import EventSink, EventSource, SinkUnavailableError, SourceUnavailableError
+from storage.base import (
+    EventSink,
+    EventSource,
+    SinkDataError,
+    SinkUnavailableError,
+    SourceUnavailableError,
+)
 
 
 class FakeSource(EventSource):
@@ -33,18 +39,27 @@ class FakeSource(EventSource):
 
 
 class FakeSink(EventSink):
-    """Складывает строки в список; умеет отказывать заданное число раз подряд."""
+    """Складывает строки в список.
 
-    def __init__(self, *, failures: int = 0) -> None:
+    Умеет изображать обе беды хранилища: временную недоступность (`failures`
+    отказов подряд) и негодные данные (`broken` — значения первой колонки,
+    которые хранилище не принимает никогда).
+    """
+
+    def __init__(self, *, failures: int = 0, broken: set | None = None) -> None:
         self.rows: list[Sequence[Any]] = []
         self.inserts = 0
         self.failures = failures
+        self.broken = broken or set()
 
     def insert(self, rows: Sequence[Sequence[Any]]) -> None:
         self.inserts += 1
         if self.failures:
             self.failures -= 1
             raise SinkUnavailableError('хранилище недоступно')
+        rejected = [row for row in rows if row and row[0] in self.broken]
+        if rejected:
+            raise SinkDataError(f'значение не помещается в колонку: {rejected[0][0]}')
         self.rows.extend(rows)
 
     def close(self) -> None:

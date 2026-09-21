@@ -130,3 +130,30 @@ def test_search_filters_event_is_parsed() -> None:
 
     assert event.filters == {'genre': 'sci-fi', 'year_from': '2010'}
     assert event.results_count == 12
+
+
+@pytest.mark.parametrize(
+    ('event_type', 'field', 'value'),
+    [
+        ('page_view', 'duration_ms', 2 ** 32),
+        ('quality_changed', 'position_ms', 2 ** 32),
+        ('video_completed', 'duration_ms', 2 ** 32),
+        ('search_filters_applied', 'results_count', 2 ** 32),
+    ],
+)
+def test_number_beyond_the_storage_column_is_rejected(event_type, field, value) -> None:
+    """Число, которое не влезет в колонку хранилища, не принимается.
+
+    В аналитическом хранилище это UInt32. Пропусти такое значение API — ETL
+    встал бы на этой пачке навсегда: вставка падает, смещения не
+    подтверждаются, после перезапуска читается та же пачка.
+    """
+    defaults = {
+        'page_view': {'page': '/'},
+        'quality_changed': {'film_id': FILM_ID, 'quality_from': '720p', 'quality_to': '1080p'},
+        'video_completed': {'film_id': FILM_ID, 'watched_ratio': 0.5},
+        'search_filters_applied': {},
+    }[event_type]
+
+    with pytest.raises(ValidationError):
+        EVENT_ADAPTER.validate_python(base(event_type=event_type, **defaults, **{field: value}))

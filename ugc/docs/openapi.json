@@ -250,6 +250,7 @@
             "type": "string"
           },
           "position_ms": {
+            "maximum": 86400000,
             "minimum": 0,
             "title": "Position Ms",
             "type": "integer"
@@ -323,6 +324,7 @@
             "type": "object"
           },
           "results_count": {
+            "maximum": 4294967295,
             "minimum": 0,
             "title": "Results Count",
             "type": "integer"
@@ -377,6 +379,7 @@
             "type": "number"
           },
           "duration_ms": {
+            "maximum": 86400000,
             "minimum": 0,
             "title": "Duration Ms",
             "type": "integer"

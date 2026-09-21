@@ -13,12 +13,23 @@ from collections.abc import Sequence
 from typing import Any
 
 import clickhouse_connect
-from clickhouse_connect.driver.exceptions import ClickHouseError
+from clickhouse_connect.driver.exceptions import (
+    ClickHouseError,
+    DataError,
+    IntegrityError,
+    NotSupportedError,
+    ProgrammingError,
+)
 
 from models.event import COLUMN_TYPES, COLUMNS
-from storage.base import EventSink, SinkUnavailableError
+from storage.base import EventSink, SinkDataError, SinkUnavailableError
 
 logger = logging.getLogger(__name__)
+
+# Ошибки, означающие, что дело в самих данных, а не в хранилище: повторять
+# такую вставку бессмысленно. Проверено на живом ClickHouse: значение вне
+# диапазона UInt32 драйвер отдаёт как DataError ещё до отправки на сервер.
+DATA_ERRORS = (DataError, IntegrityError, NotSupportedError, ProgrammingError)
 
 
 class ClickHouseEventSink(EventSink):
@@ -64,8 +75,11 @@ class ClickHouseEventSink(EventSink):
                 column_type_names=COLUMN_TYPES,
                 database=self._database,
             )
+        except DATA_ERRORS as error:
+            logger.error('ClickHouse не принял данные %d строк: %s', len(rows), error)
+            raise SinkDataError(str(error)) from error
         except ClickHouseError as error:
-            logger.warning('ClickHouse не принял %d строк: %s', len(rows), error)
+            logger.warning('ClickHouse не ответил на вставку %d строк: %s', len(rows), error)
             raise SinkUnavailableError(str(error)) from error
         except OSError as error:
             # Обрыв соединения драйвер отдаёт исключением сокета, а не своим.

@@ -1,5 +1,7 @@
 """Перенос событий: порядок вставки и подтверждения, поведение при сбоях."""
 
+from uuid import UUID
+
 from tests.unit.fakes import FakeSink, FakeSource
 
 
@@ -131,3 +133,47 @@ def test_memory_is_measured_after_each_batch(make_pipeline, make_event, memory) 
     make_pipeline(source, FakeSink()).run()
 
     assert memory.batches == 2
+
+
+def test_broken_row_does_not_stop_the_transfer(make_pipeline, make_event) -> None:
+    """Строку, которую хранилище не принимает, отбрасывают, а пачку подтверждают.
+
+    Иначе перенос встал бы навсегда: вставка падает, смещения не подтверждаются,
+    после перезапуска читается та же пачка.
+    """
+    events = [make_event() for _ in range(4)]
+    broken = events[2]['event_id']
+    source = FakeSource([events])
+    sink = FakeSink(broken={UUID(broken)})
+
+    pipeline = make_pipeline(source, sink)
+    pipeline.run()
+
+    assert len(sink.rows) == 3
+    assert pipeline.stats.rejected == 1
+    assert source.commits == 1
+
+
+def test_good_rows_of_a_broken_batch_reach_the_storage(make_pipeline, make_event) -> None:
+    """Из-за одной негодной строки не теряются остальные: пачка делится пополам."""
+    events = [make_event() for _ in range(8)]
+    source = FakeSource([events])
+    sink = FakeSink(broken={UUID(events[0]['event_id'])})
+
+    make_pipeline(source, sink).run()
+
+    delivered = {str(row[0]) for row in sink.rows}
+    assert delivered == {event['event_id'] for event in events[1:]}
+
+
+def test_data_error_does_not_open_the_breaker(make_pipeline, make_event) -> None:
+    """Негодные данные — не сбой хранилища: прерыватель на них не реагирует."""
+    events = [make_event(), make_event()]
+    source = FakeSource([events])
+    sink = FakeSink(broken={UUID(events[0]['event_id'])})
+
+    pipeline = make_pipeline(source, sink, breaker_failures=1)
+    pipeline.run()
+
+    assert not pipeline._breaker.is_open
+    assert source.commits == 1

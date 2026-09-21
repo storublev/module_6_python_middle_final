@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 # и то же, а Nullable(UUID) стоил бы лишней колонки с признаком.
 NO_UUID = UUID(int=0)
 
+# Верхняя граница числовых колонок: в хранилище они UInt32. Значение больше
+# сюда не влезет, и, дойдя до вставки, остановило бы перенос всей пачки —
+# поэтому такое событие отбраковывается здесь, как нарушение контракта.
+UINT32_MAX = 2 ** 32 - 1
+
 COLUMNS = (
     'event_id', 'event_type', 'occurred_at', 'received_at', 'user_id', 'session_id',
     'film_id', 'page', 'referrer', 'element_type', 'element_id',
@@ -130,5 +135,12 @@ def _text(value: Any, required: bool = False) -> str:
 
 
 def _number(value: Any) -> int:
-    """Неотрицательное целое: отрицательное значение UInt32 не примет."""
-    return max(0, int(value or 0))
+    """Целое в диапазоне UInt32.
+
+    Значение вне диапазона не обрезается, а отбраковывается: обрезанное число
+    молча исказило бы аналитику, а необрезанное уронило бы вставку всей пачки.
+    """
+    number = int(value or 0)
+    if not 0 <= number <= UINT32_MAX:
+        raise EventFormatError(f'число {number} вне диапазона UInt32')
+    return number

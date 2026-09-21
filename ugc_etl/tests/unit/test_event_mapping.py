@@ -86,11 +86,22 @@ def test_identifiers_become_uuid(make_event) -> None:
     assert isinstance(column(row, 'user_id'), UUID)
 
 
-def test_negative_number_is_clamped(make_event) -> None:
-    """Отрицательное число не доезжает до UInt32, где оно стало бы огромным."""
-    row = to_row(make_event('page_view', duration_ms=-5))
+@pytest.mark.parametrize('value', [-5, 2 ** 32, 2 ** 40])
+def test_number_outside_uint32_is_rejected(make_event, value) -> None:
+    """Число вне диапазона колонки отбраковывается, а не обрезается.
 
-    assert column(row, 'duration_ms') == 0
+    Обрезанное молча исказило бы аналитику, необрезанное — уронило бы вставку
+    всей пачки и остановило перенос.
+    """
+    with pytest.raises(EventFormatError):
+        to_row(make_event('page_view', duration_ms=value))
+
+
+def test_largest_uint32_value_is_accepted(make_event) -> None:
+    """Граница диапазона — ещё годное значение."""
+    row = to_row(make_event('search_filters_applied', results_count=2 ** 32 - 1))
+
+    assert column(row, 'results_count') == 2 ** 32 - 1
 
 
 @pytest.mark.parametrize('missing', ['event_id', 'user_id', 'session_id', 'occurred_at', 'event_type'])

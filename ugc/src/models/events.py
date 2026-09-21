@@ -25,6 +25,18 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 ShortString = Annotated[str, Field(min_length=1, max_length=255)]
 Url = Annotated[str, Field(min_length=1, max_length=2048)]
 
+# Числа тоже ограничены сверху, и это не придирка: в аналитическом хранилище
+# они лежат в UInt32, и значение больше 2^32-1 туда просто не влезет. Пропусти
+# его API — ETL остановился бы на этой пачке навсегда: вставка падает, пачка
+# не подтверждается, после перезапуска читается та же пачка.
+UINT32_MAX = 2 ** 32 - 1
+DAY_MS = 24 * 60 * 60 * 1000
+# Отрезки времени внутри суток: и время на странице, и длительность фильма, и
+# позиция в нём. Предел суток строже UInt32 и осмысленнее: событие о фильме
+# длиной в неделю — это ошибка клиента, а не данные.
+DurationMs = Annotated[int, Field(ge=0, le=DAY_MS)]
+Counter = Annotated[int, Field(ge=0, le=UINT32_MAX)]
+
 
 class EventType(StrEnum):
     """Типы событий, которые собирает сервис."""
@@ -88,7 +100,7 @@ class PageViewEvent(BaseEvent):
     event_type: Literal[EventType.PAGE_VIEW]
     page: Url
     referrer: Url | None = None
-    duration_ms: int = Field(ge=0, le=24 * 60 * 60 * 1000)
+    duration_ms: DurationMs
 
 
 class QualityChangedEvent(BaseEvent):
@@ -98,7 +110,7 @@ class QualityChangedEvent(BaseEvent):
     film_id: UUID
     quality_from: ShortString
     quality_to: ShortString
-    position_ms: int = Field(ge=0)
+    position_ms: DurationMs
 
 
 class VideoCompletedEvent(BaseEvent):
@@ -112,7 +124,7 @@ class VideoCompletedEvent(BaseEvent):
     event_type: Literal[EventType.VIDEO_COMPLETED]
     film_id: UUID
     watched_ratio: float = Field(ge=0, le=1)
-    duration_ms: int = Field(ge=0)
+    duration_ms: DurationMs
 
 
 class SearchFiltersAppliedEvent(BaseEvent):
@@ -123,7 +135,7 @@ class SearchFiltersAppliedEvent(BaseEvent):
     # Набор фильтров произвольный — он меняется вместе с интерфейсом, и
     # перечислять его здесь значило бы менять сервис после каждой правки формы.
     filters: dict[ShortString, ShortString] = Field(default_factory=dict, max_length=20)
-    results_count: int = Field(ge=0)
+    results_count: Counter
 
 
 # Размеченное объединение: pydantic выбирает модель по значению event_type.
