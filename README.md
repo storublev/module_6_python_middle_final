@@ -99,9 +99,19 @@ docker compose exec auth python cli.py createsuperuser --login admin
 
 * Документация Async API: http://localhost/api/openapi
 * Документация сервиса авторизации: http://localhost/auth/api/openapi
+* Документация сервиса сбора событий: http://localhost/ugc/api/openapi
 * Админка каталога: http://localhost/admin/
 * Трассировка (Jaeger): http://localhost:16686
-* Спецификации: http://localhost/api/openapi.json, http://localhost/auth/api/openapi.json
+* Спецификации: http://localhost/api/openapi.json, http://localhost/auth/api/openapi.json,
+  http://localhost/ugc/api/openapi.json
+
+События, принятые сервисом сбора, доезжают до ClickHouse за несколько секунд;
+посмотреть, что доехало:
+
+```bash
+docker compose exec clickhouse clickhouse-client --query \
+    "SELECT event_type, count() FROM ugc.events GROUP BY event_type"
+```
 
 В документации для клиентов описаны пагинация, ошибки (404, 422, 503 с моделью
 `ErrorSchema`), назначение каждого эндпоинта и тега, поля ответов с примерами.
