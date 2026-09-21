@@ -5,12 +5,26 @@
 # они заводятся полчаса, а при переносе в другой репозиторий — ещё раз.
 #
 # Требуется GitHub CLI (`gh auth login`). Запуск из корня репозитория:
-#   ./scripts/create_issues.sh                # завести задачи
-#   ./scripts/create_issues.sh --dry-run      # только показать, что будет заведено
+#   ./scripts/create_issues.sh                     # завести задачи здесь
+#   ./scripts/create_issues.sh --dry-run           # только показать, что будет заведено
+#   ./scripts/create_issues.sh --repo o/name       # завести в другом репозитории
+#
+# Отдельный --repo нужен потому, что доску спринта наставник смотрит в
+# репозитории спринта (ugc_sprint_1), а код живёт в репозитории модуля.
 set -euo pipefail
 
 DRY_RUN=false
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run) DRY_RUN=true; shift ;;
+        --repo) export GH_REPO=$2; shift 2 ;;
+        *) echo "Неизвестный аргумент: $1" >&2; exit 1 ;;
+    esac
+done
+
+# Ссылка на декомпозицию: в репозитории спринта файла docs/planning.md нет,
+# а доска должна вести к нему сама.
+PLANNING_URL='https://github.com/storublev/module_4_python_middle_dev/blob/main/docs/planning.md'
 
 if ! command -v gh >/dev/null 2>&1; then
     echo 'Нужен GitHub CLI: brew install gh && gh auth login' >&2
@@ -104,7 +118,7 @@ done
 for epic in "${EPICS[@]}"; do
     IFS='|' read -r code title extra <<<"$epic"
     create_issue "[$code] $title" \
-        "Эпик по пункту задания модуля. Состав и оценки — docs/planning.md." \
+        "Эпик по пункту задания модуля. Состав, оценки и зависимости — $PLANNING_URL" \
         'epic' "$extra"
 done
 
@@ -115,7 +129,7 @@ for issue in "${ISSUES[@]}"; do
     create_issue "$title" \
         "Эпик: $epic. Оценка: $points SP. Зависит от задач: $depends.
 
-Подробности и определение Done — docs/planning.md." \
+Подробности и определение Done — $PLANNING_URL" \
         "sp-$points" "$role"
 done
 
