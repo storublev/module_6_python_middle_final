@@ -1,0 +1,71 @@
+# Окружение исследования хранилищ: ClickHouse и Vertica рядом, на одной машине.
+#
+#   docker compose -f research/docker-compose.yml up -d clickhouse
+#   docker compose -f research/docker-compose.yml up -d vertica
+#
+# Оба сравниваются в одинаковых условиях: одна машина, один диск, один и тот
+# же набор данных. Память ограничена одинаково — иначе сравнивались бы не
+# хранилища, а щедрость настроек.
+name: ugc-research
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_DB: research
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      # Без этого пустой пароль у пользователя default запрещён.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "${RESEARCH_CLICKHOUSE_PORT:-8123}:8123"
+      - "${RESEARCH_CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8g
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Vertica. Бесплатной редакции у неё больше нет: репозитория vertica-ce на
+  # Docker Hub не существует, а единственный публичный образ (vertica-k8s,
+  # версия 26) при создании базы отвечает «Community Edition (CE) license is
+  # deprecated and no longer supported in ... 26.1 and later». Сервис оставлен
+  # рабочим на случай, если появится образ с лицензией: подробности и порядок
+  # запуска — в README, раздел «Результаты: Vertica».
+  #
+  # Образ собран только под amd64, поэтому на Apple Silicon пойдёт через
+  # эмуляцию — это нужно учитывать при сравнении.
+  vertica:
+    image: ${VERTICA_IMAGE:-opentext/vertica-k8s:latest}
+    platform: ${VERTICA_PLATFORM:-linux/amd64}
+    environment:
+      TZ: UTC
+    ports:
+      - "${RESEARCH_VERTICA_PORT:-5433}:5433"
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8g
+    volumes:
+      - vertica_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/vertica/bin/vsql -U dbadmin -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+
+volumes:
+  clickhouse_data:
+  vertica_data:
