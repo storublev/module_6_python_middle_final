@@ -15,8 +15,8 @@
 """
 
 from enum import StrEnum
-from typing import Annotated, Literal
-from uuid import UUID, uuid4
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -24,6 +24,18 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 # строка в событии — это либо ошибка клиента, либо попытка засорить хранилище.
 ShortString = Annotated[str, Field(min_length=1, max_length=255)]
 Url = Annotated[str, Field(min_length=1, max_length=2048)]
+
+# Числа тоже ограничены сверху, и это не придирка: в аналитическом хранилище
+# они лежат в UInt32, и значение больше 2^32-1 туда просто не влезет. Пропусти
+# его API — ETL остановился бы на этой пачке навсегда: вставка падает, пачка
+# не подтверждается, после перезапуска читается та же пачка.
+UINT32_MAX = 2 ** 32 - 1
+DAY_MS = 24 * 60 * 60 * 1000
+# Отрезки времени внутри суток: и время на странице, и длительность фильма, и
+# позиция в нём. Предел суток строже UInt32 и осмысленнее: событие о фильме
+# длиной в неделю — это ошибка клиента, а не данные.
+DurationMs = Annotated[int, Field(ge=0, le=DAY_MS)]
+Counter = Annotated[int, Field(ge=0, le=UINT32_MAX)]
 
 
 class EventType(StrEnum):
@@ -49,10 +61,13 @@ class ClientInfo(BaseModel):
 class BaseEvent(BaseModel):
     """Общая часть любого события.
 
-    `event_id` генерирует клиент: доставка в брокер даёт at-least-once, и
-    аналитика дедуплицирует повторы именно по нему. Если клиент его не прислал,
-    сервис подставит свой — тогда повтор запроса превратится в два события, и
-    это честнее, чем молча склеить разные действия.
+    `event_id` **обязателен и генерируется клиентом**, а не сервисом. Это
+    единственное, по чему аналитика узнаёт повтор: событие может записаться в
+    брокер, а ответ — не дойти (оборвалась сеть, истёк таймаут), и клиент
+    отправит пачку заново. Подставляй сервис свой идентификатор, повтор стал бы
+    новым событием, и просмотры посчитались бы дважды. По той же причине клиент
+    обязан сохранять `event_id` между попытками: отправка пачки в брокер не
+    транзакционна, часть событий может записаться, а часть — нет.
 
     `occurred_at` — время на стороне клиента и обязательно с часовым поясом:
     зрители в разных поясах, а сравнивать события нужно по одной шкале.
@@ -61,7 +76,7 @@ class BaseEvent(BaseModel):
 
     model_config = ConfigDict(extra='forbid')
 
-    event_id: UUID = Field(default_factory=uuid4)
+    event_id: UUID
     session_id: UUID
     occurred_at: AwareDatetime
     client: ClientInfo
@@ -88,7 +103,7 @@ class PageViewEvent(BaseEvent):
     event_type: Literal[EventType.PAGE_VIEW]
     page: Url
     referrer: Url | None = None
-    duration_ms: int = Field(ge=0, le=24 * 60 * 60 * 1000)
+    duration_ms: DurationMs
 
 
 class QualityChangedEvent(BaseEvent):
@@ -98,7 +113,7 @@ class QualityChangedEvent(BaseEvent):
     film_id: UUID
     quality_from: ShortString
     quality_to: ShortString
-    position_ms: int = Field(ge=0)
+    position_ms: DurationMs
 
 
 class VideoCompletedEvent(BaseEvent):
@@ -112,7 +127,7 @@ class VideoCompletedEvent(BaseEvent):
     event_type: Literal[EventType.VIDEO_COMPLETED]
     film_id: UUID
     watched_ratio: float = Field(ge=0, le=1)
-    duration_ms: int = Field(ge=0)
+    duration_ms: DurationMs
 
 
 class SearchFiltersAppliedEvent(BaseEvent):
@@ -123,7 +138,7 @@ class SearchFiltersAppliedEvent(BaseEvent):
     # Набор фильтров произвольный — он меняется вместе с интерфейсом, и
     # перечислять его здесь значило бы менять сервис после каждой правки формы.
     filters: dict[ShortString, ShortString] = Field(default_factory=dict, max_length=20)
-    results_count: int = Field(ge=0)
+    results_count: Counter
 
 
 # Размеченное объединение: pydantic выбирает модель по значению event_type.
@@ -140,11 +155,16 @@ EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 class EventsRequest(BaseModel):
     """Пачка событий: клиент копит их и отправляет одним запросом (ФТ-4).
 
-    События здесь — ещё не разобранные словари: каждое проверяется отдельно,
-    чтобы одно испорченное не отменило остальные. Ограничение на размер пачки
-    задаётся настройкой и проверяется в обработчике.
+    Элементы намеренно объявлены как `Any`, а не как словари: внешний уровень
+    проверяет только то, что пришёл непустой список, а каждое событие
+    разбирается отдельно в сборщике. Объяви мы здесь `list[dict]`, пачка с
+    одним элементом `null` целиком получила бы 422 — и годные события не
+    доехали бы до брокера, а клиент не увидел бы, какое именно отклонено.
+
+    Ограничение на размер пачки задаётся настройкой и проверяется в
+    обработчике: предел свой у каждого развёртывания, и в модель он не зашит.
     """
 
     model_config = ConfigDict(extra='forbid')
 
-    events: list[dict] = Field(min_length=1)
+    events: list[Any] = Field(min_length=1)

@@ -195,3 +195,37 @@ def test_get_is_not_allowed(http, url, headers) -> None:
 
     assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
     assert set(response.json()) == {'code', 'detail'}
+
+
+def test_event_without_event_id_is_rejected(http, url, headers, make_event) -> None:
+    """Событие без event_id не принимается: клиент обязан присылать его и сохранять при повторе."""
+    event = make_event('click')
+    del event['event_id']
+
+    response = http.post(url(EVENTS), json={'events': [event]}, headers=headers)
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.json()['rejected'][0]['code'] == 'invalid_event'
+
+
+def test_repeated_batch_keeps_the_same_event_ids(http, url, headers, make_event, read_events) -> None:
+    """Повторная отправка той же пачки едет с теми же event_id — по ним аналитика уберёт дубль."""
+    event = make_event('click')
+
+    http.post(url(EVENTS), json={'events': [event]}, headers=headers)
+    http.post(url(EVENTS), json={'events': [event]}, headers=headers)
+
+    delivered = read_events(2)
+    assert [item['event_id'] for item in delivered] == [event['event_id']] * 2
+
+
+def test_element_of_wrong_type_does_not_reject_the_batch(http, url, headers, make_event, read_events) -> None:
+    """Пачка с элементом null принимается частично: годное событие доезжает до брокера."""
+    good = make_event('click')
+
+    response = http.post(url(EVENTS), json={'events': [good, None]}, headers=headers)
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert response.json()['accepted'] == 1
+    assert response.json()['rejected'][0]['index'] == 1
+    assert read_events(1)[0]['event_id'] == good['event_id']

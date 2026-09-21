@@ -31,6 +31,7 @@ def build_pipeline(config: Settings) -> tuple[EventPipeline, KafkaEventSource, C
         config.kafka_group_id,
         auto_offset_reset=config.kafka_auto_offset_reset,
         batch_size=config.batch_size,
+        batch_max_wait=config.batch_max_wait,
         poll_timeout=config.poll_timeout,
     )
     sink = ClickHouseEventSink(

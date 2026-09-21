@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError
+from kafka import OffsetAndMetadata, TopicPartition
 from kafka.errors import BrokerNotAvailableError
 
 from storage.base import SinkUnavailableError, SourceUnavailableError
@@ -36,7 +37,7 @@ class FakeConsumer:
         self._polls = list(polls)
         self._poll_error = poll_error
         self._commit_error = commit_error
-        self.commits = 0
+        self.commits: list = []
         self.closed = False
 
     def poll(self, timeout_ms=None, max_records=None):
@@ -44,41 +45,75 @@ class FakeConsumer:
             raise self._poll_error
         return self._polls.pop(0) if self._polls else {}
 
-    def commit(self):
+    def commit(self, offsets=None, timeout_ms=None):
         if self._commit_error:
             raise self._commit_error
-        self.commits += 1
+        self.commits.append(offsets)
 
     def close(self):
         self.closed = True
 
 
-def make_source(polls=(), **fake_kwargs) -> tuple[KafkaEventSource, FakeConsumer]:
+def make_source(polls=(), *, batch_size=10, batch_max_wait=0.05, **fake_kwargs):
     consumer = FakeConsumer(polls, **fake_kwargs)
 
     def factory(*args, **kwargs) -> FakeConsumer:
         consumer.kwargs = kwargs
         return consumer
 
-    return KafkaEventSource('kafka:9092', TOPIC, 'ugc-etl', consumer_factory=factory), consumer
+    source = KafkaEventSource(
+        'kafka:9092', TOPIC, 'ugc-etl',
+        batch_size=batch_size,
+        batch_max_wait=batch_max_wait,
+        poll_timeout=0.01,
+        consumer_factory=factory,
+    )
+    return source, consumer
 
 
-def encoded(**fields) -> FakeRecord:
-    return FakeRecord(json.dumps(fields).encode())
+def encoded(offset: int = 0, **fields) -> FakeRecord:
+    return FakeRecord(json.dumps(fields).encode(), offset=offset)
+
+
+PARTITION = TopicPartition(TOPIC, 0)
 
 
 def test_source_decodes_messages() -> None:
     """Сообщения приходят разобранными из JSON."""
-    source, _ = make_source([{'partition-0': [encoded(event_type='click')]}])
+    source, _ = make_source([{PARTITION: [encoded(event_type='click')]}])
 
     batch = next(iter(source.batches()))
 
     assert batch == [{'event_type': 'click'}]
 
 
+def test_batch_is_collected_across_several_polls() -> None:
+    """Пачка копится, пока не наберётся её размер: poll() отдаёт то, что уже пришло.
+
+    Иначе редкий поток превращался бы в частые мелкие вставки, а каждая — это
+    новый кусок в MergeTree и работа для слияний.
+    """
+    polls = [{PARTITION: [encoded(offset=number, n=number)]} for number in range(4)]
+    source, _ = make_source(polls, batch_size=4, batch_max_wait=5)
+
+    batch = next(iter(source.batches()))
+
+    assert len(batch) == 4
+
+
+def test_incomplete_batch_leaves_after_the_deadline() -> None:
+    """Неполная пачка всё равно уходит по сроку: ночью она не наберётся никогда."""
+    source, _ = make_source([{PARTITION: [encoded(offset=0, n=0)]}], batch_size=1000, batch_max_wait=0.05)
+
+    batch = next(iter(source.batches()))
+
+    assert len(batch) == 1
+
+
 def test_source_skips_unreadable_message() -> None:
     """Нечитаемое сообщение пропускается: иначе ETL падал бы на нём вечно."""
-    source, _ = make_source([{'partition-0': [FakeRecord(b'{not json'), encoded(event_type='click')]}])
+    records = [FakeRecord(b'{not json'), encoded(offset=1, event_type='click')]
+    source, _ = make_source([{PARTITION: records}], batch_size=2)
 
     batch = next(iter(source.batches()))
 
@@ -100,9 +135,34 @@ def test_source_failure_becomes_contract_error() -> None:
         next(iter(source.batches()))
 
 
+def test_only_delivered_offsets_are_committed() -> None:
+    """Подтверждаются смещения отданной пачки, а не текущая позиция потребителя.
+
+    За время накопления клиент мог прочитать вперёд; подтверждение позиции
+    потеряло бы сообщения, которые ещё не доехали до хранилища.
+    """
+    source, consumer = make_source([{PARTITION: [encoded(offset=41, n=1)]}], batch_size=1)
+    next(iter(source.batches()))
+
+    source.commit()
+
+    assert consumer.commits == [{PARTITION: OffsetAndMetadata(42, '', -1)}]
+
+
+def test_nothing_is_committed_without_a_batch() -> None:
+    """Подтверждать нечего, пока ни одна пачка не отдана."""
+    source, consumer = make_source()
+
+    source.commit()
+
+    assert consumer.commits == []
+
+
 def test_commit_failure_becomes_contract_error() -> None:
     """Ошибка подтверждения смещений тоже приводится к контракту."""
-    source, _ = make_source(commit_error=BrokerNotAvailableError())
+    source, _ = make_source([{PARTITION: [encoded(offset=0, n=1)]}], batch_size=1,
+                            commit_error=BrokerNotAvailableError())
+    next(iter(source.batches()))
 
     with pytest.raises(SourceUnavailableError):
         source.commit()

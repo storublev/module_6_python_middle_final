@@ -1,6 +1,6 @@
 """Контракт событий: что сервис принимает, а что отклоняет."""
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -14,7 +14,13 @@ OCCURRED_AT = '2026-09-21T19:04:11+03:00'
 
 
 def base(**fields) -> dict:
-    return {'session_id': SESSION_ID, 'occurred_at': OCCURRED_AT, 'client': CLIENT, **fields}
+    return {
+        'event_id': str(uuid4()),
+        'session_id': SESSION_ID,
+        'occurred_at': OCCURRED_AT,
+        'client': CLIENT,
+        **fields,
+    }
 
 
 def test_click_event_is_parsed() -> None:
@@ -46,11 +52,13 @@ def test_video_completed_event_is_parsed() -> None:
     assert event.watched_ratio == pytest.approx(0.34)
 
 
-def test_event_id_is_generated_when_client_did_not_send_it() -> None:
-    """Без event_id от клиента сервис подставляет свой: без него не дедуплицировать повторы."""
-    event = EVENT_ADAPTER.validate_python(base(event_type='page_view', page='/', duration_ms=1))
+def test_event_without_event_id_is_rejected() -> None:
+    """Событие без event_id не принимается: подставь его сервис — повтор запроса стал бы новым событием."""
+    event = base(event_type='page_view', page='/', duration_ms=1)
+    del event['event_id']
 
-    assert isinstance(event.event_id, UUID)
+    with pytest.raises(ValidationError):
+        EVENT_ADAPTER.validate_python(event)
 
 
 def test_unknown_event_type_is_rejected() -> None:
@@ -79,6 +87,7 @@ def test_naive_occurred_at_is_rejected() -> None:
         EVENT_ADAPTER.validate_python(
             {
                 'event_type': 'page_view',
+                'event_id': str(uuid4()),
                 'session_id': SESSION_ID,
                 'occurred_at': '2026-09-21T19:04:11',
                 'client': CLIENT,
@@ -108,6 +117,7 @@ def test_unknown_platform_is_rejected() -> None:
         EVENT_ADAPTER.validate_python(
             {
                 'event_type': 'page_view',
+                'event_id': str(uuid4()),
                 'session_id': SESSION_ID,
                 'occurred_at': OCCURRED_AT,
                 'client': {'platform': 'playstation'},
@@ -130,3 +140,30 @@ def test_search_filters_event_is_parsed() -> None:
 
     assert event.filters == {'genre': 'sci-fi', 'year_from': '2010'}
     assert event.results_count == 12
+
+
+@pytest.mark.parametrize(
+    ('event_type', 'field', 'value'),
+    [
+        ('page_view', 'duration_ms', 2 ** 32),
+        ('quality_changed', 'position_ms', 2 ** 32),
+        ('video_completed', 'duration_ms', 2 ** 32),
+        ('search_filters_applied', 'results_count', 2 ** 32),
+    ],
+)
+def test_number_beyond_the_storage_column_is_rejected(event_type, field, value) -> None:
+    """Число, которое не влезет в колонку хранилища, не принимается.
+
+    В аналитическом хранилище это UInt32. Пропусти такое значение API — ETL
+    встал бы на этой пачке навсегда: вставка падает, смещения не
+    подтверждаются, после перезапуска читается та же пачка.
+    """
+    defaults = {
+        'page_view': {'page': '/'},
+        'quality_changed': {'film_id': FILM_ID, 'quality_from': '720p', 'quality_to': '1080p'},
+        'video_completed': {'film_id': FILM_ID, 'watched_ratio': 0.5},
+        'search_filters_applied': {},
+    }[event_type]
+
+    with pytest.raises(ValidationError):
+        EVENT_ADAPTER.validate_python(base(event_type=event_type, **defaults, **{field: value}))

@@ -1,20 +1,42 @@
 """Преобразование события из брокера в строку аналитического хранилища."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
-from models.event import COLUMN_TYPES, COLUMNS, NO_UUID, EventFormatError, to_row, to_rows
+from models.event import COLUMN_NAMES, COLUMNS, NO_UUID, EventFormatError, to_row, to_rows
 
 
 def column(row, name: str):
-    return row[COLUMNS.index(name)]
+    return row[COLUMN_NAMES.index(name)]
 
 
-def test_columns_and_types_match() -> None:
-    """Имена и типы колонок идут парами: строки передаются драйверу позиционно."""
-    assert len(COLUMNS) == len(COLUMN_TYPES)
+def test_row_follows_the_column_order(make_event) -> None:
+    """Длина строки совпадает с числом колонок: строка строится по тому же списку."""
+    row = to_row(make_event('click'))
+
+    assert len(row) == len(COLUMNS)
+
+
+def test_storage_schema_matches_the_columns() -> None:
+    """Имена и порядок колонок совпадают со схемой в schema/001_events.sql.
+
+    Схема живёт в SQL-файле, а строки собираются в Python: единственное, что
+    удерживает их вместе, — этот тест. Без него добавленное в SQL поле молча
+    сдвинуло бы значения соседних колонок.
+    """
+    sql = (Path(__file__).parents[2] / 'schema' / '001_events.sql').read_text(encoding='utf-8')
+    body = sql.split('CREATE TABLE IF NOT EXISTS ugc.events', 1)[1]
+    body = body[body.index('(') + 1:body.index(')\n')]
+    names = [
+        line.strip().split()[0]
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith('--')
+    ]
+
+    assert names == list(COLUMN_NAMES)
 
 
 def test_click_event_becomes_a_row(make_event) -> None:
@@ -86,11 +108,22 @@ def test_identifiers_become_uuid(make_event) -> None:
     assert isinstance(column(row, 'user_id'), UUID)
 
 
-def test_negative_number_is_clamped(make_event) -> None:
-    """Отрицательное число не доезжает до UInt32, где оно стало бы огромным."""
-    row = to_row(make_event('page_view', duration_ms=-5))
+@pytest.mark.parametrize('value', [-5, 2 ** 32, 2 ** 40])
+def test_number_outside_uint32_is_rejected(make_event, value) -> None:
+    """Число вне диапазона колонки отбраковывается, а не обрезается.
 
-    assert column(row, 'duration_ms') == 0
+    Обрезанное молча исказило бы аналитику, необрезанное — уронило бы вставку
+    всей пачки и остановило перенос.
+    """
+    with pytest.raises(EventFormatError):
+        to_row(make_event('page_view', duration_ms=value))
+
+
+def test_largest_uint32_value_is_accepted(make_event) -> None:
+    """Граница диапазона — ещё годное значение."""
+    row = to_row(make_event('search_filters_applied', results_count=2 ** 32 - 1))
+
+    assert column(row, 'results_count') == 2 ** 32 - 1
 
 
 @pytest.mark.parametrize('missing', ['event_id', 'user_id', 'session_id', 'occurred_at', 'event_type'])
@@ -127,3 +160,30 @@ def test_to_rows_is_lazy(make_event) -> None:
     rows = to_rows([make_event('click')])
 
     assert iter(rows) is rows
+
+
+@pytest.mark.parametrize('field', ['client', 'filters'])
+@pytest.mark.parametrize('value', [['web'], 'web', 42])
+def test_nested_field_of_wrong_type_is_rejected(make_event, field, value) -> None:
+    """Вложенное поле не того типа отбраковывается, а не роняет разбор.
+
+    До проверки `.get()` у списка давал AttributeError — он не ловился как
+    ошибка формата, ETL падал до подтверждения смещений и после перезапуска
+    падал на той же записи снова.
+    """
+    with pytest.raises(EventFormatError):
+        to_row(make_event('search_filters_applied', **{field: value}))
+
+
+def test_broken_nested_field_does_not_take_the_batch_down(make_event) -> None:
+    """В потоке событие с испорченным вложенным полем пропускается, соседние едут дальше."""
+    events = [
+        make_event('click'),
+        make_event('click', client=['web']),
+        make_event('search_filters_applied', filters=['genre']),
+        make_event('page_view'),
+    ]
+
+    rows = list(to_rows(events))
+
+    assert len(rows) == 2
