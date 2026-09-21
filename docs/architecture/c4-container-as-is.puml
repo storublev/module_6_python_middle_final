@@ -1,0 +1,57 @@
+@startuml c4-container-as-is
+' Схема AS IS: система онлайн-кинотеатра на конец седьмого спринта.
+' Нотация C4, уровень 2 (Containers): что за приложения и хранилища работают
+' и как они друг с другом разговаривают.
+!include <C4/C4_Container>
+
+title Онлайн-кинотеатр — AS IS (C4, уровень 2)
+
+Person(viewer, "Зритель", "Смотрит фильмы, ищет их в каталоге, входит по паролю или через соцсеть")
+Person(staff, "Редактор каталога", "Ведёт фильмы, жанры и персоны в админке")
+
+System_Ext(social, "Яндекс ID / Google", "Внешние поставщики OAuth 2.0")
+
+System_Boundary(cinema, "Онлайн-кинотеатр") {
+    Container(nginx, "Шлюз", "nginx 1.27", "Единая точка входа: маршрутизирует /api/, /auth/, /admin/, раздаёт статику, выдаёт X-Request-Id и ограничивает частоту запросов к входу")
+
+    Container(api, "Async API", "Python 3.12, FastAPI, uvicorn", "Отдаёт фильмы, жанры и персоны; проверяет право films.subscription в сервисе авторизации")
+    ContainerDb(redis_cache, "Кеш каталога", "Redis 7, LRU", "Ответы API; данные восстановимы, поэтому вытеснение разрешено")
+    ContainerDb(elastic, "Поисковый индекс", "Elasticsearch 8.5", "Индексы movies, genres, persons для чтения и полнотекстового поиска")
+
+    Container(auth, "Сервис авторизации", "Python 3.12, FastAPI, uvicorn", "Регистрация, вход, JWT-пара, сессии, роли и права, вход через соцсети")
+    ContainerDb(auth_pg, "База авторизации", "PostgreSQL 16, схема auth", "Пользователи, роли, права, история входов (партицирована), связанные аккаунты соцсетей")
+    ContainerDb(auth_redis, "Сессии и кеш прав", "Redis 7, AOF, noeviction", "Действующие сессии и наборы прав; вытеснять нельзя — пропадут сессии")
+
+    Container(admin, "Админка каталога", "Python 3.12, Django 5.2, gunicorn", "Редактирование каталога; вход сотрудника проверяет сервис авторизации")
+    ContainerDb(pg_movies, "База каталога", "PostgreSQL 16, схема content", "Фильмы, жанры, персоны — источник правды каталога")
+    Container(etl, "ETL каталога", "Python 3.12", "Переносит изменения каталога в Elasticsearch и проставляет фильмам access_level")
+
+    Container(jaeger, "Сбор трассировки", "Jaeger all-in-one, OTLP", "Спаны всех сервисов и дерево запроса по X-Request-Id")
+}
+
+Rel(viewer, nginx, "Каталог и вход", "HTTPS/JSON")
+Rel(staff, nginx, "Работа с каталогом", "HTTPS")
+
+Rel(nginx, api, "/api/", "HTTP")
+Rel(nginx, auth, "/auth/", "HTTP")
+Rel(nginx, admin, "/admin/", "HTTP")
+
+Rel(api, elastic, "Читает фильмы, жанры, персоны", "HTTP")
+Rel(api, redis_cache, "Кеширует ответы", "RESP")
+Rel(api, auth, "Проверяет право films.subscription", "HTTP/JSON")
+
+Rel(auth, auth_pg, "Пользователи, роли, история входов", "asyncpg")
+Rel(auth, auth_redis, "Сессии и кеш прав", "RESP")
+Rel(auth, social, "Обмен кода на токены, профиль", "HTTPS/OAuth 2.0")
+
+Rel(admin, pg_movies, "Читает и правит каталог", "psycopg")
+Rel(admin, auth, "Вход сотрудника и проверка права admin.access", "HTTP/JSON")
+
+Rel(etl, pg_movies, "Забирает изменения", "psycopg")
+Rel(etl, elastic, "Загружает документы", "HTTP")
+
+Rel(api, jaeger, "Спаны", "OTLP/HTTP")
+Rel(auth, jaeger, "Спаны", "OTLP/HTTP")
+
+SHOW_LEGEND()
+@enduml
