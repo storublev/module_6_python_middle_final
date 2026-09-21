@@ -166,3 +166,19 @@ def test_request_id_check_is_configurable(required, click_event, headers) -> Non
     response = app.test_client().post(EVENTS, json={'events': [click_event]}, headers=headers)
 
     assert response.status_code == (HTTPStatus.BAD_REQUEST if required else HTTPStatus.ACCEPTED)
+
+
+def test_element_of_wrong_type_does_not_reject_the_batch(client, headers, queue, click_event) -> None:
+    """Элемент не того типа отклоняется в одиночку: годные события из той же пачки доезжают.
+
+    Раньше поле events было объявлено как list[dict], и пачка с одним null
+    получала 422 целиком — вместе с корректными событиями и без перечня
+    отклонённых.
+    """
+    response = client.post(EVENTS, json={'events': [click_event, None, 'клик']}, headers=headers)
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    body = response.json
+    assert body['accepted'] == 1
+    assert [item['index'] for item in body['rejected']] == [1, 2]
+    assert len(queue.published) == 1

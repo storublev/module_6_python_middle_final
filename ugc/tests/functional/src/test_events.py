@@ -217,3 +217,15 @@ def test_repeated_batch_keeps_the_same_event_ids(http, url, headers, make_event,
 
     delivered = read_events(2)
     assert [item['event_id'] for item in delivered] == [event['event_id']] * 2
+
+
+def test_element_of_wrong_type_does_not_reject_the_batch(http, url, headers, make_event, read_events) -> None:
+    """Пачка с элементом null принимается частично: годное событие доезжает до брокера."""
+    good = make_event('click')
+
+    response = http.post(url(EVENTS), json={'events': [good, None]}, headers=headers)
+
+    assert response.status_code == HTTPStatus.ACCEPTED
+    assert response.json()['accepted'] == 1
+    assert response.json()['rejected'][0]['index'] == 1
+    assert read_events(1)[0]['event_id'] == good['event_id']

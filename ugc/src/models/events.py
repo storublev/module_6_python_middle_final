@@ -15,7 +15,7 @@
 """
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
@@ -155,11 +155,16 @@ EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 class EventsRequest(BaseModel):
     """Пачка событий: клиент копит их и отправляет одним запросом (ФТ-4).
 
-    События здесь — ещё не разобранные словари: каждое проверяется отдельно,
-    чтобы одно испорченное не отменило остальные. Ограничение на размер пачки
-    задаётся настройкой и проверяется в обработчике.
+    Элементы намеренно объявлены как `Any`, а не как словари: внешний уровень
+    проверяет только то, что пришёл непустой список, а каждое событие
+    разбирается отдельно в сборщике. Объяви мы здесь `list[dict]`, пачка с
+    одним элементом `null` целиком получила бы 422 — и годные события не
+    доехали бы до брокера, а клиент не увидел бы, какое именно отклонено.
+
+    Ограничение на размер пачки задаётся настройкой и проверяется в
+    обработчике: предел свой у каждого развёртывания, и в модель он не зашит.
     """
 
     model_config = ConfigDict(extra='forbid')
 
-    events: list[dict] = Field(min_length=1)
+    events: list[Any] = Field(min_length=1)
