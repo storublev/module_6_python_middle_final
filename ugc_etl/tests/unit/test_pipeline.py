@@ -59,8 +59,12 @@ def test_long_outage_opens_the_breaker_and_then_recovers(make_pipeline, make_eve
     assert source.commits == 1
 
 
-def test_empty_batch_is_not_committed(make_pipeline) -> None:
-    """Пустая пачка — это затишье, а не работа: ни вставки, ни подтверждения."""
+def test_empty_batch_is_not_inserted(make_pipeline) -> None:
+    """Пустая пачка — это затишье, а не работа: вставлять нечего и считать нечего.
+
+    Смещения при этом подтверждаются: в пустой пачке могли оказаться только
+    нечитаемые сообщения, и без подтверждения ETL возвращался бы к ним вечно.
+    """
     source = FakeSource([[]])
     sink = FakeSink()
 
@@ -68,7 +72,7 @@ def test_empty_batch_is_not_committed(make_pipeline) -> None:
     pipeline.run()
 
     assert sink.inserts == 0
-    assert source.commits == 0
+    assert pipeline.stats.batches == 0
 
 
 def test_batch_of_unusable_events_is_committed(make_pipeline) -> None:
