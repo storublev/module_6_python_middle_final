@@ -1,0 +1,86 @@
+# Непрерывная интеграция: линтеры, проверка типов и тесты.
+#
+# ЗАГОТОВКА девятого спринта (эпик E6 в docs/planning-sprint9.md).
+# Запускается пока только вручную (workflow_dispatch): прежде чем включать
+# запуск на каждый push и pull request, нужно убедиться, что проверки зелёные
+# на всех трёх версиях Python, иначе красными станут все коммиты сразу.
+#
+# Что здесь ещё не сделано:
+#   * mypy (задача 26) — на существующем коде он почти наверняка найдёт
+#     замечания, и их исправление и есть основная работа;
+#   * матрица версий (задача 27) — проект написан под 3.12, совместимость с
+#     3.10 и 3.11 нужно проверить, а не объявить;
+#   * запуск тестов — unit-тесты сервисов запускаются без Docker, а
+#     функциональным нужен compose, поэтому они пойдут отдельной задачей;
+#   * уведомление в Telegram (задача 28) — после секретов TELEGRAM_BOT_TOKEN
+#     и TELEGRAM_CHAT_ID в настройках репозитория.
+
+name: CI
+
+on:
+  workflow_dispatch:
+  # TODO(E6): включить после задачи 27.
+  # push:
+  #   branches: [ main ]
+  # pull_request:
+  #   branches: [ main ]
+
+jobs:
+  lint:
+    name: Линтеры
+    runs-on: ubuntu-latest
+    strategy:
+      # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
+      # сервиса свой pyproject.toml и setup.cfg, и запускать линтер из корня
+      # нельзя — он возьмёт чужие настройки.
+      fail-fast: false
+      matrix:
+        part: [".", "auth", "admin_panel", "ugc", "ugc_etl", "ugc_content", "research"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить линтеры
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff flake8
+
+      - name: ruff
+        working-directory: ${{ matrix.part }}
+        run: ruff check .
+
+      - name: flake8
+        working-directory: ${{ matrix.part }}
+        run: flake8 .
+
+  # TODO(E6, задача 26): проверка типов.
+  # types:
+  #   name: mypy
+  #   runs-on: ubuntu-latest
+  #   steps: …
+
+  # TODO(E6, задача 27): тесты на Python 3.10, 3.11 и 3.12 через strategy.matrix.
+  # test:
+  #   name: Тесты
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       python-version: ["3.10", "3.11", "3.12"]
+  #   steps: …
+
+  # TODO(E6, задача 28): уведомление об успехе в Telegram.
+  # needs — ключевое слово уровня job, а не step: notify запускается только
+  # после успешного завершения перечисленных задач.
+  # notify:
+  #   runs-on: ubuntu-latest
+  #   needs: [lint, types, test]
+  #   steps:
+  #     - uses: appleboy/telegram-action@master
+  #       with:
+  #         to: ${{ secrets.TELEGRAM_CHAT_ID }}
+  #         token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  #         message: "CI прошёл: ${{ github.repository }}@${{ github.ref_name }}"
