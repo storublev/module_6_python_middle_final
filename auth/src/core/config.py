@@ -124,6 +124,13 @@ class Settings(BaseSettings):
             f'postgresql+asyncpg://{self.postgres_user}:{self.postgres_password.get_secret_value()}'
             f'@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}'
         )
+    # Адрес Sentry. Пустая строка выключает отправку: сервис, запущенный
+    # локально без Sentry, должен работать как обычно.
+    sentry_dsn: str = ''
+    sentry_environment: str = 'local'
 
 
-settings = Settings()
+# Обязательные поля без значений по умолчанию pydantic-settings берёт из
+# окружения, а mypy видит только сигнатуру и считает их пропущенными
+# аргументами — отсюда точечное умолчание.
+settings = Settings()  # type: ignore[call-arg]

@@ -9,3 +9,4 @@ opentelemetry-sdk==1.44.0
 pydantic-settings==2.15.0
 pydantic==2.13.5
 pyjwt==2.14.0
+sentry-sdk[flask]==2.70.0

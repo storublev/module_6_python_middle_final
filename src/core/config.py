@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     @property
     def elastic_url(self) -> str:
         return f'http://{self.elastic_host}:{self.elastic_port}'
+    # Адрес Sentry. Пустая строка выключает отправку: сервис, запущенный
+    # локально без Sentry, должен работать как обычно.
+    sentry_dsn: str = ''
+    sentry_environment: str = 'local'
 
 
 settings = Settings()

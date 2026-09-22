@@ -1,6 +1,7 @@
 import logging.config
 from contextlib import asynccontextmanager
 from http import HTTPStatus
+from typing import Any
 
 import httpx
 import uvicorn
@@ -18,6 +19,7 @@ from api.v1.schemas import error_response
 from core.config import settings
 from core.logger import LOGGING
 from core.middleware import RequestIdMiddleware, TrailingSlashMiddleware
+from core.sentry import configure_sentry
 from core.tracing import configure_tracing
 from db import auth, elastic, redis
 from services.errors import AccessCheckUnavailableError, SubscriptionRequiredError
@@ -25,6 +27,7 @@ from storage.access import TokenRejectedError
 from storage.base import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
+configure_sentry(settings.sentry_dsn, settings.project_name, settings.sentry_environment)
 
 SERVICE_UNAVAILABLE = 'service temporarily unavailable'
 
@@ -120,7 +123,9 @@ app = FastAPI(
 )
 # Документация вызывается мимо nginx, в том числе проверками готовности:
 # идентификатор запроса с неё не спрашивается, спаны по ней не строятся.
-DOCS_PATHS = frozenset({app.docs_url, app.openapi_url})
+# Оба адреса заданы при создании приложения, но в типах FastAPI они
+# объявлены как str | None — отсюда явный отбор непустых.
+DOCS_PATHS = frozenset(path for path in (app.docs_url, app.openapi_url) if path)
 
 configure_tracing(
     app,
@@ -167,7 +172,9 @@ async def token_rejected_handler(_: Request, exc: TokenRejectedError) -> JSONRes
 
 
 # 503 возможен у любого эндпоинта, поэтому описан для роутеров целиком.
-storage_responses = {HTTPStatus.SERVICE_UNAVAILABLE: error_response(SERVICE_UNAVAILABLE)}
+storage_responses: dict[int | str, dict[str, Any]] = {
+    HTTPStatus.SERVICE_UNAVAILABLE: error_response(SERVICE_UNAVAILABLE),
+}
 app.include_router(films.router, prefix='/api/v1/films', tags=['films'], responses=storage_responses)
 app.include_router(genres.router, prefix='/api/v1/genres', tags=['genres'], responses=storage_responses)
 app.include_router(persons.router, prefix='/api/v1/persons', tags=['persons'], responses=storage_responses)
