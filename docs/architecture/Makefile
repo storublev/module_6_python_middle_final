@@ -8,7 +8,9 @@
 #   make          — собрать изменившиеся схемы
 #   make clean    — удалить картинки
 
-IMAGE ?= plantuml/plantuml:latest
+# Версия закреплена: с плавающим тегом latest схемы однажды перестанут
+# собираться из-за несовместимости, и это вскроется в самый неподходящий момент.
+IMAGE ?= plantuml/plantuml:1.2026.8
 SOURCES := $(wildcard *.puml)
 IMAGES := $(SOURCES:.puml=.png)
 

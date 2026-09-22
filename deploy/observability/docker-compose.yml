@@ -91,11 +91,15 @@ services:
   # Поднимается только с профилем sentry: это пять контейнеров, и держать их
   # запущенными ради отладки одного сервиса незачем.
   #
-  # Способ из урока — образ sentry:latest со своими Postgres и Redis. Боевой
+  # Способ из урока — образ sentry:9.1.2 со своими Postgres и Redis. Боевой
   # способ — репозиторий getsentry/self-hosted или облачный sentry.io; тогда
   # от всего этого остаётся одна переменная с DSN.
   sentry-postgres:
-    image: postgres:16-alpine
+    # Именно 9.6, а не свежий PostgreSQL: Sentry 9 из этого образа — это
+    # Python 2 и Django 1.6, и на PostgreSQL 12+ у него падает любая вставка
+    # (Django той версии не умеет читать результат INSERT ... RETURNING).
+    image: postgres:9.6
+    platform: linux/amd64
     profiles: ["sentry"]
     env_file: *env-file
     environment:
@@ -106,11 +110,19 @@ services:
       - sentry_postgres_data:/var/lib/postgresql/data
 
   sentry-redis:
-    image: redis:7-alpine
+    # Redis 5, а не свежий: защиту глобальных переменных в Lua завезли в
+    # Redis 7 и бэкпортировали в поздние 6.2, а скрипты Sentry 9 её нарушают и
+    # падают с «Attempt to modify a readonly table» — события не доходят до
+    # обработчика.
+    image: redis:5-alpine
     profiles: ["sentry"]
 
   sentry-api:
-    image: sentry:latest
+    image: sentry:9.1.2
+    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
+    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
+    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
+    platform: linux/amd64
     profiles: ["sentry"]
     env_file: *env-file
     depends_on:
@@ -122,11 +134,11 @@ services:
       SENTRY_DB_NAME: ${SENTRY_DB_NAME:-sentry}
       SENTRY_POSTGRES_HOST: sentry-postgres
       SENTRY_POSTGRES_PORT: 5432
-      # Без значения по умолчанию: пустой ключ Sentry не примет и упадёт с
-      # понятной ошибкой. Проверку через ${VAR:?...} здесь использовать
-      # нельзя — compose подставляет переменные во все сервисы, включая те,
-      # что лежат под профилем, и тогда не поднялся бы и ELK.
-      SENTRY_SECRET_KEY: ${SENTRY_SECRET_KEY:-}
+      # SENTRY_SECRET_KEY сюда намеренно не выписан: он приходит из общего
+      # .env через env_file. Подстановка вида ${SENTRY_SECRET_KEY:-} здесь не
+      # работает — compose ищет .env рядом с файлом compose, то есть в
+      # deploy/observability, а не в корне репозитория, и затирала бы
+      # пришедшее из env_file значение пустым.
       SENTRY_REDIS_HOST: sentry-redis
       SENTRY_REDIS_PORT: 6379
       SENTRY_REDIS_DB: 1
@@ -134,7 +146,11 @@ services:
       - "${SENTRY_PORT:-9000}:9000"
 
   sentry-worker:
-    image: sentry:latest
+    image: sentry:9.1.2
+    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
+    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
+    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
+    platform: linux/amd64
     profiles: ["sentry"]
     env_file: *env-file
     depends_on:
@@ -144,7 +160,11 @@ services:
     command: sentry run worker
 
   sentry-cron:
-    image: sentry:latest
+    image: sentry:9.1.2
+    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
+    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
+    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
+    platform: linux/amd64
     profiles: ["sentry"]
     env_file: *env-file
     depends_on:
