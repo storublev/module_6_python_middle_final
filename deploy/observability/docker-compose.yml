@@ -7,9 +7,13 @@
 # дольше и перезапускается реже, чем сервисы кинотеатра, и поднимать ELK на
 # каждый прогон тестов незачем.
 #
-# ЗАГОТОВКА девятого спринта (эпик E5): файл не проверялся живым запуском,
-# сбор логов сервисов ещё не подключён.
 name: cinema-observability
+
+# Переменные берутся из общего .env кинотеатра: адрес Sentry и его секрет
+# нужны и основному стеку, и этому.
+x-env-file: &env-file
+  - path: ../../.env
+    required: false
 
 services:
   # ВАЖНО: это отдельный Elasticsearch, не тот, в котором лежит каталог
@@ -64,13 +68,24 @@ services:
   # (JVM плюс разбор сообщений), а filebeat только читает файл и отправляет.
   filebeat:
     image: elastic/filebeat:8.10.2
+    # root нужен, чтобы читать файлы журналов Docker: они принадлежат root
+    # и лежат вне контейнера filebeat.
     user: root
+    # Свой конфиг filebeat пускает в работу, только если его не может
+    # переписать кто угодно; смонтированный файл принадлежит хосту, поэтому
+    # проверку владельца отключаем явно.
+    command: ["--strict.perms=false"]
     depends_on:
       - logstash
     volumes:
       - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
-      # TODO(E5): смонтировать сюда каталог, в который nginx пишет JSON-лог.
+      # Журнал nginx в JSON — из общего тома основного стека.
       - nginx_logs:/var/log/nginx:ro
+      # stdout остальных сервисов: их складывает сюда json-file драйвер Docker.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Состояние сборщика: без него после перезапуска он перечитает всё заново.
+      - filebeat_data:/usr/share/filebeat/data
 
   # --- Sentry ---------------------------------------------------------------
   # Поднимается только с профилем sentry: это пять контейнеров, и держать их
@@ -82,6 +97,7 @@ services:
   sentry-postgres:
     image: postgres:16-alpine
     profiles: ["sentry"]
+    env_file: *env-file
     environment:
       POSTGRES_USER: ${SENTRY_DB_USER:-sentry}
       POSTGRES_PASSWORD: ${SENTRY_DB_PASSWORD:-sentry}
@@ -96,6 +112,7 @@ services:
   sentry-api:
     image: sentry:latest
     profiles: ["sentry"]
+    env_file: *env-file
     depends_on:
       - sentry-postgres
       - sentry-redis
@@ -105,7 +122,11 @@ services:
       SENTRY_DB_NAME: ${SENTRY_DB_NAME:-sentry}
       SENTRY_POSTGRES_HOST: sentry-postgres
       SENTRY_POSTGRES_PORT: 5432
-      SENTRY_SECRET_KEY: ${SENTRY_SECRET_KEY:?задайте SENTRY_SECRET_KEY в .env}
+      # Без значения по умолчанию: пустой ключ Sentry не примет и упадёт с
+      # понятной ошибкой. Проверку через ${VAR:?...} здесь использовать
+      # нельзя — compose подставляет переменные во все сервисы, включая те,
+      # что лежат под профилем, и тогда не поднялся бы и ELK.
+      SENTRY_SECRET_KEY: ${SENTRY_SECRET_KEY:-}
       SENTRY_REDIS_HOST: sentry-redis
       SENTRY_REDIS_PORT: 6379
       SENTRY_REDIS_DB: 1
@@ -115,6 +136,7 @@ services:
   sentry-worker:
     image: sentry:latest
     profiles: ["sentry"]
+    env_file: *env-file
     depends_on:
       - sentry-postgres
       - sentry-redis
@@ -124,6 +146,7 @@ services:
   sentry-cron:
     image: sentry:latest
     profiles: ["sentry"]
+    env_file: *env-file
     depends_on:
       - sentry-postgres
       - sentry-redis
@@ -133,6 +156,11 @@ services:
 volumes:
   logs_elasticsearch_data:
   sentry_postgres_data:
-  # Том с логами nginx общий с основным стеком: туда пишет nginx, отсюда
-  # читает filebeat. TODO(E5): объявить его и в корневом docker-compose.yml.
+  filebeat_data:
+  # Том с логами nginx создаёт основной стек кинотеатра; здесь он подключается
+  # как внешний, поэтому имя у него фиксированное (см. docker-compose.yml в
+  # корне). Если основной стек ещё не поднимался, тома нет — и этот стек не
+  # запустится, пока он не появится.
   nginx_logs:
+    external: true
+    name: cinema_nginx_logs

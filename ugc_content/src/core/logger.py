@@ -18,7 +18,7 @@ gelf-драйвер Docker). Библиотеку вроде `python-logstash` �
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from core.config import settings
 
@@ -42,7 +42,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            '@timestamp': datetime.fromtimestamp(record.created, UTC).isoformat(),
+            '@timestamp': datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             'level': record.levelname,
             'logger': record.name,
             'service': self._service,
