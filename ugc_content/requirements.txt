@@ -1,5 +1,8 @@
 beanie==2.2.0
 fastapi==0.141.1
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-sdk==1.44.0
 pydantic-settings==2.15.0
 pydantic==2.13.5
 pyjwt==2.14.0

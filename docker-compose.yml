@@ -55,6 +55,20 @@ x-ugc-env: &ugc-env
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   UGC_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
 
+# Настройки сервиса пользовательского контента: лайки, рецензии и закладки.
+# Секрет подписи токенов общий с сервисом авторизации — токены выпускает он.
+x-content-env: &content-env
+  CONTENT_MONGO_URI: mongodb://ugc-mongo:27017
+  CONTENT_MONGO_DATABASE: ${CONTENT_MONGO_DATABASE:-ugc_content}
+  CONTENT_LOG_LEVEL: ${CONTENT_LOG_LEVEL:-INFO}
+  CONTENT_PAGE_SIZE_DEFAULT: ${CONTENT_PAGE_SIZE_DEFAULT:-20}
+  CONTENT_PAGE_SIZE_MAX: ${CONTENT_PAGE_SIZE_MAX:-100}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  CONTENT_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  # Пустой DSN выключает отправку ошибок: локальный стек поднимается без Sentry.
+  CONTENT_SENTRY_DSN: ${CONTENT_SENTRY_DSN:-}
+  CONTENT_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
 # Настройки ETL событий. Топик тот же, что у сервиса приёма: это две стороны
 # одной трубы, и расходиться им нельзя.
 x-ugc-etl-env: &ugc-etl-env
@@ -347,6 +361,39 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Хранилище пользовательского контента. Версия 7.0, а не 8.x: MongoDB 8.0+
+  # не стартует на ядре Linux 6.19 и новее (SERVER-121912 — tcmalloc нарушает
+  # ABI rseq), а у Docker Desktop ядро как раз новее.
+  ugc-mongo:
+    image: mongo:7.0
+    command: mongod --bind_ip_all
+    volumes:
+      - ugc_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  ugc-content:
+    build: ./ugc_content
+    image: movies-ugc-content
+    environment:
+      <<: *content-env
+      WEB_CONCURRENCY: ${CONTENT_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      ugc-mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/content/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   # Аналитическое хранилище событий. Схему (таблицу, витрину и материализованное
   # представление) заводит сам образ: файлы из /docker-entrypoint-initdb.d он
   # выполняет при первом запуске — так же, как postgres накатывает дамп ETL.
@@ -407,6 +454,7 @@ services:
 volumes:
   postgres_data:
   kafka_data:
+  ugc_mongo_data:
   clickhouse_data:
   elasticsearch_data:
   auth_postgres_data:

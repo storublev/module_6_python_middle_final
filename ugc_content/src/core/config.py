@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # Адрес Sentry. Пустая строка выключает отправку: сервис, запущенный
     # локально без Sentry, должен работать как обычно.
     sentry_dsn: str = ''
+    sentry_environment: str = 'local'
+
+    # Распределённая трассировка. Пустой адрес выключает отправку спанов:
+    # сервис, запущенный локально без Jaeger, должен работать как обычно.
+    otlp_endpoint: str = ''
 
 
 settings = Settings()

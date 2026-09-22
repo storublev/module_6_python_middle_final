@@ -32,7 +32,7 @@ class ReviewSort(StrEnum):
 
     NEWEST = 'newest'
     OLDEST = 'oldest'
-    MOST_LIKED = 'most_liked'
+    MOST_USEFUL = 'most_useful'
     HIGHEST_RATING = 'highest_rating'
 
 
@@ -80,15 +80,19 @@ class ReviewRequest(BaseModel):
 
 
 class Review(BaseModel):
-    """Рецензия на фильм вместе с голосами за неё."""
+    """Рецензия на фильм вместе с голосами за неё.
+
+    Голоса названы `useful`/`useless`, а не `likes`/`dislikes`: это оценка
+    полезности текста, а не фильма, и путать их в ответе API нельзя.
+    """
 
     review_id: UUID
     film_id: UUID
     user_id: UUID
     text: ReviewText
     rating: Rating | None = None
-    likes: int = Field(default=0, ge=0)
-    dislikes: int = Field(default=0, ge=0)
+    useful: int = Field(default=0, ge=0)
+    useless: int = Field(default=0, ge=0)
     created_at: AwareDatetime
 
 
