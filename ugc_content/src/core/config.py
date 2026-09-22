@@ -56,4 +56,7 @@ class Settings(BaseSettings):
     otlp_endpoint: str = ''
 
 
-settings = Settings()
+# Обязательные поля без значений по умолчанию pydantic-settings берёт из
+# окружения, а mypy видит только сигнатуру и считает их пропущенными
+# аргументами — отсюда точечное умолчание.
+settings = Settings()  # type: ignore[call-arg]

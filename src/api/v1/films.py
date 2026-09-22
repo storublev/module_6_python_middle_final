@@ -1,5 +1,5 @@
 from http import HTTPStatus
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -24,7 +24,11 @@ VISIBILITY_NOTE = (
     'до публичных фильмов.'
 )
 # Эндпоинты, читающие токен, могут получить его отказ от сервиса авторизации.
-TOKEN_RESPONSES = {HTTPStatus.UNAUTHORIZED: error_response(TOKEN_REJECTED)}
+# Тип указан явно: FastAPI ждёт ключи int | str, а HTTPStatus — подкласс int,
+# который в аннотации словаря сам по себе не подходит.
+TOKEN_RESPONSES: dict[int | str, dict[str, Any]] = {
+    HTTPStatus.UNAUTHORIZED: error_response(TOKEN_REJECTED),
+}
 
 
 @router.get(

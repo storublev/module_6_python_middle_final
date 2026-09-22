@@ -97,7 +97,9 @@ def error_responses(*errors: type[ServiceError]) -> dict[int | str, dict[str, An
     return responses
 
 
-SERVICE_UNAVAILABLE_RESPONSE = {
+# Тип указан явно: FastAPI ждёт ключи int | str, а HTTPStatus — подкласс int,
+# который в аннотации словаря сам по себе не подходит.
+SERVICE_UNAVAILABLE_RESPONSE: dict[int | str, dict[str, Any]] = {
     HTTPStatus.SERVICE_UNAVAILABLE: {
         'model': ErrorSchema,
         'description': 'PostgreSQL или Redis временно недоступны',

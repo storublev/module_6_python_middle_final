@@ -113,6 +113,11 @@ class Storage(ABC):
     """Хранилище, участвующее в сравнении."""
 
     name: str
+    # То, что у хранилищ пишется по-разному и подставляется в общие запросы:
+    # полное имя таблицы, выражение «месяц назад» и приведение к дате.
+    table: str
+    month_ago: str
+    day_expression: str
 
     @abstractmethod
     def prepare(self) -> None:

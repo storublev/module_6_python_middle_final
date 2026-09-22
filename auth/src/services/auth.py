@@ -110,6 +110,9 @@ class AuthService:
             # аккаунт от несуществующего.
             await self.passwords.verify_dummy(password)
             raise InvalidCredentialsError
+        # Сюда доходим, только если хеш есть: ветка выше отсеяла аккаунты
+        # без пароля, но mypy этого через has_password не видит.
+        assert user.password_hash is not None  # noqa: S101
         if not await self.passwords.verify(password, user.password_hash):
             raise InvalidCredentialsError
         await self.throttle.login_succeeded(login)

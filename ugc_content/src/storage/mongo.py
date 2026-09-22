@@ -12,8 +12,8 @@
 
 import functools
 import logging
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Coroutine
+from datetime import datetime, timezone
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
@@ -63,10 +63,10 @@ def aware(moment: datetime) -> datetime:
     требует пояс явно: «2026-09-22T12:00:00» без него — это неизвестно какое
     время, и клиент в другом поясе покажет его неправильно.
     """
-    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def translate_errors(method: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+def translate_errors(method: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Coroutine[Any, Any, T]]:
     """Превращает ошибки драйвера в `StorageUnavailableError`.
 
     Декоратор, а не try/except в каждом методе: забыть обернуть один метод
@@ -232,6 +232,9 @@ class MongoBookmarkStorage(BookmarkStorage):
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
+        # upsert=True с ReturnDocument.AFTER всегда отдаёт документ: его либо
+        # нашли, либо только что создали.
+        assert document is not None  # noqa: S101 — инвариант upsert, не проверка входных данных
         return self._to_bookmark(document)
 
     @translate_errors

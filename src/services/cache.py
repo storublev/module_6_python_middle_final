@@ -50,7 +50,9 @@ class ModelCache:
         if cached is None:
             return None
         try:
-            return type_adapter(tp).validate_json(cached)
+            # Тип как ключ кеша адаптеров хешируем, но mypy видит только type[T]
+            # и считает его непригодным для lru_cache.
+            return type_adapter(tp).validate_json(cached)  # type: ignore[arg-type]
         except ValidationError as exc:
             logger.warning('Запись %s в кеше не прошла проверку, читаем из хранилища: %s', key, exc)
             return None
@@ -58,6 +60,6 @@ class ModelCache:
     async def set(self, key: str, value: T, tp: type[T]) -> None:
         """Сохраняет запись; если кеш недоступен, пропускает запись."""
         try:
-            await self.storage.set(key, type_adapter(tp).dump_json(value), self.expire)
+            await self.storage.set(key, type_adapter(tp).dump_json(value), self.expire)  # type: ignore[arg-type]
         except CacheUnavailableError as exc:
             logger.warning('Не удалось записать ключ %s в кеш: %s', key, exc)

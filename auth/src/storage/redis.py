@@ -27,6 +27,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
@@ -168,6 +169,18 @@ def milliseconds(period: timedelta) -> int:
     return int(period.total_seconds() * 1000)
 
 
+def as_text(value: Any) -> str:
+    """Приводит ответ Redis к строке.
+
+    Клиент создан без `decode_responses`, поэтому в работе всегда приходят
+    байты, но в типах библиотеки значение объявлено как `bytes | str` — и без
+    этой обёртки каждое обращение к `.decode()` приходилось бы прятать от
+    проверяющего типов. У некоторых команд (например, zrangebyscore) тип
+    ответа объявлен ещё шире — отсюда Any на входе.
+    """
+    return value.decode() if isinstance(value, bytes) else value
+
+
 class RedisSessionStore(SessionStore):
     def __init__(self, redis: Redis, max_sessions: int, clock: Callable[[], float] = time.time):
         self.redis = redis
@@ -202,8 +215,8 @@ class RedisSessionStore(SessionStore):
             return None
         return Session(
             id=session_id,
-            user_id=UUID(fields[b'user_id'].decode()),
-            refresh_jti=fields[b'refresh_jti'].decode(),
+            user_id=UUID(as_text(fields[b'user_id'])),
+            refresh_jti=as_text(fields[b'refresh_jti']),
             credentials_version=int(fields[b'credentials_version']),
         )
 
@@ -233,7 +246,7 @@ class RedisSessionStore(SessionStore):
         async with redis_errors():
             # Только ещё не истёкшие: истёкших ключей сессий уже нет.
             members = await self.redis.zrangebyscore(user_key, f'({now}', '+inf')
-            others = [member.decode() for member in members if member.decode() != str(keep_session_id)]
+            others = [as_text(member) for member in members if as_text(member) != str(keep_session_id)]
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.zremrangebyscore(user_key, '-inf', now)
                 if others:
@@ -322,4 +335,4 @@ class RedisOAuthStateStore(OAuthStateStore):
     async def pop(self, state: str) -> str | None:
         async with redis_errors():
             value = await self.redis.getdel(OAUTH_STATE_KEY.format(state=state))
-        return value.decode() if value is not None else None
+        return as_text(value) if value is not None else None
