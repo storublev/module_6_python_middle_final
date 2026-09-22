@@ -1,0 +1,138 @@
+# Наблюдаемость: ELK для логов и Sentry для ошибок.
+#
+#   docker compose -f deploy/observability/docker-compose.yml up -d          # ELK
+#   docker compose -f deploy/observability/docker-compose.yml --profile sentry up -d
+#
+# Отдельный файл, а не сервисы в общем docker-compose.yml: наблюдаемость живёт
+# дольше и перезапускается реже, чем сервисы кинотеатра, и поднимать ELK на
+# каждый прогон тестов незачем.
+#
+# ЗАГОТОВКА девятого спринта (эпик E5): файл не проверялся живым запуском,
+# сбор логов сервисов ещё не подключён.
+name: cinema-observability
+
+services:
+  # ВАЖНО: это отдельный Elasticsearch, не тот, в котором лежит каталог
+  # фильмов Async API. Урок предупреждает об этом прямо: логи и полнотекстовый
+  # поиск сервиса нельзя держать в одном кластере — всплеск логов утащит за
+  # собой поиск по фильмам.
+  elasticsearch-logs:
+    image: elasticsearch:8.10.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      # Одна нода без реплик: это учебный стенд, а не хранилище логов прода.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "${LOGS_ELASTIC_PORT:-9201}:9200"
+    volumes:
+      - logs_elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  logstash:
+    image: logstash:8.10.2
+    depends_on:
+      elasticsearch-logs:
+        condition: service_healthy
+    environment:
+      # Встроенный мониторинг шлёт данные в ES и здесь только мешает.
+      XPACK_MONITORING_ENABLED: "false"
+      ES_HOST: "elasticsearch-logs:9200"
+    ports:
+      # 5044/udp — для gelf-драйвера Docker, 5045/tcp — для Beats.
+      - "${LOGSTASH_GELF_PORT:-5044}:5044/udp"
+      - "${LOGSTASH_BEATS_PORT:-5045}:5045"
+    volumes:
+      - ./logstash.conf:/config/logstash.conf:ro
+    command: logstash -f /config/logstash.conf
+
+  kibana:
+    image: kibana:8.10.2
+    depends_on:
+      elasticsearch-logs:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch-logs:9200
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+
+  # Beats вместо второго logstash рядом с каждым сервисом: logstash тяжёл
+  # (JVM плюс разбор сообщений), а filebeat только читает файл и отправляет.
+  filebeat:
+    image: elastic/filebeat:8.10.2
+    user: root
+    depends_on:
+      - logstash
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # TODO(E5): смонтировать сюда каталог, в который nginx пишет JSON-лог.
+      - nginx_logs:/var/log/nginx:ro
+
+  # --- Sentry ---------------------------------------------------------------
+  # Поднимается только с профилем sentry: это пять контейнеров, и держать их
+  # запущенными ради отладки одного сервиса незачем.
+  #
+  # Способ из урока — образ sentry:latest со своими Postgres и Redis. Боевой
+  # способ — репозиторий getsentry/self-hosted или облачный sentry.io; тогда
+  # от всего этого остаётся одна переменная с DSN.
+  sentry-postgres:
+    image: postgres:16-alpine
+    profiles: ["sentry"]
+    environment:
+      POSTGRES_USER: ${SENTRY_DB_USER:-sentry}
+      POSTGRES_PASSWORD: ${SENTRY_DB_PASSWORD:-sentry}
+      POSTGRES_DB: ${SENTRY_DB_NAME:-sentry}
+    volumes:
+      - sentry_postgres_data:/var/lib/postgresql/data
+
+  sentry-redis:
+    image: redis:7-alpine
+    profiles: ["sentry"]
+
+  sentry-api:
+    image: sentry:latest
+    profiles: ["sentry"]
+    depends_on:
+      - sentry-postgres
+      - sentry-redis
+    environment: &sentry-env
+      SENTRY_DB_USER: ${SENTRY_DB_USER:-sentry}
+      SENTRY_DB_PASSWORD: ${SENTRY_DB_PASSWORD:-sentry}
+      SENTRY_DB_NAME: ${SENTRY_DB_NAME:-sentry}
+      SENTRY_POSTGRES_HOST: sentry-postgres
+      SENTRY_POSTGRES_PORT: 5432
+      SENTRY_SECRET_KEY: ${SENTRY_SECRET_KEY:?задайте SENTRY_SECRET_KEY в .env}
+      SENTRY_REDIS_HOST: sentry-redis
+      SENTRY_REDIS_PORT: 6379
+      SENTRY_REDIS_DB: 1
+    ports:
+      - "${SENTRY_PORT:-9000}:9000"
+
+  sentry-worker:
+    image: sentry:latest
+    profiles: ["sentry"]
+    depends_on:
+      - sentry-postgres
+      - sentry-redis
+    environment: *sentry-env
+    command: sentry run worker
+
+  sentry-cron:
+    image: sentry:latest
+    profiles: ["sentry"]
+    depends_on:
+      - sentry-postgres
+      - sentry-redis
+    environment: *sentry-env
+    command: sentry run cron
+
+volumes:
+  logs_elasticsearch_data:
+  sentry_postgres_data:
+  # Том с логами nginx общий с основным стеком: туда пишет nginx, отсюда
+  # читает filebeat. TODO(E5): объявить его и в корневом docker-compose.yml.
+  nginx_logs:

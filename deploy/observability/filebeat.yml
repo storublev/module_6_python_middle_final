@@ -1,0 +1,23 @@
+# Лёгкий сборщик логов рядом с сервисами: читает файлы и отправляет в logstash.
+#
+# ЗАГОТОВКА девятого спринта (эпик E5): пути к логам появятся, когда nginx
+# начнёт писать журнал в JSON в общий том.
+filebeat.inputs:
+  - type: filestream
+    id: nginx
+    enabled: true
+    paths:
+      - /var/log/nginx/*.json
+    # Логи уже в JSON, поэтому разбирать их регулярными выражениями не нужно.
+    parsers:
+      - ndjson:
+          keys_under_root: true
+          add_error_key: true
+    tags: ["nginx"]
+
+output.logstash:
+  enabled: true
+  hosts: ["logstash:5045"]
+
+# Сам filebeat тоже пишет о себе — в stdout контейнера, а не в файл.
+logging.to_files: false
