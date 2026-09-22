@@ -1,40 +1,34 @@
-# Непрерывная интеграция: линтеры, проверка типов и тесты.
+# Непрерывная интеграция: линтеры, проверка типов, тесты и уведомление.
 #
-# ЗАГОТОВКА девятого спринта (эпик E6 в docs/planning-sprint9.md).
-# Запускается пока только вручную (workflow_dispatch): прежде чем включать
-# запуск на каждый push и pull request, нужно убедиться, что проверки зелёные
-# на всех трёх версиях Python, иначе красными станут все коммиты сразу.
-#
-# Что здесь ещё не сделано:
-#   * mypy (задача 26) — на существующем коде он почти наверняка найдёт
-#     замечания, и их исправление и есть основная работа;
-#   * матрица версий (задача 27) — проект написан под 3.12, совместимость с
-#     3.10 и 3.11 нужно проверить, а не объявить;
-#   * запуск тестов — unit-тесты сервисов запускаются без Docker, а
-#     функциональным нужен compose, поэтому они пойдут отдельной задачей;
-#   * уведомление в Telegram (задача 28) — после секретов TELEGRAM_BOT_TOKEN
-#     и TELEGRAM_CHAT_ID в настройках репозитория.
+# Репозиторий — несколько сервисов, у каждого своя конфигурация линтеров и
+# свои зависимости, поэтому почти все задачи идут матрицей по частям
+# репозитория: так видно, какой именно сервис сломался, и упавший сервис не
+# прячет за собой остальные (fail-fast выключен).
 
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
-  # TODO(E6): включить после задачи 27.
-  # push:
-  #   branches: [ main ]
-  # pull_request:
-  #   branches: [ main ]
+
+env:
+  # Рабочая версия проекта. Совместимость с 3.10 и 3.11 проверяется отдельной
+  # матрицей — см. задачу tests-matrix ниже.
+  DEFAULT_PYTHON: "3.12"
 
 jobs:
   lint:
-    name: Линтеры
+    name: Линтеры (${{ matrix.part }})
     runs-on: ubuntu-latest
     strategy:
-      # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
-      # сервиса свой pyproject.toml и setup.cfg, и запускать линтер из корня
-      # нельзя — он возьмёт чужие настройки.
       fail-fast: false
       matrix:
+        # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
+        # сервиса свои pyproject.toml и setup.cfg, и запускать линтер из корня
+        # нельзя — он возьмёт чужие настройки.
         part: [".", "auth", "admin_panel", "ugc", "ugc_etl", "ugc_content", "research"]
     steps:
       - uses: actions/checkout@v4
@@ -42,12 +36,13 @@ jobs:
       - name: Поставить Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
 
       - name: Поставить линтеры
         run: |
           python -m pip install --upgrade pip
-          pip install ruff flake8
+          pip install ruff==0.14.0 flake8==7.3.0 flake8-docstrings==1.7.0
 
       - name: ruff
         working-directory: ${{ matrix.part }}
@@ -57,30 +52,120 @@ jobs:
         working-directory: ${{ matrix.part }}
         run: flake8 .
 
-  # TODO(E6, задача 26): проверка типов.
-  # types:
-  #   name: mypy
-  #   runs-on: ubuntu-latest
-  #   steps: …
+  types:
+    name: Типы (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Админки здесь нет: Django без django-stubs проверяется бессмысленно —
+        # mypy не знает ни про модели, ни про менеджеры и выдаёт ошибки на
+        # ровном месте. Это отдельная задача, а не повод ослабить проверку
+        # остальным.
+        part: [".", "auth", "ugc", "ugc_etl", "ugc_content"]
+    steps:
+      - uses: actions/checkout@v4
 
-  # TODO(E6, задача 27): тесты на Python 3.10, 3.11 и 3.12 через strategy.matrix.
-  # test:
-  #   name: Тесты
-  #   runs-on: ubuntu-latest
-  #   strategy:
-  #     matrix:
-  #       python-version: ["3.10", "3.11", "3.12"]
-  #   steps: …
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
 
-  # TODO(E6, задача 28): уведомление об успехе в Telegram.
-  # needs — ключевое слово уровня job, а не step: notify запускается только
-  # после успешного завершения перечисленных задач.
-  # notify:
-  #   runs-on: ubuntu-latest
-  #   needs: [lint, types, test]
-  #   steps:
-  #     - uses: appleboy/telegram-action@master
-  #       with:
-  #         to: ${{ secrets.TELEGRAM_CHAT_ID }}
-  #         token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  #         message: "CI прошёл: ${{ github.repository }}@${{ github.ref_name }}"
+      - name: Поставить mypy и зависимости сервиса
+        working-directory: ${{ matrix.part }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy==2.3.1
+          pip install -r requirements.txt
+
+      - name: mypy
+        working-directory: ${{ matrix.part }}
+        # --ignore-missing-imports: у части библиотек нет типов, и требовать
+        # их заглушки от нас — не та работа, ради которой ставилась проверка.
+        run: mypy src --ignore-missing-imports
+
+  tests-matrix:
+    name: Тесты сервиса контента на Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: ugc_content
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/unit/requirements.txt
+
+      - name: Unit-тесты
+        working-directory: ugc_content/tests/unit
+        run: python -m pytest
+
+      - name: Проверить типы под эту версию Python
+        working-directory: ugc_content
+        # mypy знает, какие возможности стандартной библиотеки появились в
+        # какой версии: так видно, что сервис не использует ничего новее 3.10.
+        run: |
+          pip install mypy==2.3.1
+          mypy src --ignore-missing-imports --python-version=${{ matrix.python-version }}
+
+  tests:
+    name: Unit-тесты (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Эти части написаны под 3.12 и используют её возможности
+        # (дженерики в синтаксисе PEP 695, StrEnum, datetime.UTC), поэтому у
+        # них одна версия. Матрица версий — у сервиса контента выше: он
+        # написан совместимым с 3.10 намеренно.
+        part: [".", "auth", "ugc", "ugc_etl", "admin_panel"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: ${{ matrix.part }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/unit/requirements.txt
+
+      - name: Unit-тесты
+        working-directory: ${{ matrix.part }}/tests/unit
+        run: python -m pytest
+
+  notify:
+    name: Уведомление в Telegram
+    runs-on: ubuntu-latest
+    # needs — ключевое слово уровня job, а не step: уведомление уходит только
+    # после того, как все проверки закончились успехом.
+    needs: [lint, types, tests-matrix, tests]
+    # Уведомлять о ветках имеет смысл после слияния, а не на каждый черновик.
+    if: github.event_name == 'push'
+    steps:
+      - name: Отправить сообщение
+        uses: appleboy/telegram-action@v1.0.1
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            ✅ CI пройден: ${{ github.repository }}
+            Ветка: ${{ github.ref_name }}
+            Коммит: ${{ github.event.head_commit.message }}
+            Автор: ${{ github.actor }}
+            Сборка: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
