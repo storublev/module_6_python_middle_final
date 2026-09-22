@@ -1,118 +1,45 @@
-# Окружение исследования: шардированный кластер MongoDB и PostgreSQL рядом.
+# Окружение исследования: MongoDB и PostgreSQL в одинаковых условиях.
 #
 #   docker compose -f ugc_content/research/docker-compose.yml up -d
 #
-# Кластер собран по уроку: два шарда по три узла реплик, три сервера
-# конфигурации и два маршрутизатора mongos. После запуска контейнеров кластер
-# нужно инициализировать (rs.initiate, sh.addShard, sh.enableSharding) —
-# скрипт появится вместе с исследованием.
+# Оба — одиночные узлы с одинаковыми ограничениями по процессорам и памяти.
+# Иначе сравнивались бы не хранилища, а щедрость настроек: кластер MongoDB
+# против одного PostgreSQL показал бы разницу в железе, а не в движке.
 #
-# Порты наружу выведены только у маршрутизаторов и PostgreSQL: узлы шардов
-# общаются между собой внутри сети Docker, а клиенту к ним ходить нельзя.
+# Кластер MongoDB поднимается отдельно (docker-compose.cluster.yml) — им
+# проверяется шардирование, а не скорость.
 name: ugc-content-research
 
-x-shard: &shard
-  image: mongo:8.0
-  restart: unless-stopped
-  expose:
-    - "27017"
+x-limits: &limits
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 4g
 
 services:
-  # --- Шард 1 ---------------------------------------------------------------
-  mongors1n1:
-    <<: *shard
-    container_name: mongors1n1
-    command: mongod --shardsvr --replSet mongors1 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors1n1_data:/data/db
-
-  mongors1n2:
-    <<: *shard
-    container_name: mongors1n2
-    command: mongod --shardsvr --replSet mongors1 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors1n2_data:/data/db
-
-  mongors1n3:
-    <<: *shard
-    container_name: mongors1n3
-    command: mongod --shardsvr --replSet mongors1 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors1n3_data:/data/db
-
-  # --- Шард 2 ---------------------------------------------------------------
-  mongors2n1:
-    <<: *shard
-    container_name: mongors2n1
-    command: mongod --shardsvr --replSet mongors2 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors2n1_data:/data/db
-
-  mongors2n2:
-    <<: *shard
-    container_name: mongors2n2
-    command: mongod --shardsvr --replSet mongors2 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors2n2_data:/data/db
-
-  mongors2n3:
-    <<: *shard
-    container_name: mongors2n3
-    command: mongod --shardsvr --replSet mongors2 --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongors2n3_data:/data/db
-
-  # --- Серверы конфигурации -------------------------------------------------
-  mongocfg1:
-    <<: *shard
-    container_name: mongocfg1
-    command: mongod --configsvr --replSet mongocfg --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongocfg1_data:/data/db
-
-  mongocfg2:
-    <<: *shard
-    container_name: mongocfg2
-    command: mongod --configsvr --replSet mongocfg --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongocfg2_data:/data/db
-
-  mongocfg3:
-    <<: *shard
-    container_name: mongocfg3
-    command: mongod --configsvr --replSet mongocfg --dbpath /data/db --port 27017 --bind_ip_all
-    volumes:
-      - mongocfg3_data:/data/db
-
-  # --- Маршрутизаторы -------------------------------------------------------
-  # Их два не для красоты: клиент перечисляет оба в строке подключения, и при
-  # падении одного переключается драйвер, а не кластер.
-  mongos1:
-    image: mongo:8.0
-    container_name: mongos1
+  # Версия 7.0, а не 8.x: MongoDB 8.0+ не стартует на ядре Linux 6.19 и новее
+  # (SERVER-121912 — tcmalloc нарушает ABI rseq, процесс падает при запуске, и
+  # начиная с некоторых сборок mongod просто отказывается стартовать). У Docker
+  # Desktop на этой машине ядро 7.0.12-linuxkit, поэтому 8.x здесь не работает.
+  mongo:
+    <<: *limits
+    image: mongo:7.0
+    container_name: research-mongo
     restart: unless-stopped
-    depends_on:
-      - mongocfg1
-      - mongocfg2
-      - mongocfg3
-    command: mongos --configdb mongocfg/mongocfg1:27017,mongocfg2:27017,mongocfg3:27017 --port 27017 --bind_ip_all
+    command: mongod --bind_ip_all --wiredTigerCacheSizeGB 1
     ports:
-      - "${RESEARCH_MONGOS1_PORT:-27019}:27017"
+      - "${RESEARCH_MONGO_PORT:-27018}:27017"
+    volumes:
+      - research_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
-  mongos2:
-    image: mongo:8.0
-    container_name: mongos2
-    restart: unless-stopped
-    depends_on:
-      - mongocfg1
-      - mongocfg2
-      - mongocfg3
-    command: mongos --configdb mongocfg/mongocfg1:27017,mongocfg2:27017,mongocfg3:27017 --port 27017 --bind_ip_all
-    ports:
-      - "${RESEARCH_MONGOS2_PORT:-27020}:27017"
-
-  # --- Второе хранилище исследования ---------------------------------------
   postgres:
+    <<: *limits
     image: postgres:16-alpine
     container_name: research-postgres
     restart: unless-stopped
@@ -120,6 +47,11 @@ services:
       POSTGRES_DB: research
       POSTGRES_USER: ${RESEARCH_POSTGRES_USER:-research}
       POSTGRES_PASSWORD: ${RESEARCH_POSTGRES_PASSWORD:-research}
+    # shared_buffers 1 ГБ — столько же, сколько кеш WiredTiger у MongoDB:
+    # у обоих хранилищ должно быть поровну памяти под горячие данные.
+    command: >
+      postgres -c shared_buffers=1GB -c work_mem=32MB -c maintenance_work_mem=512MB
+               -c max_wal_size=4GB -c checkpoint_timeout=15min -c random_page_cost=1.1
     ports:
       - "${RESEARCH_POSTGRES_PORT:-5434}:5432"
     volumes:
@@ -131,13 +63,5 @@ services:
       retries: 30
 
 volumes:
-  mongors1n1_data:
-  mongors1n2_data:
-  mongors1n3_data:
-  mongors2n1_data:
-  mongors2n2_data:
-  mongors2n3_data:
-  mongocfg1_data:
-  mongocfg2_data:
-  mongocfg3_data:
+  research_mongo_data:
   research_postgres_data:
