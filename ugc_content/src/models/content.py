@@ -9,7 +9,7 @@ API (например, счётчики лайков рецензии счита
 запроса — клиент прислал бы чужой. Сервис подставляет его из access-токена.
 """
 
-from enum import StrEnum
+from enum import Enum
 from typing import Annotated, Generic, TypeVar
 from uuid import UUID
 
@@ -22,8 +22,11 @@ Rating = Annotated[int, Field(ge=0, le=10)]
 ReviewText = Annotated[str, Field(min_length=1, max_length=10_000)]
 
 
-class ReviewSort(StrEnum):
+class ReviewSort(str, Enum):
     """По чему сортируется список рецензий фильма.
+
+    Наследование от `str`, а не `StrEnum`: последний появился в Python 3.11, а
+    CI проверяет код и на 3.10.
 
     Сортировок несколько намеренно. Показывать всегда самые залайканные —
     ловушка: новые рецензии не наберут лайков и никогда не поднимутся. Какой

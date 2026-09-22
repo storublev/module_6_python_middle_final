@@ -10,7 +10,7 @@
 """
 
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import jwt
@@ -85,7 +85,7 @@ def make_token() -> Callable[..., str]:
         ttl: timedelta = timedelta(minutes=15),
         secret: str = settings.jwt_secret_key,
     ) -> str:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         payload = {
             'sub': str(user or uuid4()),
             'sid': str(uuid4()),

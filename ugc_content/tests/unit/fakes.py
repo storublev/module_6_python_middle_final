@@ -9,7 +9,7 @@
 проверяется, что API отвечает 503, а не 500.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TypeVar
 from uuid import UUID, uuid4
 
@@ -25,7 +25,7 @@ from storage.base import (
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 # Дженерик через TypeVar, а не синтаксисом PEP 695: тесты гоняются в CI и на

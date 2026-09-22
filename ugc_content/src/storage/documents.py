@@ -41,9 +41,9 @@ def utc_now() -> datetime:
     записи делаются в UTC — иначе после перезапуска в другом поясе история
     сдвинулась бы.
     """
-    from datetime import UTC
+    from datetime import timezone
 
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 class LikeDocument(Document):
