@@ -1,0 +1,101 @@
+@startuml c4-container-sprint9
+' Схема системы после девятого спринта. За основу взята TO BE восьмого
+' спринта; цветом выделено то, ради чего затевался этот спринт: зелёное —
+' новое, оранжевое — существующее, но изменённое.
+!include <C4/C4_Container>
+
+title Онлайн-кинотеатр — TO BE (C4, уровень 2): пользовательский контент и наблюдаемость
+
+AddElementTag("new", $bgColor="#1f7a3d", $fontColor="#ffffff", $borderColor="#0f4423", $legendText="Новый элемент")
+AddElementTag("changed", $bgColor="#b35c00", $fontColor="#ffffff", $borderColor="#7a3f00", $legendText="Изменённый элемент")
+AddRelTag("new", $textColor="#1f7a3d", $lineColor="#1f7a3d", $legendText="Новое взаимодействие")
+
+Person(viewer, "Зритель", "Смотрит фильмы, оценивает их, пишет рецензии и откладывает в закладки")
+Person(staff, "Редактор каталога", "Ведёт фильмы, жанры и персоны в админке")
+Person(analyst, "Аналитик и маркетолог", "Считает по событиям популярность жанров и причины недосмотров")
+Person(developer, "Разработчик дежурной смены", "Разбирает инциденты: ищет запрос в логах и ошибку в Sentry", $tags="new")
+
+System_Ext(social, "Яндекс ID / Google", "Внешние поставщики OAuth 2.0")
+
+System_Boundary(cinema, "Онлайн-кинотеатр") {
+    Container(nginx, "Шлюз", "nginx 1.27", "Добавлен маршрут /content/ и журнал доступа в JSON для сбора логов", $tags="changed")
+
+    Container(api, "Async API", "Python 3.12, FastAPI", "Отдаёт фильмы, жанры и персоны")
+    ContainerDb(redis_cache, "Кеш каталога", "Redis 7, LRU", "Ответы API")
+    ContainerDb(elastic, "Поисковый индекс", "Elasticsearch 8.5", "Индексы movies, genres, persons")
+
+    Container(content, "Сервис пользовательского контента", "Python 3.10+, FastAPI, Beanie", "Лайки, рецензии и закладки; агрегат по фильму хранится готовым и читается за одну операцию", $tags="new")
+    ContainerDb(mongo, "Хранилище контента", "MongoDB 7, шардируется по фильму и зрителю", "Оценки, готовые агрегаты по фильмам, рецензии с голосами, закладки", $tags="new")
+
+    Container(ugc, "Сервис сбора событий", "Python 3.12, Flask + gevent", "Принимает пачки событий и кладёт их в брокер")
+    ContainerQueue(kafka, "Брокер событий", "Apache Kafka 3.9, KRaft", "Топик ugc.events")
+    Container(ugc_etl, "ETL событий", "Python 3.12", "Переносит события в аналитическое хранилище")
+    ContainerDb(clickhouse, "Аналитическое хранилище", "ClickHouse 25", "События за три года")
+
+    Container(auth, "Сервис авторизации", "Python 3.12, FastAPI", "Регистрация, вход, JWT-пара, сессии, роли и права")
+    ContainerDb(auth_pg, "База авторизации", "PostgreSQL 16", "Пользователи, роли, история входов")
+    ContainerDb(auth_redis, "Сессии и кеш прав", "Redis 7", "Действующие сессии и наборы прав")
+
+    Container(admin, "Админка каталога", "Python 3.12, Django 5.2", "Редактирование каталога")
+    ContainerDb(pg_movies, "База каталога", "PostgreSQL 16", "Фильмы, жанры, персоны")
+    Container(etl, "ETL каталога", "Python 3.12", "PostgreSQL → Elasticsearch")
+
+    Container(jaeger, "Сбор трассировки", "Jaeger, OTLP", "Спаны всех сервисов")
+}
+
+System_Boundary(observability, "Наблюдаемость") {
+    Container(filebeat, "Сборщик логов", "Filebeat 8.10", "Читает stdout сервисов и JSON-журнал nginx; сами сервисы про ELK не знают", $tags="new")
+    Container(logstash, "Приёмник и маршрут логов", "Logstash 8.10", "Разводит записи по индексам, приводит поля к одному виду", $tags="new")
+    ContainerDb(elastic_logs, "Хранилище логов", "Elasticsearch 8.10", "Отдельный кластер: всплеск логов не должен ронять поиск по каталогу", $tags="new")
+    Container(kibana, "Интерфейс логов", "Kibana 8.10", "Поиск по request_id, уровню и сервису", $tags="new")
+    Container(sentry, "Сбор ошибок", "Sentry", "Неотловленные исключения со стектрейсом и контекстом", $tags="new")
+}
+
+Rel(viewer, nginx, "Каталог, вход, оценки, рецензии и закладки", "HTTPS/JSON", $tags="new")
+Rel(staff, nginx, "Работа с каталогом", "HTTPS")
+Rel(analyst, clickhouse, "Аналитические запросы", "SQL/HTTP")
+Rel(developer, kibana, "Ищет запрос по X-Request-Id", "HTTPS", $tags="new")
+Rel(developer, sentry, "Разбирает ошибку по стектрейсу", "HTTPS", $tags="new")
+
+Rel(nginx, api, "/api/", "HTTP")
+Rel(nginx, auth, "/auth/", "HTTP")
+Rel(nginx, admin, "/admin/", "HTTP")
+Rel(nginx, ugc, "/ugc/", "HTTP")
+Rel(nginx, content, "/content/ с пределом частоты на запись", "HTTP", $tags="new")
+
+Rel(content, mongo, "Оценки, счётчики, рецензии, закладки", "MongoDB wire protocol", $tags="new")
+Rel(content, auth, "Доверяет его access-токенам: подпись проверяется на месте общим секретом", "без сетевого вызова", $tags="new")
+Rel(content, jaeger, "Спаны", "OTLP/HTTP", $tags="new")
+Rel(content, sentry, "Неотловленные исключения", "HTTPS", $tags="new")
+
+Rel(api, elastic, "Читает каталог", "HTTP")
+Rel(api, redis_cache, "Кеширует ответы", "RESP")
+Rel(api, auth, "Проверяет право films.subscription", "HTTP/JSON")
+
+Rel(ugc, kafka, "Пишет события пачками", "Kafka protocol")
+Rel(ugc_etl, kafka, "Читает группой потребителей", "Kafka protocol")
+Rel(ugc_etl, clickhouse, "Вставляет пачками", "HTTP")
+
+Rel(auth, auth_pg, "Пользователи, роли, история входов", "asyncpg")
+Rel(auth, auth_redis, "Сессии и кеш прав", "RESP")
+Rel(auth, social, "Обмен кода на токены, профиль", "HTTPS/OAuth 2.0")
+
+Rel(admin, pg_movies, "Читает и правит каталог", "psycopg")
+Rel(admin, auth, "Вход сотрудника и проверка права admin.access", "HTTP/JSON")
+Rel(etl, pg_movies, "Забирает изменения", "psycopg")
+Rel(etl, elastic, "Загружает документы", "HTTP")
+
+Rel(filebeat, nginx, "Читает JSON-журнал доступа из общего тома", "файл", $tags="new")
+Rel(filebeat, content, "Читает stdout контейнеров всех сервисов", "json-file драйвер Docker", $tags="new")
+Rel(filebeat, logstash, "Отправляет записи", "Beats protocol", $tags="new")
+Rel(logstash, elastic_logs, "Пишет в индексы app-* и nginx-*", "HTTP", $tags="new")
+Rel(kibana, elastic_logs, "Читает индексы", "HTTP", $tags="new")
+
+Rel(api, jaeger, "Спаны", "OTLP/HTTP")
+Rel(auth, jaeger, "Спаны", "OTLP/HTTP")
+Rel(api, sentry, "Неотловленные исключения", "HTTPS", $tags="new")
+Rel(auth, sentry, "Неотловленные исключения", "HTTPS", $tags="new")
+Rel(ugc, sentry, "Неотловленные исключения", "HTTPS", $tags="new")
+
+SHOW_LEGEND()
+@enduml
