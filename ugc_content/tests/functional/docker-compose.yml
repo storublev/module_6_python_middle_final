@@ -1,0 +1,62 @@
+# Изолированное окружение функциональных тестов сервиса пользовательского
+# контента: MongoDB, сам сервис и контейнер с тестами.
+#
+#   docker compose -f ugc_content/tests/functional/docker-compose.yml up --build \
+#       --abort-on-container-exit --exit-code-from tests
+#
+# Порты сервиса и хранилища проброшены на localhost, чтобы запускать тесты
+# локально, из IDE, с отладчиком.
+name: ugc-content-functional-tests
+
+services:
+  mongo:
+    # Версия 7.0, а не 8.x: MongoDB 8.0+ не стартует на ядре Linux 6.19 и
+    # новее (SERVER-121912), а у Docker Desktop ядро как раз новее.
+    image: mongo:7.0
+    command: mongod --bind_ip_all
+    ports:
+      - "${TEST_CONTENT_MONGO_PORT:-27020}:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  content:
+    # Тестируется тот же образ, что уходит в работу.
+    build: ../..
+    image: movies-ugc-content
+    environment:
+      CONTENT_MONGO_URI: mongodb://mongo:27017
+      CONTENT_MONGO_DATABASE: ugc_content
+      # Небольшой предел страницы, чтобы тест упирался в него несколькими записями.
+      CONTENT_PAGE_SIZE_DEFAULT: 20
+      CONTENT_PAGE_SIZE_MAX: 50
+      # Ключ только для тестов: ими подписываются и обычные, и истёкшие токены.
+      AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+      WEB_CONCURRENCY: 2
+    ports:
+      - "${TEST_CONTENT_PORT:-8003}:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/content/api/v1/ready')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    build:
+      context: ../..
+      dockerfile: tests/functional/Dockerfile
+    environment:
+      SERVICE_URL: http://content:8000
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DATABASE: ugc_content
+      JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+      PAGE_SIZE_DEFAULT: 20
+      PAGE_SIZE_MAX: 50
+    depends_on:
+      content:
+        condition: service_healthy
