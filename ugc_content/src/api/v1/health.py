@@ -30,7 +30,9 @@ async def health() -> Status:
     '/ready',
     response_model=Status,
     summary='Готов ли сервис принимать запросы',
-    responses={HTTPStatus.SERVICE_UNAVAILABLE: {'model': Status, 'description': 'MongoDB недоступна'}},
+    # Ключ — число: FastAPI переводит его в строку через str(), а у HTTPStatus
+    # это поведение менялось между версиями Python (см. api/errors.py).
+    responses={int(HTTPStatus.SERVICE_UNAVAILABLE): {'model': Status, 'description': 'MongoDB недоступна'}},
 )
 async def ready(service: Health, response: Response) -> Status:
     if await service.is_ready():

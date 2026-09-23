@@ -73,13 +73,18 @@ def error_responses(*errors: type[ServiceError]) -> dict[int | str, dict[str, An
     Собирается из самих классов ошибок, а не пишется руками у каждого
     эндпоинта: иначе документация разойдётся с поведением при первой же новой
     ошибке.
+
+    Ключ — обычное число, а не `HTTPStatus`. FastAPI переводит ключ в строку
+    через `str()`, а у `IntEnum` это поведение менялось: до Python 3.11
+    `str(HTTPStatus.UNAUTHORIZED)` давало `'HTTPStatus.UNAUTHORIZED'`, и в
+    документации вместо кода `401` оказывалась такая вот строка.
     """
     grouped: dict[HTTPStatus, list[type[ServiceError]]] = {}
     for error in errors:
         grouped.setdefault(status_of(error), []).append(error)
     responses: dict[int | str, dict[str, Any]] = {}
     for status, status_errors in grouped.items():
-        responses[status] = {
+        responses[int(status)] = {
             'model': ErrorSchema,
             'description': ', '.join(f'`{error.code}`' for error in status_errors),
             'content': {
@@ -95,8 +100,9 @@ def error_responses(*errors: type[ServiceError]) -> dict[int | str, dict[str, An
     return responses
 
 
+# Ключ — число по той же причине, что и в error_responses().
 SERVICE_UNAVAILABLE_RESPONSE: dict[int | str, dict[str, Any]] = {
-    HTTPStatus.SERVICE_UNAVAILABLE: {
+    int(HTTPStatus.SERVICE_UNAVAILABLE): {
         'model': ErrorSchema,
         'description': 'MongoDB временно недоступна',
         'content': {

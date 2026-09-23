@@ -6,9 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.dependencies import build_services
+from api.errors import error_responses
 from core.config import Settings
 from main import create_app
 from services.content import BookmarkService, LikeService, ReviewService
+from services.errors import NotAuthenticatedError, ReviewNotFoundError
 from tests.unit.conftest import API, FILM_ID, REQUEST_ID, REQUEST_ID_HEADER
 from tests.unit.fakes import (
     BrokenLikeStorage,
@@ -101,6 +103,21 @@ def test_openapi_describes_error_responses(client):
 
     assert '401' in responses
     assert '503' in responses
+
+
+def test_error_responses_use_plain_int_keys():
+    """Ключи ответов OpenAPI — числа, а не HTTPStatus.
+
+    FastAPI переводит ключ в строку через `str()`, и у `IntEnum` это поведение
+    менялось: до Python 3.11 из `HTTPStatus.UNAUTHORIZED` получалась строка
+    `'HTTPStatus.UNAUTHORIZED'`, и описания ошибок пропадали из документации.
+    Этот тест ловит возврат к `HTTPStatus` на любой версии Python, а не только
+    на той, где ошибка видна.
+    """
+    responses = error_responses(NotAuthenticatedError, ReviewNotFoundError)
+
+    assert all(type(key) is int for key in responses), responses.keys()
+    assert {401, 404, 503} <= set(responses)
 
 
 def test_unknown_path_returns_404(client):
