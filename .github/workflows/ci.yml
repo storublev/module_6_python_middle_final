@@ -149,6 +149,15 @@ jobs:
         working-directory: ${{ matrix.part }}/tests/unit
         run: python -m pytest
 
+  # Секреты для уведомления задаются в Settings → Secrets and variables →
+  # Actions:
+  #   TELEGRAM_BOT_TOKEN — выдаёт @BotFather при создании бота;
+  #   TELEGRAM_CHAT_ID   — идентификатор получателя. Напишите боту любое
+  #     сообщение (для группы — добавьте его туда и напишите в неё), затем:
+  #       curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" \
+  #         | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"][-1]["message"]["chat"])'
+  #     В личной переписке идентификатор положительный, у группы —
+  #     отрицательный (у супергруппы начинается с -100).
   notify:
     name: Уведомление в Telegram
     runs-on: ubuntu-latest
