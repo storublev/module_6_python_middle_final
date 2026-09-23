@@ -9,12 +9,6 @@
 #
 name: cinema-observability
 
-# Переменные берутся из общего .env кинотеатра: адрес Sentry и его секрет
-# нужны и основному стеку, и этому.
-x-env-file: &env-file
-  - path: ../../.env
-    required: false
-
 services:
   # ВАЖНО: это отдельный Elasticsearch, не тот, в котором лежит каталог
   # фильмов Async API. Урок предупреждает об этом прямо: логи и полнотекстовый
@@ -87,98 +81,12 @@ services:
       # Состояние сборщика: без него после перезапуска он перечитает всё заново.
       - filebeat_data:/usr/share/filebeat/data
 
-  # --- Sentry ---------------------------------------------------------------
-  # Поднимается только с профилем sentry: это пять контейнеров, и держать их
-  # запущенными ради отладки одного сервиса незачем.
-  #
-  # Способ из урока — образ sentry:9.1.2 со своими Postgres и Redis. Боевой
-  # способ — репозиторий getsentry/self-hosted или облачный sentry.io; тогда
-  # от всего этого остаётся одна переменная с DSN.
-  sentry-postgres:
-    # Именно 9.6, а не свежий PostgreSQL: Sentry 9 из этого образа — это
-    # Python 2 и Django 1.6, и на PostgreSQL 12+ у него падает любая вставка
-    # (Django той версии не умеет читать результат INSERT ... RETURNING).
-    image: postgres:9.6
-    platform: linux/amd64
-    profiles: ["sentry"]
-    env_file: *env-file
-    environment:
-      POSTGRES_USER: ${SENTRY_DB_USER:-sentry}
-      POSTGRES_PASSWORD: ${SENTRY_DB_PASSWORD:-sentry}
-      POSTGRES_DB: ${SENTRY_DB_NAME:-sentry}
-    volumes:
-      - sentry_postgres_data:/var/lib/postgresql/data
-
-  sentry-redis:
-    # Redis 5, а не свежий: защиту глобальных переменных в Lua завезли в
-    # Redis 7 и бэкпортировали в поздние 6.2, а скрипты Sentry 9 её нарушают и
-    # падают с «Attempt to modify a readonly table» — события не доходят до
-    # обработчика.
-    image: redis:5-alpine
-    profiles: ["sentry"]
-
-  sentry-api:
-    image: sentry:9.1.2
-    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
-    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
-    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
-    platform: linux/amd64
-    profiles: ["sentry"]
-    env_file: *env-file
-    depends_on:
-      - sentry-postgres
-      - sentry-redis
-    environment: &sentry-env
-      SENTRY_DB_USER: ${SENTRY_DB_USER:-sentry}
-      SENTRY_DB_PASSWORD: ${SENTRY_DB_PASSWORD:-sentry}
-      SENTRY_DB_NAME: ${SENTRY_DB_NAME:-sentry}
-      SENTRY_POSTGRES_HOST: sentry-postgres
-      SENTRY_POSTGRES_PORT: 5432
-      # SENTRY_SECRET_KEY сюда намеренно не выписан: он приходит из общего
-      # .env через env_file. Подстановка вида ${SENTRY_SECRET_KEY:-} здесь не
-      # работает — compose ищет .env рядом с файлом compose, то есть в
-      # deploy/observability, а не в корне репозитория, и затирала бы
-      # пришедшее из env_file значение пустым.
-      SENTRY_REDIS_HOST: sentry-redis
-      SENTRY_REDIS_PORT: 6379
-      SENTRY_REDIS_DB: 1
-    ports:
-      - "${SENTRY_PORT:-9000}:9000"
-
-  sentry-worker:
-    image: sentry:9.1.2
-    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
-    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
-    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
-    platform: linux/amd64
-    profiles: ["sentry"]
-    env_file: *env-file
-    depends_on:
-      - sentry-postgres
-      - sentry-redis
-    environment: *sentry-env
-    command: sentry run worker
-
-  sentry-cron:
-    image: sentry:9.1.2
-    # Образ собран только под amd64: на Apple Silicon он идёт через эмуляцию,
-    # и это заметно по скорости. Боевой способ развернуть Sentry — репозиторий
-    # getsentry/self-hosted, а не этот образ; здесь он ради учебного стенда.
-    platform: linux/amd64
-    profiles: ["sentry"]
-    env_file: *env-file
-    depends_on:
-      - sentry-postgres
-      - sentry-redis
-    environment: *sentry-env
-    command: sentry run cron
-
   # --- Приёмник ошибок, совместимый с Sentry ------------------------------
-  # Поднимается профилем glitchtip. Зачем он рядом с профилем sentry:
-  # официальный отдельный образ Sentry заморожен на 9.1.2 (2019 год, Python 2,
-  # только amd64) и на современном окружении не доводит обработку события до
-  # конца, а официальный self-hosted требует 4 ядра, 16 ГБ памяти и ещё 16 ГБ
-  # подкачки — на ноутбуке вместе с остальным стеком это не живёт.
+  # Поднимается профилем glitchtip. Почему не сам Sentry: его официальный
+  # отдельный образ заморожен на 9.1.2 (2019 год, Python 2, только amd64) и
+  # тянет за собой PostgreSQL 9.6 с Redis 5, а официальный self-hosted требует
+  # 4 ядра, 16 ГБ памяти и ещё 16 ГБ подкачки — на ноутбуке вместе с остальным
+  # стеком это не живёт. Разбор вариантов — в README рядом.
   #
   # GlitchTip говорит на том же протоколе и понимает тот же sentry-sdk:
   # в сервисах не меняется ни строчки, меняется только DSN.
@@ -238,7 +146,6 @@ services:
 
 volumes:
   logs_elasticsearch_data:
-  sentry_postgres_data:
   glitchtip_postgres_data:
   filebeat_data:
   # Том с логами nginx создаёт основной стек кинотеатра; здесь он подключается
