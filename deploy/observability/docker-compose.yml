@@ -173,9 +173,73 @@ services:
     environment: *sentry-env
     command: sentry run cron
 
+  # --- Приёмник ошибок, совместимый с Sentry ------------------------------
+  # Поднимается профилем glitchtip. Зачем он рядом с профилем sentry:
+  # официальный отдельный образ Sentry заморожен на 9.1.2 (2019 год, Python 2,
+  # только amd64) и на современном окружении не доводит обработку события до
+  # конца, а официальный self-hosted требует 4 ядра, 16 ГБ памяти и ещё 16 ГБ
+  # подкачки — на ноутбуке вместе с остальным стеком это не живёт.
+  #
+  # GlitchTip говорит на том же протоколе и понимает тот же sentry-sdk:
+  # в сервисах не меняется ни строчки, меняется только DSN.
+  glitchtip-postgres:
+    image: postgres:16-alpine
+    profiles: ["glitchtip"]
+    environment:
+      POSTGRES_USER: ${GLITCHTIP_DB_USER:-glitchtip}
+      POSTGRES_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip}
+      POSTGRES_DB: ${GLITCHTIP_DB_NAME:-glitchtip}
+    volumes:
+      - glitchtip_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GLITCHTIP_DB_USER:-glitchtip}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  glitchtip-redis:
+    image: redis:7.4-alpine
+    profiles: ["glitchtip"]
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+    environment: &glitchtip-env
+      DATABASE_URL: postgres://${GLITCHTIP_DB_USER:-glitchtip}:${GLITCHTIP_DB_PASSWORD:-glitchtip}@glitchtip-postgres:5432/${GLITCHTIP_DB_NAME:-glitchtip}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-local-stand-secret-key-for-glitchtip}
+      PORT: 8000
+      # Регистрация открыта: стенд локальный, первого пользователя заводим сами.
+      ENABLE_OPEN_USER_REGISTRATION: "true"
+      GLITCHTIP_DOMAIN: http://localhost:${GLITCHTIP_PORT:-9001}
+    ports:
+      - "${GLITCHTIP_PORT:-9001}:8000"
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      - glitchtip-web
+    environment: *glitchtip-env
+    command: ./bin/run-celery-with-beat.sh
+
+  glitchtip-migrate:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+    environment: *glitchtip-env
+    command: ./manage.py migrate
+    restart: "no"
+
 volumes:
   logs_elasticsearch_data:
   sentry_postgres_data:
+  glitchtip_postgres_data:
   filebeat_data:
   # Том с логами nginx создаёт основной стек кинотеатра; здесь он подключается
   # как внешний, поэтому имя у него фиксированное (см. docker-compose.yml в
