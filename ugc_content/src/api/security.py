@@ -17,6 +17,7 @@ from uuid import UUID
 
 import jwt
 from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.config import Settings, settings
 from services.errors import NotAuthenticatedError, TokenExpiredError, TokenInvalidError
@@ -93,8 +94,26 @@ def get_verifier(config: Settings | None = None) -> TokenVerifier:
     return TokenVerifier(config.jwt_secret_key.get_secret_value(), config.jwt_algorithm)
 
 
-def current_user(request: Request) -> AuthenticatedUser:
-    """Зависимость для эндпоинтов, где токен обязателен."""
+# Схема нужна не для проверки, а для документации: с ней в Swagger появляется
+# кнопка Authorize, и защищённые эндпоинты можно попробовать прямо из браузера.
+# `auto_error=False` — потому что отказы мы отдаём в общем формате сервиса
+# (`{"code": ..., "detail": ...}`), а не в стандартном формате FastAPI.
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name='Access-токен',
+    description='Access-токен сервиса авторизации: `POST /auth/api/v1/login` вернёт его в `access_token`.',
+)
+
+
+def current_user(
+    request: Request,
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
+) -> AuthenticatedUser:
+    """Зависимость для эндпоинтов, где токен обязателен.
+
+    Заголовок читается из запроса напрямую, а не из `_credentials`: так
+    сохраняются наши сообщения об ошибках для заголовка неверного формата.
+    """
     verifier: TokenVerifier = request.app.state.verifier
     return verifier.verify(request.headers.get('Authorization'))
 

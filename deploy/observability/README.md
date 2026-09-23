@@ -40,6 +40,11 @@ docker compose -f deploy/observability/docker-compose.yml up -d
 docker compose -f deploy/observability/docker-compose.yml --profile glitchtip up -d
 ```
 
+**Что открыть в браузере:** Kibana — http://localhost:5601 (Discover →
+представление «app-*» для логов сервисов, «nginx-*» для журнала доступа;
+представления заводятся один раз в Management → Data Views), GlitchTip —
+http://localhost:9001.
+
 Дальше в интерфейсе заводится пользователь, организация и проект, а его DSN
 кладётся в `SENTRY_DSN` в `.env` — сервисы подхватят его при перезапуске.
 Код сервисов при этом не меняется: GlitchTip принимает события тем же
