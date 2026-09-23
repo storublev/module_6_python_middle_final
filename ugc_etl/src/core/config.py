@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     @property
     def clickhouse_dsn(self) -> str:
         return f'http://{self.clickhouse_host}:{self.clickhouse_port}/{self.clickhouse_database}'
+    # Адрес Sentry. Пустая строка выключает отправку: сервис, запущенный
+    # локально без Sentry, должен работать как обычно.
+    sentry_dsn: str = ''
+    sentry_environment: str = 'local'
 
 
 settings = Settings()

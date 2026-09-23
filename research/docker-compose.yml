@@ -49,7 +49,7 @@ services:
   # Образ собран только под amd64, поэтому на Apple Silicon пойдёт через
   # эмуляцию — это нужно учитывать при сравнении.
   vertica:
-    image: ${VERTICA_IMAGE:-opentext/vertica-k8s:latest}
+    image: ${VERTICA_IMAGE:-opentext/vertica-k8s:26.2.0-2-multiarch}
     platform: ${VERTICA_PLATFORM:-linux/amd64}
     environment:
       TZ: UTC

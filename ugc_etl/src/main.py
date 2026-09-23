@@ -15,6 +15,7 @@ from logging.config import dictConfig
 from core.config import Settings, settings
 from core.logger import LOGGING
 from core.memory import MemoryWatch
+from core.sentry import configure_sentry
 from services.pipeline import EventPipeline, RetryPolicy
 from storage.clickhouse import ClickHouseEventSink
 from storage.kafka import KafkaEventSource
@@ -61,6 +62,7 @@ def build_pipeline(config: Settings) -> tuple[EventPipeline, KafkaEventSource, C
 
 def main() -> None:
     dictConfig(LOGGING)
+    configure_sentry(settings.sentry_dsn, settings.project_name, settings.sentry_environment)
     pipeline, source, sink = build_pipeline(settings)
 
     def shutdown(signum, _frame) -> None:

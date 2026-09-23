@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Идентификатор запроса ставит nginx, поэтому его отсутствие значит, что
     # запрос пришёл мимо шлюза, — и по умолчанию такой запрос отклоняется.
     require_request_id: bool = True
+    # Адрес Sentry. Пустая строка выключает отправку: сервис, запущенный
+    # локально без Sentry, должен работать как обычно.
+    sentry_dsn: str = ''
+    sentry_environment: str = 'local'
 
 
-settings = Settings()
+# Обязательные поля без значений по умолчанию pydantic-settings берёт из
+# окружения, а mypy видит только сигнатуру и считает их пропущенными
+# аргументами — отсюда точечное умолчание.
+settings = Settings()  # type: ignore[call-arg]

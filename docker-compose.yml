@@ -27,6 +27,8 @@ x-auth-env: &auth-env
   AUTH_OAUTH_REDIRECT_BASE_URL: ${AUTH_OAUTH_REDIRECT_BASE_URL:-http://localhost}
   # Куда уходят спаны трассировки. Пустое значение выключает трассировку.
   AUTH_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  AUTH_SENTRY_DSN: ${SENTRY_DSN:-}
+  AUTH_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
 
 # Настройки админки. База у неё общая с ETL и сервисом контента — это тот же
 # каталог фильмов; пароли сотрудников хранит сервис авторизации.
@@ -54,6 +56,22 @@ x-ugc-env: &ugc-env
   UGC_MAX_EVENTS_PER_REQUEST: ${UGC_MAX_EVENTS_PER_REQUEST:-200}
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   UGC_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  UGC_SENTRY_DSN: ${SENTRY_DSN:-}
+  UGC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
+# Настройки сервиса пользовательского контента: лайки, рецензии и закладки.
+# Секрет подписи токенов общий с сервисом авторизации — токены выпускает он.
+x-content-env: &content-env
+  CONTENT_MONGO_URI: mongodb://ugc-mongo:27017
+  CONTENT_MONGO_DATABASE: ${CONTENT_MONGO_DATABASE:-ugc_content}
+  CONTENT_LOG_LEVEL: ${CONTENT_LOG_LEVEL:-INFO}
+  CONTENT_PAGE_SIZE_DEFAULT: ${CONTENT_PAGE_SIZE_DEFAULT:-20}
+  CONTENT_PAGE_SIZE_MAX: ${CONTENT_PAGE_SIZE_MAX:-100}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  CONTENT_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  # Пустой DSN выключает отправку ошибок: локальный стек поднимается без Sentry.
+  CONTENT_SENTRY_DSN: ${SENTRY_DSN:-}
+  CONTENT_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
 
 # Настройки ETL событий. Топик тот же, что у сервиса приёма: это две стороны
 # одной трубы, и расходиться им нельзя.
@@ -68,6 +86,8 @@ x-ugc-etl-env: &ugc-etl-env
   UGC_ETL_POLL_TIMEOUT: ${UGC_ETL_POLL_TIMEOUT:-5}
   UGC_ETL_BATCH_MAX_WAIT: ${UGC_ETL_BATCH_MAX_WAIT:-30}
   UGC_ETL_MEMORY_LIMIT_MB: ${UGC_ETL_MEMORY_LIMIT_MB:-512}
+  UGC_ETL_SENTRY_DSN: ${SENTRY_DSN:-}
+  UGC_ETL_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
   UGC_ETL_LOG_LEVEL: ${UGC_ETL_LOG_LEVEL:-INFO}
 
 services:
@@ -83,7 +103,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Дамп и ETL живут в своём репозитории, здесь на них только ссылка.
-      - ${ETL_PROJECT_PATH:-../new_admin_panel_sprint_3}/etl/dump.sql:/docker-entrypoint-initdb.d/dump.sql:ro
+      - ./etl/dump.sql:/docker-entrypoint-initdb.d/dump.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
@@ -92,7 +112,7 @@ services:
     restart: unless-stopped
 
   etl:
-    build: ${ETL_PROJECT_PATH:-../new_admin_panel_sprint_3}/etl
+    build: ./etl
     env_file: *env-file
     environment:
       DB_HOST: postgres
@@ -154,6 +174,8 @@ services:
       REDIS_PORT: 6379
       AUTH_API_URL: http://auth:8000
       OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
       CACHE_EXPIRE_IN_SECONDS: ${CACHE_EXPIRE_IN_SECONDS:-300}
       WEB_CONCURRENCY: ${API_WORKERS:-2}
     expose:
@@ -347,6 +369,39 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Хранилище пользовательского контента. Версия 7.0, а не 8.x: MongoDB 8.0+
+  # не стартует на ядре Linux 6.19 и новее (SERVER-121912 — tcmalloc нарушает
+  # ABI rseq), а у Docker Desktop ядро как раз новее.
+  ugc-mongo:
+    image: mongo:7.0
+    command: mongod --bind_ip_all
+    volumes:
+      - ugc_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  ugc-content:
+    build: ./ugc_content
+    image: movies-ugc-content
+    environment:
+      <<: *content-env
+      WEB_CONCURRENCY: ${CONTENT_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      ugc-mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/content/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   # Аналитическое хранилище событий. Схему (таблицу, витрину и материализованное
   # представление) заводит сам образ: файлы из /docker-entrypoint-initdb.d он
   # выполняет при первом запуске — так же, как postgres накатывает дамп ETL.
@@ -395,6 +450,10 @@ services:
       # Статику админки отдаёт nginx, а не Django: так gunicorn занят только
       # страницами, а браузер получает файлы с длинным сроком хранения.
       - admin_static:/usr/share/nginx/html/static:ro
+      # Журнал доступа в JSON: отсюда его забирает filebeat и везёт в ELK
+      # (deploy/observability/). Том общий с тем стеком, поэтому у него
+      # фиксированное имя.
+      - nginx_logs:/var/log/nginx
     ports:
       - "${NGINX_PORT:-80}:80"
     depends_on:
@@ -402,11 +461,18 @@ services:
       - auth
       - django-admin
       - ugc
+      - ugc-content
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  # Имя фиксировано: этот том подключает к себе и стек наблюдаемости
+  # (deploy/observability/docker-compose.yml), а имена по умолчанию у разных
+  # проектов compose разные.
+  nginx_logs:
+    name: cinema_nginx_logs
   kafka_data:
+  ugc_mongo_data:
   clickhouse_data:
   elasticsearch_data:
   auth_postgres_data:

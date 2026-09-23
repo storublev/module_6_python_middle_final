@@ -1,0 +1,224 @@
+# Непрерывная интеграция: линтеры, проверка типов, тесты и уведомление.
+#
+# Репозиторий — несколько сервисов, у каждого своя конфигурация линтеров и
+# свои зависимости, поэтому почти все задачи идут матрицей по частям
+# репозитория: так видно, какой именно сервис сломался, и упавший сервис не
+# прячет за собой остальные (fail-fast выключен).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Рабочая версия проекта. Совместимость с 3.10 и 3.11 проверяется отдельной
+  # матрицей — см. задачу tests-matrix ниже.
+  DEFAULT_PYTHON: "3.12"
+
+jobs:
+  lint:
+    name: Линтеры (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
+        # сервиса свои pyproject.toml и setup.cfg, и запускать линтер из корня
+        # нельзя — он возьмёт чужие настройки.
+        part: [".", "auth", "admin_panel", "etl", "ugc", "ugc_etl", "ugc_content", "research"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить линтеры
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff==0.14.0 flake8==7.3.0 flake8-docstrings==1.7.0
+
+      - name: ruff
+        working-directory: ${{ matrix.part }}
+        run: ruff check .
+
+      - name: flake8
+        working-directory: ${{ matrix.part }}
+        run: flake8 .
+
+  types:
+    name: Типы (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Админки здесь нет: Django без django-stubs проверяется бессмысленно —
+        # mypy не знает ни про модели, ни про менеджеры и выдаёт ошибки на
+        # ровном месте. Это отдельная задача, а не повод ослабить проверку
+        # остальным.
+        part: [".", "auth", "ugc", "ugc_etl", "ugc_content"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить mypy и зависимости сервиса
+        working-directory: ${{ matrix.part }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy==2.3.1
+          pip install -r requirements.txt
+
+      - name: mypy
+        working-directory: ${{ matrix.part }}
+        # --ignore-missing-imports: у части библиотек нет типов, и требовать
+        # их заглушки от нас — не та работа, ради которой ставилась проверка.
+        run: mypy src --ignore-missing-imports
+
+  tests-matrix:
+    name: Тесты сервиса контента на Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: ugc_content
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/unit/requirements.txt
+
+      - name: Unit-тесты
+        working-directory: ugc_content/tests/unit
+        run: python -m pytest
+
+      - name: Проверить типы под эту версию Python
+        working-directory: ugc_content
+        # mypy знает, какие возможности стандартной библиотеки появились в
+        # какой версии: так видно, что сервис не использует ничего новее 3.10.
+        run: |
+          pip install mypy==2.3.1
+          mypy src --ignore-missing-imports --python-version=${{ matrix.python-version }}
+
+  tests:
+    name: Unit-тесты (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Эти части написаны под 3.12 и используют её возможности
+        # (дженерики в синтаксисе PEP 695, StrEnum, datetime.UTC), поэтому у
+        # них одна версия. Матрица версий — у сервиса контента выше: он
+        # написан совместимым с 3.10 намеренно.
+        part: [".", "auth", "ugc", "ugc_etl", "admin_panel"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: ${{ matrix.part }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/unit/requirements.txt
+
+      - name: Unit-тесты
+        working-directory: ${{ matrix.part }}/tests/unit
+        run: python -m pytest
+
+  # Секреты для уведомления задаются в Settings → Secrets and variables →
+  # Actions:
+  #   TELEGRAM_BOT_TOKEN — выдаёт @BotFather при создании бота;
+  #   TELEGRAM_CHAT_ID   — идентификатор получателя. Напишите боту любое
+  #     сообщение (для группы — добавьте его туда и напишите в неё), затем:
+  #       curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" \
+  #         | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"][-1]["message"]["chat"])'
+  #     В личной переписке идентификатор положительный, у группы —
+  #     отрицательный (у супергруппы начинается с -100).
+  etl-tests:
+    name: Тесты ETL каталога
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: etl
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Тесты
+        working-directory: etl
+        # У этого ETL тесты лежат в tests/, а не в tests/unit: он перенесён из
+        # первого модуля как есть, и его раскладку не переделывали.
+        run: python -m pytest tests
+
+  notify:
+    name: Уведомление в Telegram
+    runs-on: ubuntu-latest
+    # needs — ключевое слово уровня job, а не step: уведомление уходит только
+    # после того, как все проверки закончились успехом.
+    needs: [lint, types, tests-matrix, tests, etl-tests]
+    # Условия по событию здесь нет намеренно: уведомление должно приходить и
+    # на pull request, иначе на странице проверок PR задача выглядит
+    # пропущенной, и непонятно, работает ли она вообще.
+    env:
+      # Секреты нельзя прочитать в `if` напрямую — контекст secrets там
+      # недоступен. Поэтому кладём их в переменные окружения задачи: их `if`
+      # уже видит.
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Отправить сообщение
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        uses: appleboy/telegram-action@v1.0.1
+        with:
+          to: ${{ env.TELEGRAM_CHAT_ID }}
+          token: ${{ env.TELEGRAM_BOT_TOKEN }}
+          # Ветка берётся из head_ref (у pull request) или ref_name (у push):
+          # у pull request в ref_name лежит служебное «<номер>/merge».
+          message: |
+            ✅ CI пройден: ${{ github.repository }}
+            Ветка: ${{ github.head_ref || github.ref_name }}
+            Событие: ${{ github.event_name }}
+            Автор: ${{ github.actor }}
+            Сборка: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Сообщить, что секреты не заданы
+        if: env.TELEGRAM_BOT_TOKEN == '' || env.TELEGRAM_CHAT_ID == ''
+        # Не ошибка: в форке и в свежем клоне секретов нет, и валить из-за
+        # этого зелёную сборку неправильно. Но и молчать нельзя — иначе
+        # «уведомление не пришло» выясняется много позже.
+        run: |
+          echo '::warning::Уведомление не отправлено: задайте секреты' \
+               'TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в Settings →' \
+               'Secrets and variables → Actions'

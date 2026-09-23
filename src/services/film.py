@@ -21,7 +21,7 @@ class FilmService(BaseService[Film]):
             SubscriptionRequiredError: фильм только по подписке, а её нет.
             AccessCheckUnavailableError: права не проверить, сервис авторизации молчит.
         """
-        film = await super().get_by_id(film_id)
+        film = await self._get_by_id(film_id)
         if film is None or access.allows(film.access_level):
             return film
         # Отказ по подписке и невозможность её проверить — разные ответы:

@@ -20,6 +20,12 @@ def create_engine(settings: Settings) -> AsyncEngine:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Сессия SQLAlchemy на один запрос."""
+    """Сессия SQLAlchemy на один запрос.
+
+    Raises:
+        RuntimeError: фабрика не создана — приложение не прошло lifespan.
+    """
+    if session_factory is None:
+        raise RuntimeError('Фабрика сессий PostgreSQL не создана')
     async with session_factory() as session:
         yield session

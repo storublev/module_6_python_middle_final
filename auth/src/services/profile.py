@@ -133,7 +133,8 @@ class ProfileService:
         """
         await self.throttle.password_check_attempt(user.id, client.ip)
         # Пароля нет — подтверждать им нечего, и проверка не пройдена.
-        if not user.has_password or not await self.passwords.verify(password, user.password_hash):
+        # Проверка на None повторяет has_password, но её видит и mypy.
+        if user.password_hash is None or not await self.passwords.verify(password, user.password_hash):
             raise WrongPasswordError
         await self.throttle.password_check_succeeded(user.id)
 

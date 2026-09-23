@@ -2,6 +2,7 @@ import asyncio
 import logging.config
 import random
 from contextlib import asynccontextmanager, suppress
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from starlette.types import ExceptionHandler
 
 from api.dependencies import get_access_cache, get_access_invalidator, get_invalidation_queue
 from api.errors import (
@@ -23,12 +25,14 @@ from api.v1 import access, auth, oauth, profile, roles
 from core.config import settings
 from core.logger import LOGGING
 from core.middleware import RequestIdMiddleware
+from core.sentry import configure_sentry
 from core.tracing import configure_tracing
 from db import postgres, redis
 from services.errors import ServiceError
 from storage.base import StorageUnavailableError
 
 logging.config.dictConfig(LOGGING)
+configure_sentry(settings.sentry_dsn, settings.project_name, settings.sentry_environment)
 logger = logging.getLogger(__name__)
 
 API_PREFIX = '/auth/api/v1'
@@ -47,8 +51,12 @@ async def retry_access_invalidations() -> None:
         # Случайная добавка разводит процессы, запущенные одновременно; это не криптография.
         await asyncio.sleep(delay * random.uniform(0.8, 1.2))  # noqa: S311
         try:
+            if postgres.session_factory is None or redis.redis is None:
+                raise RuntimeError('Соединения с хранилищами не созданы')
             async with postgres.session_factory() as session:
-                invalidator = get_access_invalidator(get_invalidation_queue(session), get_access_cache(redis.redis))
+                invalidator = get_access_invalidator(
+                    get_invalidation_queue(session), get_access_cache(redis.redis),
+                )
                 if done := await invalidator.flush():
                     logger.info('Кеш прав сброшен по отложенным заданиям: %d', done)
         except StorageUnavailableError as exc:
@@ -138,7 +146,9 @@ app = FastAPI(
 # Документация и её спецификация вызываются мимо nginx — в том числе проверкой
 # живости контейнера, — поэтому идентификатор запроса с них не спрашивается и
 # деревьев спанов они не порождают.
-DOCS_PATHS = frozenset({app.docs_url, app.openapi_url})
+# Оба адреса заданы при создании приложения, но в типах FastAPI они
+# объявлены как str | None — отсюда явный отбор непустых.
+DOCS_PATHS = frozenset(path for path in (app.docs_url, app.openapi_url) if path)
 
 configure_tracing(
     app,
@@ -153,9 +163,15 @@ app.add_middleware(
     RequestIdMiddleware, required=settings.require_request_id, exempt_paths=DOCS_PATHS,
 )
 
-app.add_exception_handler(ServiceError, service_error_handler)
-app.add_exception_handler(StorageUnavailableError, storage_unavailable_handler)
-app.add_exception_handler(RequestValidationError, validation_error_handler)
+# Обработчики принимают конкретный тип исключения, а Starlette описывает их
+# как принимающие Exception. Приведение — в одном месте, чтобы сами
+# обработчики оставались честно типизированными.
+for exception_type, handler in (
+    (ServiceError, service_error_handler),
+    (StorageUnavailableError, storage_unavailable_handler),
+    (RequestValidationError, validation_error_handler),
+):
+    app.add_exception_handler(exception_type, cast(ExceptionHandler, handler))
 
 app.include_router(auth.router, prefix=API_PREFIX, tags=['auth'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(profile.router, prefix=f'{API_PREFIX}/users', tags=['profile'],

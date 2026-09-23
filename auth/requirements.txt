@@ -11,6 +11,7 @@ pydantic-settings==2.15.0
 pydantic==2.13.5
 pyjwt==2.14.0
 redis==8.1.0
+sentry-sdk[fastapi]==2.70.0
 sqlalchemy[asyncio]==2.0.53
 typer==0.27.2
 uvicorn[standard]==0.53.0

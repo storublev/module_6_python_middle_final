@@ -1,6 +1,6 @@
 import hashlib
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, cast
 from uuid import UUID
 
 import orjson
@@ -45,18 +45,25 @@ class BaseService[ModelT: BaseModel]:
         self.storage = storage
         self.cache = cache
 
-    async def get_by_id(self, item_id: UUID) -> ModelT | None:
-        """Возвращает документ по id или None, если его нет."""
+    async def _get_by_id(self, item_id: UUID) -> ModelT | None:
+        """Возвращает документ по id или None, если его нет.
+
+        Метод защищённый, а публичный `get_by_id` каждый наследник объявляет
+        сам: у фильмов он принимает ещё и права доступа, и подменять им
+        сигнатуру базового класса было бы нарушением контракта наследования.
+        """
         cache_key = f'{self.index}:id:{item_id}'
         cached = await self.cache.get(cache_key, self.model)
         if cached is not None:
-            return cached
+            # `model` объявлен как ClassVar и не может нести переменную типа:
+            # ModelT известен наследнику, а базовому классу — только BaseModel.
+            return cast(ModelT, cached)
 
         doc = await self.storage.get(self.index, str(item_id), fields=tuple(self.model.model_fields))
         if doc is None:
             return None
 
-        item = self.model.model_validate(doc)
+        item = cast(ModelT, self.model.model_validate(doc))
         await self.cache.set(cache_key, item, self.model)
         return item
 
@@ -85,13 +92,16 @@ class BaseService[ModelT: BaseModel]:
         )
 
         cache_key = self._search_cache_key(request)
-        cached = await self.cache.get(cache_key, list[model])
+        # `list[model]` собирается из переменной, поэтому для проверяющего
+        # типов это не тип, а значение: подсказываем ему явно.
+        items_type = cast(type[list[ItemT]], list[model])  # type: ignore[valid-type]
+        cached = await self.cache.get(cache_key, items_type)
         if cached is not None:
             return cached
 
         docs = await self.storage.search(self.index, request)
         items = [model.model_validate(doc) for doc in docs]
-        await self.cache.set(cache_key, items, list[model])
+        await self.cache.set(cache_key, items, items_type)
         return items
 
     def _search_cache_key(self, request: SearchRequest) -> str:

@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 120
+# Сервис написан так, чтобы работать и на 3.10: CI гоняет его тесты на 3.10,
+# 3.11 и 3.12 (матрица в .github/workflows/ci.yml). Отсюда и цель линтера —
+# иначе он предлагал бы то, чего на 3.10 ещё нет: StrEnum, datetime.UTC,
+# дженерики в синтаксисе PEP 695.
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "N", "S", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах assert — основной инструмент, а ключи и токены — заглушки.
+"tests/**" = ["S101", "S105", "S106", "S107"]
+
+[tool.ruff.lint.isort]
+# Модули сервиса импортируются от src, как при запуске.
+known-first-party = ["api", "core", "main", "models", "services", "storage", "tests"]

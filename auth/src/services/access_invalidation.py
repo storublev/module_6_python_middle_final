@@ -50,5 +50,6 @@ class AccessInvalidator:
         if any(task.user_id is None for task in tasks):
             await self.cache.invalidate_all()
             return
-        for user_id in dict.fromkeys(task.user_id for task in tasks):
+        # Задания без пользователя отсеяны веткой выше: там сброс всех прав.
+        for user_id in dict.fromkeys(task.user_id for task in tasks if task.user_id is not None):
             await self.cache.invalidate_user(user_id)

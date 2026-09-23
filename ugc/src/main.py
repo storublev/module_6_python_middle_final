@@ -20,6 +20,7 @@ from api.dependencies import build_services, register_services
 from api.v1 import events, health
 from core.config import Settings, settings
 from core.logger import LOGGING
+from core.sentry import configure_sentry
 from core.tracing import configure_tracing
 from storage.base import EventQueue
 
@@ -40,10 +41,14 @@ def create_app(config: Settings | None = None, queue: EventQueue | None = None) 
     """Собирает приложение. `queue` подменяется в тестах очередью в памяти."""
     config = config or settings
     dictConfig(LOGGING)
+    # Sentry подключается до создания приложения: интеграция оборачивает Flask.
+    configure_sentry(config.sentry_dsn, config.project_name, config.sentry_environment)
 
     app = Flask(__name__)
     # JSON отдаём как есть: кириллицу в ответах экранировать незачем.
-    app.json.ensure_ascii = False
+    # У базового JSONProvider этого поля нет, но Flask по умолчанию ставит
+    # DefaultJSONProvider, у которого оно есть.
+    app.json.ensure_ascii = False  # type: ignore[attr-defined]
     # Трассировка подключается до маршрутов: инструментация оборачивает
     # приложение целиком.
     configure_tracing(app, config.project_name, config.otlp_endpoint, excluded_urls=','.join(EXEMPT_PATHS))

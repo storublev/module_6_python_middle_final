@@ -12,7 +12,10 @@ class RedisCache(Cache):
 
     async def get(self, key: str) -> bytes | None:
         try:
-            return await self.redis.get(key)
+            # Клиент создан без decode_responses, поэтому приходят байты, но в
+            # типах библиотеки значение объявлено шире — bytes | str | None.
+            value = await self.redis.get(key)
+            return value.encode() if isinstance(value, str) else value
         except RedisError as exc:
             raise CacheUnavailableError(f'Redis: {exc}') from exc
 

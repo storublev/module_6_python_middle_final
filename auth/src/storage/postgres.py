@@ -104,6 +104,10 @@ class PostgresUserRepository(PostgresRepository, UserRepository):
         async with self._errors():
             version = await self.session.scalar(query)
             await self.session.commit()
+        # RETURNING у UPDATE по существующему пользователю всегда отдаёт
+        # значение; None означал бы, что пользователя нет, а сюда мы приходим
+        # уже после его чтения.
+        assert version is not None  # noqa: S101
         return version
 
     async def get_credentials_version(self, user_id: UUID) -> int | None:
@@ -305,6 +309,9 @@ class PostgresSocialAccountRepository(PostgresRepository, SocialAccountRepositor
             user_row = await self.session.scalar(
                 insert(UserRow).values(login=login, password_hash=None).returning(UserRow),
             )
+            # INSERT ... RETURNING всегда отдаёт вставленную строку: иначе
+            # вставка завершилась бы ошибкой, а не пустым результатом.
+            assert user_row is not None  # noqa: S101
             await self.session.execute(
                 insert(SocialAccountRow).values(**self._values(user_row.id, provider, profile)),
             )
