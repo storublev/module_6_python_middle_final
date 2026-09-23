@@ -188,17 +188,37 @@ jobs:
     # needs — ключевое слово уровня job, а не step: уведомление уходит только
     # после того, как все проверки закончились успехом.
     needs: [lint, types, tests-matrix, tests, etl-tests]
-    # Уведомлять о ветках имеет смысл после слияния, а не на каждый черновик.
-    if: github.event_name == 'push'
+    # Условия по событию здесь нет намеренно: уведомление должно приходить и
+    # на pull request, иначе на странице проверок PR задача выглядит
+    # пропущенной, и непонятно, работает ли она вообще.
+    env:
+      # Секреты нельзя прочитать в `if` напрямую — контекст secrets там
+      # недоступен. Поэтому кладём их в переменные окружения задачи: их `if`
+      # уже видит.
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Отправить сообщение
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         uses: appleboy/telegram-action@v1.0.1
         with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          to: ${{ env.TELEGRAM_CHAT_ID }}
+          token: ${{ env.TELEGRAM_BOT_TOKEN }}
+          # Ветка берётся из head_ref (у pull request) или ref_name (у push):
+          # у pull request в ref_name лежит служебное «<номер>/merge».
           message: |
             ✅ CI пройден: ${{ github.repository }}
-            Ветка: ${{ github.ref_name }}
-            Коммит: ${{ github.event.head_commit.message }}
+            Ветка: ${{ github.head_ref || github.ref_name }}
+            Событие: ${{ github.event_name }}
             Автор: ${{ github.actor }}
             Сборка: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Сообщить, что секреты не заданы
+        if: env.TELEGRAM_BOT_TOKEN == '' || env.TELEGRAM_CHAT_ID == ''
+        # Не ошибка: в форке и в свежем клоне секретов нет, и валить из-за
+        # этого зелёную сборку неправильно. Но и молчать нельзя — иначе
+        # «уведомление не пришло» выясняется много позже.
+        run: |
+          echo '::warning::Уведомление не отправлено: задайте секреты' \
+               'TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в Settings →' \
+               'Secrets and variables → Actions'
