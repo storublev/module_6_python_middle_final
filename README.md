@@ -46,10 +46,12 @@
 и `persons` — их заполняет ETL из базы фильмов, ту же базу правит админка, так
 что правка редактора доезжает до выдачи API через ETL и Elasticsearch.
 
-ETL живёт в своём репозитории
-[new_admin_panel_sprint_3](https://github.com/storublev/new_admin_panel_sprint_3)
-и в этот репозиторий не копируется. `docker-compose.yml` собирает ETL из соседнего
-каталога (переменная `ETL_PROJECT_PATH`), чтобы все сервисы поднимались одной командой.
+ETL каталога ([etl/](etl/README.md)) перенесён сюда из репозитория
+[new_admin_panel_sprint_3](https://github.com/storublev/new_admin_panel_sprint_3),
+где он писался в первом модуле: раньше `docker-compose.yml` собирал его из
+соседнего каталога по переменной `ETL_PROJECT_PATH`, и стек не поднимался без
+второго склонированного репозитория. Теперь всё, что нужно кинотеатру, лежит
+в одном месте.
 
 | Сервис | Назначение |
 |---|---|
@@ -85,7 +87,7 @@ cp .env.example .env
 `AUTH_POSTGRES_PASSWORD`, `AUTH_JWT_SECRET_KEY` и `DJANGO_SECRET_KEY` (ключи —
 не короче 32 символов, например
 `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`).
-При необходимости поправьте `ETL_PROJECT_PATH` и порты. Затем:
+При необходимости поправьте порты. Затем:
 
 ```bash
 docker compose up -d --build
@@ -375,7 +377,6 @@ Redis на другой кеш не меняет поведения API при �
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `ETL_PROJECT_PATH` | `../new_admin_panel_sprint_3` | Путь к репозиторию ETL |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | `movies_database` / `app` / `123qwe` | Доступ к PostgreSQL |
 | `PROJECT_NAME` | `movies` | Название в документации |
 | `LOG_LEVEL` | `INFO` | Уровень логирования API |

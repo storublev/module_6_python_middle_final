@@ -29,7 +29,7 @@ jobs:
         # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
         # сервиса свои pyproject.toml и setup.cfg, и запускать линтер из корня
         # нельзя — он возьмёт чужие настройки.
-        part: [".", "auth", "admin_panel", "ugc", "ugc_etl", "ugc_content", "research"]
+        part: [".", "auth", "admin_panel", "etl", "ugc", "ugc_etl", "ugc_content", "research"]
     steps:
       - uses: actions/checkout@v4
 
@@ -158,12 +158,36 @@ jobs:
   #         | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"][-1]["message"]["chat"])'
   #     В личной переписке идентификатор положительный, у группы —
   #     отрицательный (у супергруппы начинается с -100).
+  etl-tests:
+    name: Тесты ETL каталога
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить зависимости
+        working-directory: etl
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Тесты
+        working-directory: etl
+        # У этого ETL тесты лежат в tests/, а не в tests/unit: он перенесён из
+        # первого модуля как есть, и его раскладку не переделывали.
+        run: python -m pytest tests
+
   notify:
     name: Уведомление в Telegram
     runs-on: ubuntu-latest
     # needs — ключевое слово уровня job, а не step: уведомление уходит только
     # после того, как все проверки закончились успехом.
-    needs: [lint, types, tests-matrix, tests]
+    needs: [lint, types, tests-matrix, tests, etl-tests]
     # Уведомлять о ветках имеет смысл после слияния, а не на каждый черновик.
     if: github.event_name == 'push'
     steps:

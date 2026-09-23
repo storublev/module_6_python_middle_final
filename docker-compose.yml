@@ -103,7 +103,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Дамп и ETL живут в своём репозитории, здесь на них только ссылка.
-      - ${ETL_PROJECT_PATH:-../new_admin_panel_sprint_3}/etl/dump.sql:/docker-entrypoint-initdb.d/dump.sql:ro
+      - ./etl/dump.sql:/docker-entrypoint-initdb.d/dump.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
@@ -112,7 +112,7 @@ services:
     restart: unless-stopped
 
   etl:
-    build: ${ETL_PROJECT_PATH:-../new_admin_panel_sprint_3}/etl
+    build: ./etl
     env_file: *env-file
     environment:
       DB_HOST: postgres
