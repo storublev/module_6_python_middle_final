@@ -96,7 +96,10 @@ async def connect(uri: str, database: str, **options: Any) -> AsyncMongoClient:
     формате, и данные нельзя прочитать ничем, кроме pymongo.
     """
     client: AsyncMongoClient = AsyncMongoClient(uri, uuidRepresentation='standard', **options)
-    await init_beanie(database=client[database], document_models=DOCUMENTS)
+    # allow_index_dropping: индексы описаны только в documents.py, и то, чего
+    # там больше нет, должно исчезнуть и в базе. Иначе снятый индекс остаётся
+    # навсегда и берёт свою цену с каждой записи, ничего не ускоряя.
+    await init_beanie(database=client[database], document_models=DOCUMENTS, allow_index_dropping=True)
     return client
 
 
