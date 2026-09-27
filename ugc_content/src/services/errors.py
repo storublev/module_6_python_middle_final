@@ -85,6 +85,13 @@ class NotReviewAuthorError(ForbiddenError):
     message = 'Only the author can delete the review'
 
 
+class OwnReviewVoteError(ForbiddenError):
+    """Голосовать за полезность собственной рецензии нельзя."""
+
+    code = 'own_review_vote'
+    message = 'Voting for your own review is not allowed'
+
+
 class ReviewAlreadyExistsError(ServiceError):
     """У зрителя уже есть рецензия на этот фильм."""
 
