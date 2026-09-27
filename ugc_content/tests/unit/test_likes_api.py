@@ -3,7 +3,7 @@
 from http import HTTPStatus
 from uuid import uuid4
 
-from tests.unit.conftest import API, FILM_ID
+from tests.unit.conftest import API, FILM_ID, MAX_PAGE_OFFSET, PAGE_SIZE_DEFAULT
 
 
 def test_rate_film_creates_rating(client, auth, user_id):
@@ -177,6 +177,30 @@ def test_second_page_continues_list(client, auth):
     second_films = {item['film_id'] for item in second['items']}
     assert not first_films & second_films
     assert second['page'] == 2
+
+
+def test_too_deep_page_is_rejected(client, auth):
+    """Слишком глубокая страница отклоняется с понятным кодом.
+
+    Предел размера страницы ограничивает ответ, но не работу базы: чтобы
+    отдать страницу со смещением, MongoDB проходит все предшествующие записи.
+    Человек так глубоко не листает, а робот — листает.
+    """
+    deep_page = MAX_PAGE_OFFSET // PAGE_SIZE_DEFAULT + 2
+
+    response = client.get(f'{API}/users/me/likes', params={'page': deep_page}, headers=auth)
+
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert response.json()['code'] == 'page_too_deep'
+
+
+def test_page_within_limit_is_allowed(client, auth):
+    """Страница в пределах допустимой глубины отдаётся как обычно."""
+    last_allowed = MAX_PAGE_OFFSET // PAGE_SIZE_DEFAULT + 1
+
+    response = client.get(f'{API}/users/me/likes', params={'page': last_allowed}, headers=auth)
+
+    assert response.status_code == HTTPStatus.OK
 
 
 def test_zero_page_is_rejected(client, auth):

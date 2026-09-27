@@ -24,6 +24,7 @@ from pymongo import AsyncMongoClient, ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError, OperationFailure, PyMongoError
 
+from core.config import settings
 from models.content import Bookmark, FilmRating, Like, Page, Review, ReviewSort
 from storage.base import (
     LIKED_FROM,
@@ -167,6 +168,18 @@ async def in_transaction(action: Callable[[AsyncClientSession], Awaitable[T]]) -
     raise StorageUnavailableError(f'Транзакция не прошла за {TRANSACTION_ATTEMPTS} попыток')
 
 
+async def count_capped(collection: Any, query: dict[str, Any], limit: int) -> int:
+    """Считает записи, но не дороже `limit`.
+
+    Точный `count_documents` обходит всю выборку: у фильма с сотней тысяч
+    рецензий это работа на каждое открытие страницы, причём ради числа,
+    которое показывается мелким шрифтом. Поэтому считаем не больше предела, а
+    выше него отдаём сам предел — клиенту достаточно знать, что записей
+    «больше тысячи».
+    """
+    return await collection.count_documents(query, limit=limit)
+
+
 class MongoLikeStorage(LikeStorage):
     """Оценки фильмов в коллекции `likes`."""
 
@@ -287,7 +300,7 @@ class MongoLikeStorage(LikeStorage):
     async def list_liked_films(self, user_id: UUID, page: int, size: int) -> Page[Like]:
         query = {'user_id': user_id, 'rating': {'$gte': LIKED_FROM}}
         collection = LikeDocument.get_pymongo_collection()
-        total = await collection.count_documents(query)
+        total = await count_capped(collection, query, settings.exact_count_limit)
         cursor = collection.find(query).sort('created_at', -1).skip((page - 1) * size).limit(size)
         items = [self._to_like(document) async for document in cursor]
         return Page[Like](items=items, total=total, page=page, size=size)
@@ -331,7 +344,7 @@ class MongoBookmarkStorage(BookmarkStorage):
     @translate_errors
     async def list_for_user(self, user_id: UUID, page: int, size: int) -> Page[Bookmark]:
         collection = BookmarkDocument.get_pymongo_collection()
-        total = await collection.count_documents({'user_id': user_id})
+        total = await count_capped(collection, {'user_id': user_id}, settings.exact_count_limit)
         cursor = collection.find({'user_id': user_id}).sort('created_at', 1).skip((page - 1) * size).limit(size)
         items = [self._to_bookmark(document) async for document in cursor]
         return Page[Bookmark](items=items, total=total, page=page, size=size)
@@ -420,7 +433,7 @@ class MongoReviewStorage(ReviewStorage):
     @translate_errors
     async def list_reviews(self, film_id: UUID, sort: ReviewSort, page: int, size: int) -> Page[Review]:
         collection = ReviewDocument.get_pymongo_collection()
-        total = await collection.count_documents({'film_id': film_id})
+        total = await count_capped(collection, {'film_id': film_id}, settings.exact_count_limit)
         cursor = (
             collection.find({'film_id': film_id})
             .sort(REVIEW_SORTS[sort])

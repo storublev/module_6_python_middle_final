@@ -15,6 +15,7 @@ from services.errors import (
     NotAuthenticatedError,
     NotReviewAuthorError,
     OwnReviewVoteError,
+    PageTooDeepError,
     ReviewAlreadyExistsError,
     ReviewNotFoundError,
     TokenExpiredError,
@@ -52,9 +53,10 @@ async def publish_review(
     description=(
         'Порядок выбирается параметром `sort`. Сортировок несколько намеренно: показывать '
         'только самые полезные — ловушка, новая рецензия никогда не набрала бы голосов. '
-        'Доступно без токена.'
+        'Доступно без токена. Глубина листания ограничена: дальше предела запрос стоит '
+        'дороже, чем стоит результат.'
     ),
-    responses=error_responses(),
+    responses=error_responses(PageTooDeepError),
 )
 async def list_reviews(
     service: Reviews,

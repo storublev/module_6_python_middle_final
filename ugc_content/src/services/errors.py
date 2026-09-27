@@ -85,6 +85,13 @@ class NotReviewAuthorError(ForbiddenError):
     message = 'Only the author can delete the review'
 
 
+class PageTooDeepError(ServiceError):
+    """Запрошена страница за пределом допустимой глубины листания."""
+
+    code = 'page_too_deep'
+    message = 'The page is too far; narrow the query instead of paging deeper'
+
+
 class OwnReviewVoteError(ForbiddenError):
     """Голосовать за полезность собственной рецензии нельзя."""
 

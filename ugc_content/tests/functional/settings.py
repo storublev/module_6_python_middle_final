@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Пределы страницы, с которыми запущен сервис в docker-compose тестов.
     page_size_default: int = 20
     page_size_max: int = 50
+    # Пределы листания и подсчёта, с которыми запущен сервис в compose тестов.
+    max_page_offset: int = 100
+    exact_count_limit: int = 25
 
     # Сколько секунд ждать готовности сервиса и хранилища перед тестами.
     wait_timeout: float = 90

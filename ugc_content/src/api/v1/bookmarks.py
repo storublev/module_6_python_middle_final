@@ -13,6 +13,7 @@ from models.content import Page as PageModel
 from services.errors import (
     BookmarkNotFoundError,
     NotAuthenticatedError,
+    PageTooDeepError,
     TokenExpiredError,
     TokenInvalidError,
 )
@@ -52,7 +53,7 @@ async def remove_bookmark(user: CurrentUser, service: Bookmarks, film_id: UUID =
     response_model=PageModel[Bookmark],
     summary='Мои закладки',
     description='В порядке добавления: закладок у зрителя немного, сортировать их незачем.',
-    responses=error_responses(*TOKEN_ERRORS),
+    responses=error_responses(*TOKEN_ERRORS, PageTooDeepError),
 )
 async def list_bookmarks(user: CurrentUser, service: Bookmarks, page: Page) -> PageModel[Bookmark]:
     return await service.list_for_user(user.user_id, page.page, page.size)

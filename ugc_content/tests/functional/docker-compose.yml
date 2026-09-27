@@ -39,6 +39,10 @@ services:
       # Небольшой предел страницы, чтобы тест упирался в него несколькими записями.
       CONTENT_PAGE_SIZE_DEFAULT: 20
       CONTENT_PAGE_SIZE_MAX: 50
+      # Маленькие пределы, чтобы тест упирался в них на десятках записей,
+      # а не на тысячах.
+      CONTENT_MAX_PAGE_OFFSET: 100
+      CONTENT_EXACT_COUNT_LIMIT: 25
       # Ключ только для тестов: ими подписываются и обычные, и истёкшие токены.
       AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
       WEB_CONCURRENCY: 2
@@ -64,6 +68,8 @@ services:
       JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
       PAGE_SIZE_DEFAULT: 20
       PAGE_SIZE_MAX: 50
+      MAX_PAGE_OFFSET: 100
+      EXACT_COUNT_LIMIT: 25
     depends_on:
       content:
         condition: service_healthy
