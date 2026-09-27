@@ -88,6 +88,27 @@ def test_delete_unknown_review_returns_404(client, auth):
     assert response.json()['code'] == 'review_not_found'
 
 
+def test_author_cannot_vote_for_own_review(client, auth):
+    """За свою рецензию голосовать нельзя: иначе автор накрутит себе полезность (ФТ-7)."""
+    review_id = review_of(client, auth).json()['review_id']
+
+    response = client.put(f'{API}/reviews/{review_id}/vote', json={'useful': True}, headers=auth)
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json()['code'] == 'own_review_vote'
+
+
+def test_own_vote_does_not_change_counters(client, auth):
+    """Отклонённый голос автора не меняет счётчики рецензии."""
+    review_id = review_of(client, auth).json()['review_id']
+
+    client.put(f'{API}/reviews/{review_id}/vote', json={'useful': True}, headers=auth)
+
+    items = client.get(f'{API}/films/{FILM_ID}/reviews').json()['items']
+    assert items[0]['useful'] == 0
+    assert items[0]['useless'] == 0
+
+
 def test_vote_increases_useful(client, auth, make_token):
     """Голос «полезно» увеличивает счётчик полезности."""
     review_id = review_of(client, auth).json()['review_id']

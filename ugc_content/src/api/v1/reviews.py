@@ -14,6 +14,8 @@ from models.content import Review, ReviewRequest, ReviewSort, ReviewVoteRequest
 from services.errors import (
     NotAuthenticatedError,
     NotReviewAuthorError,
+    OwnReviewVoteError,
+    PageTooDeepError,
     ReviewAlreadyExistsError,
     ReviewNotFoundError,
     TokenExpiredError,
@@ -51,9 +53,10 @@ async def publish_review(
     description=(
         'Порядок выбирается параметром `sort`. Сортировок несколько намеренно: показывать '
         'только самые полезные — ловушка, новая рецензия никогда не набрала бы голосов. '
-        'Доступно без токена.'
+        'Доступно без токена. Глубина листания ограничена: дальше предела запрос стоит '
+        'дороже, чем стоит результат.'
     ),
-    responses=error_responses(),
+    responses=error_responses(PageTooDeepError),
 )
 async def list_reviews(
     service: Reviews,
@@ -78,9 +81,12 @@ async def delete_review(user: CurrentUser, service: Reviews, review_id: UUID = R
 @router.put(
     '/reviews/{review_id}/vote',
     response_model=Review,
-    summary='Оценить полезность рецензии',
-    description='Повторный голос заменяет прежний, а не добавляет второй.',
-    responses=error_responses(*TOKEN_ERRORS, ReviewNotFoundError),
+    summary='Оценить полезность чужой рецензии',
+    description=(
+        'Повторный голос заменяет прежний, а не добавляет второй. За свою рецензию '
+        'голосовать нельзя: иначе автор накручивал бы себе полезность.'
+    ),
+    responses=error_responses(*TOKEN_ERRORS, ReviewNotFoundError, OwnReviewVoteError),
 )
 async def vote_review(
     user: CurrentUser,

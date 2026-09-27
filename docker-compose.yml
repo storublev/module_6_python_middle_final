@@ -62,11 +62,13 @@ x-ugc-env: &ugc-env
 # Настройки сервиса пользовательского контента: лайки, рецензии и закладки.
 # Секрет подписи токенов общий с сервисом авторизации — токены выпускает он.
 x-content-env: &content-env
-  CONTENT_MONGO_URI: mongodb://ugc-mongo:27017
+  CONTENT_MONGO_URI: mongodb://ugc-mongo:27017/?replicaSet=rs0
   CONTENT_MONGO_DATABASE: ${CONTENT_MONGO_DATABASE:-ugc_content}
   CONTENT_LOG_LEVEL: ${CONTENT_LOG_LEVEL:-INFO}
   CONTENT_PAGE_SIZE_DEFAULT: ${CONTENT_PAGE_SIZE_DEFAULT:-20}
   CONTENT_PAGE_SIZE_MAX: ${CONTENT_PAGE_SIZE_MAX:-100}
+  CONTENT_MAX_PAGE_OFFSET: ${CONTENT_MAX_PAGE_OFFSET:-1000}
+  CONTENT_EXACT_COUNT_LIMIT: ${CONTENT_EXACT_COUNT_LIMIT:-1000}
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   CONTENT_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
   # Пустой DSN выключает отправку ошибок: локальный стек поднимается без Sentry.
@@ -374,14 +376,27 @@ services:
   # ABI rseq), а у Docker Desktop ядро как раз новее.
   ugc-mongo:
     image: mongo:7.0
-    command: mongod --bind_ip_all
+    # Набор реплик из одного узла. Он нужен не ради отказоустойчивости (её у
+    # одного узла нет), а ради транзакций: на обычном mongod их не бывает
+    # вовсе, а сервису нужно записывать оценку и её счётчик одной операцией.
+    # В бою узлов должно быть три — тогда появится и отказоустойчивость.
+    command: mongod --bind_ip_all --replSet rs0
     volumes:
       - ugc_mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      # Набор инициализируется прямо в проверке здоровья: отдельный
+      # одноразовый контейнер остановил бы всё окружение по
+      # --abort-on-container-exit, а ждать ручной команды после каждого
+      # `compose up` неудобно. Повторный вызов rs.initiate() на собранном
+      # наборе безвреден — он отвечает ошибкой, которую мы игнорируем.
+      test: >
+        mongosh --quiet --eval '
+          try { rs.status().ok } catch (error) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "ugc-mongo:27017"}]}).ok }
+        '
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   ugc-content:

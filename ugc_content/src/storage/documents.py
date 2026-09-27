@@ -13,7 +13,7 @@
 |---|---|
 | Агрегат по фильму (ФТ-3) | готовый счётчик `film_ratings` по `film_id` |
 | Оценка зрителя (ФТ-1) | `likes (film_id, user_id)`, он же уникальный ключ |
-| Понравившиеся зрителю (ФТ-4) | `likes (user_id, rating, created_at)` |
+| Понравившиеся зрителю (ФТ-4) | частичный `likes (user_id, created_at)` при `rating >= LIKED_FROM` |
 | Закладки зрителя (ФТ-10) | `bookmarks (user_id, created_at)` |
 | Рецензии фильма с сортировками (ФТ-8) | `reviews (film_id, created_at)`, `(film_id, useful)`, `(film_id, rating)` |
 | Одна рецензия зрителя на фильм | уникальный `reviews (film_id, user_id)` |
@@ -26,6 +26,8 @@ from uuid import UUID, uuid4
 import pymongo
 from beanie import Document
 from pydantic import Field
+
+from storage.base import LIKED_FROM
 
 COLLECTION_LIKES = 'likes'
 COLLECTION_FILM_RATINGS = 'film_ratings'
@@ -63,10 +65,17 @@ class LikeDocument(Document):
                 unique=True,
                 name='like_film_user_unique',
             ),
+            # Частичный индекс, и поля идут в порядке «равенство, потом
+            # сортировка». Если поставить перед датой поле rating, по которому
+            # идёт условие диапазона (`>= 6`), индекс перестаёт давать общий
+            # порядок по дате: подходящие записи окажутся разбросаны по разным
+            # значениям оценки, и MongoDB добавит в план отдельный этап SORT.
+            # Условие `rating >= LIKED_FROM` перенесено в сам индекс — заодно
+            # он не хранит дизлайки, которых в этой выборке всё равно нет.
             pymongo.IndexModel(
-                [('user_id', pymongo.ASCENDING), ('rating', pymongo.DESCENDING),
-                 ('created_at', pymongo.DESCENDING)],
-                name='like_user_rating',
+                [('user_id', pymongo.ASCENDING), ('created_at', pymongo.DESCENDING)],
+                name='like_user_liked',
+                partialFilterExpression={'rating': {'$gte': LIKED_FROM}},
             ),
         ]
 

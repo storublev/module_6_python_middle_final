@@ -24,6 +24,7 @@ from services.errors import (
     ForbiddenError,
     NotAuthenticatedError,
     NotFoundError,
+    PageTooDeepError,
     ServiceError,
     TokenExpiredError,
     TokenInvalidError,
@@ -41,6 +42,8 @@ STATUSES: dict[type[ServiceError], HTTPStatus] = {
     TokenInvalidError: HTTPStatus.UNAUTHORIZED,
     ForbiddenError: HTTPStatus.FORBIDDEN,
     NotFoundError: HTTPStatus.NOT_FOUND,
+    # Слишком глубокая страница — неверный запрос клиента, а не наша авария.
+    PageTooDeepError: HTTPStatus.BAD_REQUEST,
 }
 SERVICE_UNAVAILABLE_CODE = 'service_unavailable'
 SERVICE_UNAVAILABLE_DETAIL = 'Service temporarily unavailable, retry later'

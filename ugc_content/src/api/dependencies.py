@@ -16,6 +16,7 @@ from fastapi import Depends, Query, Request
 
 from core.config import Settings
 from services.content import BookmarkService, LikeService, ReviewService
+from services.errors import PageTooDeepError
 from storage.base import HealthCheck
 
 
@@ -81,9 +82,24 @@ def pagination(
     Предел размера страницы — настройка сервиса, а не константа в схеме:
     длинная страница ломает бюджет в 200 мс, и подобрать её предел должно
     быть можно без пересборки образа.
+
+    Глубина листания ограничена отдельно, и это не придирка. Размер страницы
+    ограничивает объём ответа, но не объём работы базы: чтобы отдать страницу
+    со смещением, MongoDB проходит все предшествующие записи, и тысячная
+    страница стоит в тысячу раз дороже первой. Человек так глубоко не листает
+    — а робот листает, и упирается сервис.
+
+    Raises:
+        PageTooDeepError: запрошена страница за пределом глубины.
     """
     config: Settings = request.app.state.settings
-    return Pagination(page=page, size=min(size or config.page_size_default, config.page_size_max))
+    page_size = min(size or config.page_size_default, config.page_size_max)
+    if (page - 1) * page_size > config.max_page_offset:
+        raise PageTooDeepError(
+            f'The page is too far: offset {(page - 1) * page_size} exceeds '
+            f'{config.max_page_offset}. Narrow the query instead of paging deeper',
+        )
+    return Pagination(page=page, size=page_size)
 
 
 Likes = Annotated[LikeService, Depends(get_likes)]

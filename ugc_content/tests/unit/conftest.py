@@ -29,6 +29,8 @@ OTHER_FILM_ID = UUID('c2b2e7a3-5a3b-4b1c-9a38-7c1b1f6a4a21')
 # Маленькие пределы страницы, чтобы тесты упирались в них парой записей.
 PAGE_SIZE_DEFAULT = 2
 PAGE_SIZE_MAX = 3
+# Маленький предел глубины, чтобы упереться в него на третьей странице.
+MAX_PAGE_OFFSET = 4
 
 
 @pytest.fixture
@@ -39,6 +41,7 @@ def settings() -> Settings:
         mongo_uri='mongodb://mongo-does-not-exist:27017',
         page_size_default=PAGE_SIZE_DEFAULT,
         page_size_max=PAGE_SIZE_MAX,
+        max_page_offset=MAX_PAGE_OFFSET,
     )
 
 

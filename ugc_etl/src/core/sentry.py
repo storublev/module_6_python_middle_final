@@ -10,7 +10,9 @@ Sentry необязателен: без DSN сервис работает как
 шлёт. Так его можно запустить локально, не поднимая контейнеры Sentry.
 
 Чувствительные данные не отправляются: `send_default_pii=False` оставляет за
-бортом всё, что Sentry мог бы взять из окружения.
+бортом всё, что Sentry мог бы взять из окружения, а
+`include_local_variables=False` — снимок локальных переменных в кадрах стека,
+куда иначе попадает разбираемое сообщение целиком.
 """
 
 import logging
@@ -37,5 +39,10 @@ def configure_sentry(dsn: str, service: str, environment: str) -> None:
         release=service,
         traces_sample_rate=TRACES_SAMPLE_RATE,
         send_default_pii=False,
+        # Снимок локальных переменных в кадрах стека НЕ отключается ни
+        # max_request_body_size, ни send_default_pii: это отдельная настройка.
+        # А в локальных переменных лежит ровно то, что мы обещали не
+        # отправлять, — тело запроса и его разобранные поля.
+        include_local_variables=False,
     )
     logger.info('Sentry включён, окружение %s', environment)

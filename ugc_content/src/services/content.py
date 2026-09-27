@@ -17,6 +17,7 @@ from models.content import Bookmark, FilmRating, Like, Page, Review, ReviewSort
 from services.errors import (
     BookmarkNotFoundError,
     NotReviewAuthorError,
+    OwnReviewVoteError,
     RatingNotFoundError,
     ReviewAlreadyExistsError,
     ReviewNotFoundError,
@@ -102,13 +103,27 @@ class ReviewService:
             raise ReviewNotFoundError
 
     async def vote(self, review_id: UUID, user_id: UUID, useful: bool) -> Review:
-        """Отмечает рецензию полезной или бесполезной.
+        """Отмечает чужую рецензию полезной или бесполезной.
+
+        Голосовать за свою нельзя (ФТ-7): иначе автор накручивал бы себе
+        полезность и поднимал свой текст в сортировке «самые полезные».
+        Авторство проверяется здесь, до записи: правило предметной области, а
+        не свойство хранилища.
 
         Raises:
             ReviewNotFoundError: рецензии нет.
+            OwnReviewVoteError: рецензия принадлежит самому голосующему.
         """
+        existing = await self._storage.get_review(review_id)
+        if existing is None:
+            raise ReviewNotFoundError
+        if existing.user_id == user_id:
+            raise OwnReviewVoteError
+
         review = await self._storage.vote(review_id, user_id, useful)
         if review is None:
+            # Рецензию удалили между проверкой и записью — для клиента это то
+            # же самое, что «её нет».
             raise ReviewNotFoundError
         return review
 

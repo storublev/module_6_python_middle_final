@@ -12,6 +12,7 @@ from models.content import FilmRating, Like, LikeRequest
 from models.content import Page as PageModel
 from services.errors import (
     NotAuthenticatedError,
+    PageTooDeepError,
     RatingNotFoundError,
     TokenExpiredError,
     TokenInvalidError,
@@ -76,8 +77,11 @@ async def film_rating(service: Likes, film_id: UUID = FilmId) -> FilmRating:
     '/users/me/likes',
     response_model=PageModel[Like],
     summary='Понравившиеся мне фильмы',
-    description='Фильмы, которым зритель поставил 6 и выше, от новых к старым.',
-    responses=error_responses(*TOKEN_ERRORS),
+    description=(
+        'Фильмы, которым зритель поставил 6 и выше, от новых к старым. '
+        'Глубина листания ограничена: дальше предела запрос стоит дороже, чем стоит результат.'
+    ),
+    responses=error_responses(*TOKEN_ERRORS, PageTooDeepError),
 )
 async def liked_films(user: CurrentUser, service: Likes, page: Page) -> PageModel[Like]:
     return await service.liked_films(user.user_id, page.page, page.size)

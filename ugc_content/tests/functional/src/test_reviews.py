@@ -58,6 +58,19 @@ def test_repeated_vote_replaces_previous(http, url, auth, make_token, film_id, d
     database.review_votes.delete_many({'user_id': voter_id})
 
 
+def test_author_cannot_vote_for_own_review(http, url, auth, film_id, database, cleanup):
+    """Голос автора за свою рецензию отклоняется, и запись голоса не появляется."""
+    review_id = http.post(
+        url(f'{API}/films/{film_id}/reviews'), json={'text': TEXT}, headers=auth,
+    ).json()['review_id']
+
+    response = http.put(url(f'{API}/reviews/{review_id}/vote'), json={'useful': True}, headers=auth)
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json()['code'] == 'own_review_vote'
+    assert database.review_votes.count_documents({'review_id': review_id}) == 0
+
+
 def test_reviews_sorted_by_usefulness(http, url, make_token, film_id, database, cleanup):
     """Сортировка «самые полезные» ставит наверх рецензию с голосами."""
     authors = [{'Authorization': f'Bearer {make_token(uuid4())}'} for _ in range(2)]
