@@ -13,21 +13,28 @@ services:
     # Версия 7.0, а не 8.x: MongoDB 8.0+ не стартует на ядре Linux 6.19 и
     # новее (SERVER-121912), а у Docker Desktop ядро как раз новее.
     image: mongo:7.0
-    command: mongod --bind_ip_all
+    # Набор реплик из одного узла — как в рабочем стеке: сервису нужны
+    # транзакции, а на обычном mongod их не бывает. Тесты должны идти на том
+    # же режиме хранилища, что и работа, иначе они проверяют не то.
+    command: mongod --bind_ip_all --replSet rs0
     ports:
       - "${TEST_CONTENT_MONGO_PORT:-27020}:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: >
+        mongosh --quiet --eval '
+          try { rs.status().ok } catch (error) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}).ok }
+        '
       interval: 3s
-      timeout: 5s
-      retries: 30
+      timeout: 10s
+      retries: 40
+      start_period: 10s
 
   content:
     # Тестируется тот же образ, что уходит в работу.
     build: ../..
     image: movies-ugc-content
     environment:
-      CONTENT_MONGO_URI: mongodb://mongo:27017
+      CONTENT_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       CONTENT_MONGO_DATABASE: ugc_content
       # Небольшой предел страницы, чтобы тест упирался в него несколькими записями.
       CONTENT_PAGE_SIZE_DEFAULT: 20
@@ -52,7 +59,7 @@ services:
       dockerfile: tests/functional/Dockerfile
     environment:
       SERVICE_URL: http://content:8000
-      MONGO_URI: mongodb://mongo:27017
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       MONGO_DATABASE: ugc_content
       JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
       PAGE_SIZE_DEFAULT: 20

@@ -10,16 +10,19 @@
 повторить.
 """
 
+import asyncio
 import functools
 import logging
-from collections.abc import Callable, Coroutine
+import random
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
 from beanie import init_beanie
 from pymongo import AsyncMongoClient, ReturnDocument
-from pymongo.errors import DuplicateKeyError, PyMongoError
+from pymongo.asynchronous.client_session import AsyncClientSession
+from pymongo.errors import DuplicateKeyError, OperationFailure, PyMongoError
 
 from models.content import Bookmark, FilmRating, Like, Page, Review, ReviewSort
 from storage.base import (
@@ -44,6 +47,24 @@ logger = logging.getLogger(__name__)
 
 P = ParamSpec('P')
 T = TypeVar('T')
+
+# Клиент запоминается при подключении: транзакция открывается через сессию, а
+# сессию выдаёт клиент. Beanie отдаёт коллекции, но не клиент, поэтому держим
+# его здесь — в одном месте и только для этого.
+_client: AsyncMongoClient | None = None
+# Сколько раз повторять транзакцию, если две параллельные записи столкнулись
+# на одном документе. MongoDB помечает такую ошибку как TransientTransactionError
+# и прямо предлагает повторить.
+#
+# Повторять нужно с паузой, а не подряд: у популярного фильма счётчик один на
+# всех, и десяток одновременных оценок бьётся именно за него. Без пауз
+# соперники расходятся и сталкиваются снова — проверено тестом
+# `test_parallel_ratings_keep_counter_exact`, где три мгновенных повтора
+# оставляли часть запросов без ответа.
+TRANSACTION_ATTEMPTS = 6
+# Пауза удваивается: 20 мс, 40, 80… Случайная добавка разводит соперников,
+# иначе они просыпаются одновременно и снова конфликтуют.
+TRANSACTION_RETRY_DELAY = 0.02
 
 # Во что превращается порядок сортировки рецензий. Пары «поле, направление» —
 # ровно те, под которые заведены индексы в documents.py: сортировка без
@@ -95,12 +116,55 @@ async def connect(uri: str, database: str, **options: Any) -> AsyncMongoClient:
     `uuidRepresentation='standard'` — иначе драйвер пишет UUID в своём старом
     формате, и данные нельзя прочитать ничем, кроме pymongo.
     """
+    global _client
+
     client: AsyncMongoClient = AsyncMongoClient(uri, uuidRepresentation='standard', **options)
     # allow_index_dropping: индексы описаны только в documents.py, и то, чего
     # там больше нет, должно исчезнуть и в базе. Иначе снятый индекс остаётся
     # навсегда и берёт свою цену с каждой записи, ничего не ускоряя.
     await init_beanie(database=client[database], document_models=DOCUMENTS, allow_index_dropping=True)
+    _client = client
     return client
+
+
+async def in_transaction(action: Callable[[AsyncClientSession], Awaitable[T]]) -> T:
+    """Выполняет несколько записей одной транзакцией, повторяя её при конфликте.
+
+    Зачем это нужно. Оценка и счётчик фильма — две записи, и между ними
+    процесс может умереть. Без транзакции счётчик разойдётся с оценками, а
+    повтор того же запроса делу не поможет: оценка уже сохранена, и второй
+    заход просто увидит её на месте и ничего не исправит. Внутри транзакции
+    видны либо обе записи, либо ни одной.
+
+    Повтор при `TransientTransactionError` — не перестраховка, а часть
+    протокола: две параллельные транзакции, тронувшие один документ, штатно
+    завершаются конфликтом, и MongoDB ожидает, что клиент повторит.
+
+    Требуется набор реплик; на одиночном mongod транзакций не существует.
+    """
+    if _client is None:
+        raise StorageUnavailableError('Соединение с MongoDB не открыто')
+
+    last_error: OperationFailure | None = None
+    for attempt in range(TRANSACTION_ATTEMPTS):
+        async with _client.start_session() as session:
+            try:
+                # start_transaction у асинхронного драйвера — корутина,
+                # которая возвращает менеджер контекста: сначала await, потом
+                # async with.
+                async with await session.start_transaction():
+                    return await action(session)
+            except OperationFailure as error:
+                if not error.has_error_label('TransientTransactionError'):
+                    raise
+                last_error = error
+                logger.warning('Транзакция столкнулась с конфликтом, попытка %d', attempt + 1)
+        # Пауза растёт, чтобы соперники разъехались во времени. Случайная
+        # добавка — не криптография, поэтому random здесь уместен.
+        delay = TRANSACTION_RETRY_DELAY * 2 ** attempt
+        await asyncio.sleep(delay * random.uniform(0.5, 1.5))  # noqa: S311
+    logger.error('Транзакция не прошла за %d попыток: %s', TRANSACTION_ATTEMPTS, last_error)
+    raise StorageUnavailableError(f'Транзакция не прошла за {TRANSACTION_ATTEMPTS} попыток')
 
 
 class MongoLikeStorage(LikeStorage):
@@ -108,52 +172,68 @@ class MongoLikeStorage(LikeStorage):
 
     @translate_errors
     async def set_rating(self, film_id: UUID, user_id: UUID, rating: int) -> Like:
-        now = utc_now()
-        # Upsert одной операцией: проверять существование отдельным запросом
-        # значило бы гонку — два параллельных запроса зрителя создали бы две
-        # оценки, и уникальный индекс отклонил бы вторую.
-        #
-        # Документ забирается в состоянии ДО изменения: по прежней оценке
-        # видно, на сколько двигать счётчик фильма.
-        previous = await LikeDocument.get_pymongo_collection().find_one_and_update(
-            {'film_id': film_id, 'user_id': user_id},
-            {
-                '$set': {'rating': rating, 'updated_at': now},
-                '$setOnInsert': {'film_id': film_id, 'user_id': user_id, 'created_at': now},
-            },
-            upsert=True,
-            return_document=ReturnDocument.BEFORE,
-        )
-        await self._move_counter(film_id, previous['rating'] if previous else None, rating)
-        return Like(
-            film_id=film_id,
-            user_id=user_id,
-            rating=rating,
-            created_at=aware(previous['created_at']) if previous else now,
-            updated_at=now,
-        )
+        async def write(session: AsyncClientSession) -> Like:
+            now = utc_now()
+            # Upsert одной операцией: проверять существование отдельным запросом
+            # значило бы гонку — два параллельных запроса зрителя создали бы две
+            # оценки, и уникальный индекс отклонил бы вторую.
+            #
+            # Документ забирается в состоянии ДО изменения: по прежней оценке
+            # видно, на сколько двигать счётчик фильма.
+            previous = await LikeDocument.get_pymongo_collection().find_one_and_update(
+                {'film_id': film_id, 'user_id': user_id},
+                {
+                    '$set': {'rating': rating, 'updated_at': now},
+                    '$setOnInsert': {'film_id': film_id, 'user_id': user_id, 'created_at': now},
+                },
+                upsert=True,
+                return_document=ReturnDocument.BEFORE,
+                session=session,
+            )
+            await self._move_counter(film_id, previous['rating'] if previous else None, rating, session)
+            return Like(
+                film_id=film_id,
+                user_id=user_id,
+                rating=rating,
+                created_at=aware(previous['created_at']) if previous else now,
+                updated_at=now,
+            )
+
+        # Оценка и счётчик — одна операция для того, кто их читает: либо
+        # изменились обе записи, либо ни одна.
+        return await in_transaction(write)
 
     @translate_errors
     async def remove_rating(self, film_id: UUID, user_id: UUID) -> bool:
-        removed = await LikeDocument.get_pymongo_collection().find_one_and_delete(
-            {'film_id': film_id, 'user_id': user_id},
-        )
-        if removed is None:
-            return False
-        await self._move_counter(film_id, removed['rating'], None)
-        return True
+        async def write(session: AsyncClientSession) -> bool:
+            removed = await LikeDocument.get_pymongo_collection().find_one_and_delete(
+                {'film_id': film_id, 'user_id': user_id},
+                session=session,
+            )
+            if removed is None:
+                return False
+            await self._move_counter(film_id, removed['rating'], None, session)
+            return True
+
+        return await in_transaction(write)
 
     @staticmethod
-    async def _move_counter(film_id: UUID, was: int | None, now: int | None) -> None:
+    async def _move_counter(
+        film_id: UUID,
+        was: int | None,
+        now: int | None,
+        session: AsyncClientSession,
+    ) -> None:
         """Двигает готовый агрегат фильма на разницу между старой и новой оценкой.
 
         Счётчик обновляется отдельной операцией, а не пересчитывается по
         коллекции: у популярного фильма сотни тысяч оценок, и пересчёт занял
         бы секунды (см. исследование). `$inc` же не зависит от их количества.
 
-        Транзакции здесь нет: на одиночном mongod её и не бывает, а на наборе
-        реплик обе записи можно завернуть в одну. Пока же расхождение лечится
-        полным пересчётом — тем самым, что делает research/bench.py.
+        Вызывается только внутри транзакции — отсюда обязательный `session`.
+        Без неё падение между записью оценки и сдвигом счётчика оставило бы
+        агрегат неверным навсегда: повтор запроса увидел бы уже сохранённую
+        оценку и ничего не исправил.
         """
         changes: dict[str, int] = {'likes': 0, 'dislikes': 0, 'sum_rating': 0, 'votes': 0}
         if was is not None:
@@ -175,6 +255,7 @@ class MongoLikeStorage(LikeStorage):
             {'film_id': film_id},
             {'$inc': changes, '$setOnInsert': {'film_id': film_id}},
             upsert=True,
+            session=session,
         )
 
     @translate_errors
@@ -285,37 +366,56 @@ class MongoReviewStorage(ReviewStorage):
 
     @translate_errors
     async def delete_review(self, review_id: UUID) -> bool:
-        result = await ReviewDocument.get_pymongo_collection().delete_one({'review_id': review_id})
-        if result.deleted_count == 0:
-            return False
-        # Голоса за удалённую рецензию больше не нужны: они занимают место и
-        # мешают тому, кто напишет рецензию заново.
-        await ReviewVoteDocument.get_pymongo_collection().delete_many({'review_id': review_id})
-        return True
+        async def write(session: AsyncClientSession) -> bool:
+            result = await ReviewDocument.get_pymongo_collection().delete_one(
+                {'review_id': review_id}, session=session,
+            )
+            if result.deleted_count == 0:
+                return False
+            # Голоса за удалённую рецензию больше не нужны: они занимают место
+            # и мешают тому, кто напишет рецензию заново. Удаляются они в той
+            # же транзакции — иначе сбой между двумя операциями оставил бы
+            # голоса за несуществующей рецензией, и убрать их обычным
+            # сценарием сервиса было бы уже нельзя.
+            await ReviewVoteDocument.get_pymongo_collection().delete_many(
+                {'review_id': review_id}, session=session,
+            )
+            return True
+
+        return await in_transaction(write)
 
     @translate_errors
     async def vote(self, review_id: UUID, user_id: UUID, useful: bool) -> Review | None:
-        reviews = ReviewDocument.get_pymongo_collection()
-        if await reviews.find_one({'review_id': review_id}, {'_id': 1}) is None:
-            return None
+        async def write(session: AsyncClientSession) -> Review | None:
+            reviews = ReviewDocument.get_pymongo_collection()
+            # Существование рецензии проверяется внутри транзакции: иначе
+            # параллельное удаление успело бы пройти между проверкой и
+            # записью, и голос остался бы за удалённой рецензией.
+            if await reviews.find_one({'review_id': review_id}, {'_id': 1}, session=session) is None:
+                return None
 
-        previous = await ReviewVoteDocument.get_pymongo_collection().find_one_and_update(
-            {'review_id': review_id, 'user_id': user_id},
-            {'$set': {'useful': useful}, '$setOnInsert': {'created_at': utc_now()}},
-            upsert=True,
-            return_document=ReturnDocument.BEFORE,
-        )
-        changes = self._counter_changes(previous['useful'] if previous else None, useful)
-        if not changes:
-            # Зритель нажал то же самое второй раз — счётчики трогать не за что.
-            return await self.get_review(review_id)
+            previous = await ReviewVoteDocument.get_pymongo_collection().find_one_and_update(
+                {'review_id': review_id, 'user_id': user_id},
+                {'$set': {'useful': useful}, '$setOnInsert': {'created_at': utc_now()}},
+                upsert=True,
+                return_document=ReturnDocument.BEFORE,
+                session=session,
+            )
+            changes = self._counter_changes(previous['useful'] if previous else None, useful)
+            if not changes:
+                # Зритель нажал то же самое второй раз — счётчики трогать не за что.
+                document = await reviews.find_one({'review_id': review_id}, session=session)
+                return self._to_review(document) if document else None
 
-        document = await reviews.find_one_and_update(
-            {'review_id': review_id},
-            {'$inc': changes},
-            return_document=ReturnDocument.AFTER,
-        )
-        return self._to_review(document) if document else None
+            document = await reviews.find_one_and_update(
+                {'review_id': review_id},
+                {'$inc': changes},
+                return_document=ReturnDocument.AFTER,
+                session=session,
+            )
+            return self._to_review(document) if document else None
+
+        return await in_transaction(write)
 
     @translate_errors
     async def list_reviews(self, film_id: UUID, sort: ReviewSort, page: int, size: int) -> Page[Review]:

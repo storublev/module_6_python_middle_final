@@ -15,7 +15,8 @@ class Settings(BaseSettings):
 
     service_url: str = 'http://127.0.0.1:8003'
 
-    mongo_uri: str = 'mongodb://localhost:27020'
+    # Набор реплик: сервису нужны транзакции (см. docker-compose тестов).
+    mongo_uri: str = 'mongodb://localhost:27020/?replicaSet=rs0'
     mongo_database: str = 'ugc_content'
 
     # Тот же ключ, что у сервиса в docker-compose тестов: им подписываются и

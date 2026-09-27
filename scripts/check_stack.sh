@@ -62,8 +62,22 @@ REVIEW_ID=$(printf '%s' "$review" | json_field review_id)
 [ -n "$REVIEW_ID" ] && ok 'рецензия опубликована' || bad "рецензия: $review"
 
 if [ -n "$REVIEW_ID" ]; then
-    vote=$(curl -s -X PUT "$BASE/content/api/v1/reviews/$REVIEW_ID/vote" "${AUTH[@]}" -d '{"useful": true}')
-    printf '%s' "$vote" | grep -q '"useful":1' && ok 'голос за рецензию учтён' || bad "голос: $vote"
+    # Голосует второй зритель: за свою рецензию голосовать нельзя, иначе автор
+    # накручивал бы себе полезность.
+    own=$(curl -s -X PUT "$BASE/content/api/v1/reviews/$REVIEW_ID/vote" "${AUTH[@]}" -d '{"useful": true}')
+    printf '%s' "$own" | grep -q 'own_review_vote' \
+        && ok 'голос автора за свою рецензию отклонён' || bad "самооценка: $own"
+
+    READER_LOGIN="reader-$RANDOM@example.com"
+    curl -s -o /dev/null -X POST "$BASE/auth/api/v1/signup" -H 'Content-Type: application/json' \
+        -d "{\"login\": \"$READER_LOGIN\", \"password\": \"$PASSWORD\"}"
+    reader_login=$(curl -s -X POST "$BASE/auth/api/v1/login" -H 'Content-Type: application/json' \
+        -d "{\"login\": \"$READER_LOGIN\", \"password\": \"$PASSWORD\"}")
+    READER_TOKEN=$(printf '%s' "$reader_login" | json_field access_token)
+    READER=(-H "Authorization: Bearer $READER_TOKEN" -H 'Content-Type: application/json')
+
+    vote=$(curl -s -X PUT "$BASE/content/api/v1/reviews/$REVIEW_ID/vote" "${READER[@]}" -d '{"useful": true}')
+    printf '%s' "$vote" | grep -q '"useful":1' && ok 'голос читателя учтён' || bad "голос: $vote"
     list=$(curl -s "$BASE/content/api/v1/films/$FILM/reviews?sort=most_useful")
     printf '%s' "$list" | grep -q '"total":1' \
         && ok 'рецензия видна в списке без токена' || bad "список рецензий: $list"
