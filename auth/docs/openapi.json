@@ -530,6 +530,126 @@
         ]
       }
     },
+    "/auth/api/v1/users/me/profile": {
+      "patch": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Контакты и имя",
+        "description": "Меняет почту, имя, фамилию и часовой пояс — то, из чего сервис уведомлений собирает письмо. Присылаются только изменяемые поля; пустая строка очищает поле. Часовой пояс задаётся именем из базы IANA (`Europe/Moscow`): по нему решается, в какое время суток писать, поэтому неизвестное имя отклоняется сразу.",
+        "operationId": "change_profile_auth_api_v1_users_me_profile_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileUpdateSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`unknown_timezone`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "unknown_timezone": {
+                    "summary": "Unknown IANA timezone name",
+                    "value": {
+                      "code": "unknown_timezone",
+                      "detail": "Unknown IANA timezone name"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
     "/auth/api/v1/users/me/login": {
       "patch": {
         "tags": [
@@ -2768,6 +2888,221 @@
           }
         }
       }
+    },
+    "/auth/api/v1/users/contacts": {
+      "post": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "Контакты пользователей пачкой",
+        "description": "Отдаёт почту, имя и часовой пояс перечисленных пользователей одним запросом. Ненайденные идентификаторы в ответе отсутствуют, порядок ответа не совпадает с порядком запроса — сопоставляйте по `id`. За один раз можно спросить не больше 1000 пользователей.",
+        "operationId": "contacts_auth_api_v1_users_contacts_post",
+        "parameters": [
+          {
+            "name": "X-Service-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Общий секрет служебного доступа",
+              "title": "X-Service-Token"
+            },
+            "description": "Общий секрет служебного доступа"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactsRequestSchema"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactSchema"
+                  },
+                  "title": "Response Contacts Auth Api V1 Users Contacts Post"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`service_token_invalid`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "service_token_invalid": {
+                    "summary": "Valid X-Service-Token header is required",
+                    "value": {
+                      "code": "service_token_invalid",
+                      "detail": "Valid X-Service-Token header is required"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "Обход всех пользователей с почтой",
+        "description": "Страница контактов по возрастанию идентификатора — для рассылки одинакового письма всем. Листание по ключу, а не по смещению: на миллионах записей `OFFSET` перечитывал бы всё предыдущее. Пользователи без почты пропускаются.",
+        "operationId": "contacts_page_auth_api_v1_users_contacts_get",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Идентификатор последнего пользователя прошлой страницы; в первом запросе не указывается",
+              "title": "After"
+            },
+            "description": "Идентификатор последнего пользователя прошлой страницы; в первом запросе не указывается"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Размер страницы",
+              "default": 500,
+              "title": "Limit"
+            },
+            "description": "Размер страницы"
+          },
+          {
+            "name": "X-Service-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Общий секрет служебного доступа",
+              "title": "X-Service-Token"
+            },
+            "description": "Общий секрет служебного доступа"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactsPageSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`service_token_invalid`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "service_token_invalid": {
+                    "summary": "Valid X-Service-Token header is required",
+                    "value": {
+                      "code": "service_token_invalid",
+                      "detail": "Valid X-Service-Token header is required"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2879,6 +3214,148 @@
         ],
         "title": "ChangePasswordSchema",
         "description": "Смена пароля.\n\nТекущий пароль не передаётся в одном случае: у пользователя, заведённого\nвходом через соцсеть, пароля ещё нет, и он задаёт первый."
+      },
+      "ContactSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор пользователя"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login",
+            "description": "Логин",
+            "examples": [
+              "neo"
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name",
+            "description": "Имя",
+            "examples": [
+              "Томас"
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name",
+            "description": "Фамилия",
+            "examples": [
+              "Андерсон"
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone",
+            "description": "Часовой пояс IANA",
+            "examples": [
+              "Europe/Moscow"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "login",
+          "email",
+          "first_name",
+          "last_name",
+          "timezone"
+        ],
+        "title": "ContactSchema",
+        "description": "Контакты пользователя для сервиса уведомлений."
+      },
+      "ContactsPageSchema": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContactSchema"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Контакты по возрастанию идентификатора"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After",
+            "description": "Что передать в параметре after за следующей страницей; null — страниц больше нет"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_after"
+        ],
+        "title": "ContactsPageSchema",
+        "description": "Страница контактов при обходе всех пользователей."
+      },
+      "ContactsRequestSchema": {
+        "properties": {
+          "user_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "User Ids",
+            "description": "Идентификаторы пользователей, не больше 1000 за запрос"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_ids"
+        ],
+        "title": "ContactsRequestSchema",
+        "description": "Запрос контактов пачкой."
       },
       "ErrorSchema": {
         "properties": {
@@ -3033,6 +3510,66 @@
             "type": "array",
             "title": "Roles",
             "description": "Роли пользователя"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта для уведомлений",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name",
+            "description": "Имя",
+            "examples": [
+              "Томас"
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name",
+            "description": "Фамилия",
+            "examples": [
+              "Андерсон"
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone",
+            "description": "Часовой пояс IANA",
+            "examples": [
+              "Europe/Moscow"
+            ]
           }
         },
         "type": "object",
@@ -3045,6 +3582,77 @@
         ],
         "title": "ProfileSchema",
         "description": "Данные пользователя в личном кабинете."
+      },
+      "ProfileUpdateSchema": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 254,
+                "description": "Почта для уведомлений; пустая строка очищает поле",
+                "examples": [
+                  "neo@example.com"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Пустая строка очищает поле",
+                "examples": [
+                  "Томас"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Пустая строка очищает поле",
+                "examples": [
+                  "Томас"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Часовой пояс IANA; пустая строка очищает поле",
+                "examples": [
+                  "Europe/Moscow"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "title": "ProfileUpdateSchema",
+        "description": "Изменение контактов и имени.\n\nПрисланы только те поля, которые нужно поменять. Пустая строка очищает\nполе — так его можно убрать, не изобретая отдельного эндпоинта."
       },
       "ProviderSchema": {
         "properties": {
@@ -3565,6 +4173,10 @@
     {
       "name": "oauth",
       "description": "Вход через соцсети: сторона потребителя OAuth 2.0."
+    },
+    {
+      "name": "directory",
+      "description": "Служебный справочник контактов для сервиса уведомлений. Доступ по заголовку `X-Service-Token`; пока секрет не задан, доступа нет ни у кого."
     }
   ]
 }

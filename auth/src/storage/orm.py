@@ -53,6 +53,15 @@ class UserRow(Timestamped, Base):
     # Redis при смене пароля не удалось.
     credentials_version: Mapped[int] = mapped_column(server_default=text('0'))
     is_superuser: Mapped[bool] = mapped_column(server_default=false())
+    # Контакты и имя нужны сервису уведомлений: письмо нельзя собрать, зная
+    # только логин. Логин у нас похож на адрес, но это не одно и то же —
+    # менять логин, не трогая почту, пользователь вправе.
+    email: Mapped[str | None] = mapped_column(String(254))
+    first_name: Mapped[str | None] = mapped_column(String(64))
+    last_name: Mapped[str | None] = mapped_column(String(64))
+    # Имя часового пояса в базе IANA (Europe/Moscow). Без него рассылка ушла
+    # бы всем по московскому времени, и Владивосток получил бы её ночью.
+    timezone: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
     )

@@ -90,6 +90,25 @@ class SocialAccountNotLinkedError(NotFoundError):
     message = 'No account of this social provider is linked'
 
 
+class BadRequestError(ServiceError):
+    """Запрос составлен неверно, и повторять его без изменений бессмысленно."""
+
+
+class UnknownTimezoneError(BadRequestError):
+    # Проверяется на входе, а не у потребителя: по часовому поясу сервис
+    # уведомлений решает, когда писать, и неизвестное значение обернулось бы
+    # неотправленным письмом вместо понятного отказа.
+    code = 'unknown_timezone'
+    message = 'Unknown IANA timezone name'
+
+
+class ServiceTokenInvalidError(AuthenticationError):
+    # Служебный вход для сервиса уведомлений: он ходит за чужими контактами,
+    # поэтому опознаётся не access-токеном пользователя, а общим секретом.
+    code = 'service_token_invalid'
+    message = 'Valid X-Service-Token header is required'
+
+
 class ConflictError(ServiceError):
     """Запрос противоречит текущему состоянию данных."""
 

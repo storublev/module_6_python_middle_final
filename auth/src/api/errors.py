@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from services.errors import (
     AuthenticationError,
+    BadRequestError,
     ConflictError,
     ForbiddenError,
     NotAuthenticatedError,
@@ -39,6 +40,9 @@ STATUSES: dict[type[ServiceError], HTTPStatus] = {
     ConflictError: HTTPStatus.CONFLICT,
     TooManyRequestsError: HTTPStatus.TOO_MANY_REQUESTS,
     ServiceUnavailableError: HTTPStatus.SERVICE_UNAVAILABLE,
+    # Проверяется последним: это самая общая категория «клиент прислал не то»,
+    # и более точные категории выше должны иметь приоритет.
+    BadRequestError: HTTPStatus.BAD_REQUEST,
 }
 RETRY_AFTER_HEADER = {
     'Retry-After': {

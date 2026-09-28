@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 from models.role import Role, UserAccess
 from models.session import Session
 from models.social import SocialAccount, SocialProfile
-from models.user import LoginRecord, User
+from models.user import Contact, LoginRecord, ProfileUpdate, User
 from storage.base import (
     AccessCache,
     AccessInvalidation,
@@ -96,6 +96,22 @@ class FakeUserRepository(UserRepository):
     async def get_credentials_version(self, user_id: UUID) -> int | None:
         user = self.db.users.get(user_id)
         return user.credentials_version if user else None
+
+    async def update_profile(self, user_id: UUID, changes: ProfileUpdate) -> User:
+        values = {key: value for key, value in changes.model_dump().items() if value is not None}
+        user = self.db.users[user_id].model_copy(update=values)
+        self.db.users[user_id] = user
+        return user
+
+    async def contacts_by_ids(self, user_ids: Sequence[UUID]) -> list[Contact]:
+        return [Contact.model_validate(self.db.users[user_id].model_dump())
+                for user_id in user_ids if user_id in self.db.users]
+
+    async def contacts_page(self, after_id: UUID | None, limit: int) -> list[Contact]:
+        users = sorted((user for user in self.db.users.values() if user.email), key=lambda user: user.id)
+        if after_id is not None:
+            users = [user for user in users if user.id > after_id]
+        return [Contact.model_validate(user.model_dump()) for user in users[:limit]]
 
     async def get_access(self, user_id: UUID) -> UserAccess | None:
         self.access_reads += 1

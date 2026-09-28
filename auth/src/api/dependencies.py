@@ -18,6 +18,7 @@ from db.redis import get_redis
 from services.access import AccessService
 from services.access_invalidation import AccessInvalidator
 from services.auth import AuthService, RegistrationService, SignupService
+from services.directory import DirectoryService
 from services.passwords import PasswordHasher
 from services.profile import ProfileService
 from services.roles import RoleService
@@ -186,6 +187,10 @@ def get_profile_service(
     return ProfileService(users, roles, history, sessions, passwords, throttle)
 
 
+def get_directory_service(users: Users) -> DirectoryService:
+    return DirectoryService(users)
+
+
 def get_role_service(roles: Roles, users: Users, invalidator: Invalidator) -> RoleService:
     return RoleService(roles, users, invalidator)
 
@@ -197,6 +202,7 @@ def get_access_service(users: Users, cache: Cache) -> AccessService:
 SignupServiceDep = Annotated[SignupService, Depends(get_signup_service)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
+DirectoryServiceDep = Annotated[DirectoryService, Depends(get_directory_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 AccessServiceDep = Annotated[AccessService, Depends(get_access_service)]
 

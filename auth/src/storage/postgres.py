@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.role import Role, UserAccess
 from models.social import SocialAccount, SocialProfile
-from models.user import LoginRecord, User
+from models.user import Contact, LoginRecord, ProfileUpdate, User
 from storage.base import (
     AccessInvalidation,
     AccessInvalidationQueue,
@@ -113,6 +113,38 @@ class PostgresUserRepository(PostgresRepository, UserRepository):
     async def get_credentials_version(self, user_id: UUID) -> int | None:
         async with self._errors():
             return await self.session.scalar(select(UserRow.credentials_version).where(UserRow.id == user_id))
+
+    async def update_profile(self, user_id: UUID, changes: ProfileUpdate) -> User:
+        # Пустой набор изменений не должен превращаться в UPDATE без SET:
+        # такой запрос PostgreSQL не примет.
+        values = {key: value for key, value in changes.model_dump().items() if value is not None}
+        if not values:
+            row = await self.get(user_id)
+            # Профиль меняет сам владелец действующей сессии, поэтому его
+            # учётная запись к этому моменту уже прочитана.
+            assert row is not None  # noqa: S101
+            return row
+        async with self._errors():
+            updated = await self.session.scalar(
+                update(UserRow).where(UserRow.id == user_id).values(**values).returning(UserRow),
+            )
+            await self.session.commit()
+        return User.model_validate(updated)
+
+    async def contacts_by_ids(self, user_ids: Sequence[UUID]) -> list[Contact]:
+        if not user_ids:
+            return []
+        async with self._errors():
+            rows = (await self.session.scalars(select(UserRow).where(UserRow.id.in_(user_ids)))).all()
+        return [Contact.model_validate(row) for row in rows]
+
+    async def contacts_page(self, after_id: UUID | None, limit: int) -> list[Contact]:
+        query = select(UserRow).where(UserRow.email.is_not(None)).order_by(UserRow.id).limit(limit)
+        if after_id is not None:
+            query = query.where(UserRow.id > after_id)
+        async with self._errors():
+            rows = (await self.session.scalars(query)).all()
+        return [Contact.model_validate(row) for row in rows]
 
     async def get_access(self, user_id: UUID) -> UserAccess | None:
         query = (

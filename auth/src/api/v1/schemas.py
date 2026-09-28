@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from models.role import Permission, RoleName
 from models.user import LOGIN_MAX_LENGTH, PASSWORD_MAX_LENGTH, Login, Password
@@ -19,6 +19,26 @@ CurrentPassword = Annotated[
     Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, description='Текущий пароль', examples=['followtherabbit']),
 ]
 PermissionField = Annotated[Permission, Field(examples=['films.subscription'])]
+
+# Длины совпадают с колонками таблицы: 254 — предел длины адреса по RFC 5321.
+EmailField = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, to_lower=True, max_length=254),
+    Field(description='Почта для уведомлений; пустая строка очищает поле', examples=['neo@example.com']),
+]
+NameField = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=64),
+    Field(description='Пустая строка очищает поле', examples=['Томас']),
+]
+TimezoneField = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=64),
+    Field(description='Часовой пояс IANA; пустая строка очищает поле', examples=['Europe/Moscow']),
+]
+# Пачка контактов на один запрос. Сервис уведомлений собирает письма
+# тысячами, но запрос на миллион идентификаторов положил бы и его, и нас.
+MAX_CONTACTS_PER_REQUEST = 1000
 
 
 class Schema(BaseModel):
@@ -86,6 +106,59 @@ class ProfileSchema(UserSchema):
 
     is_superuser: bool = Field(description='Суперпользователю разрешено всё')
     roles: list[RoleShortSchema] = Field(description='Роли пользователя')
+    email: str | None = Field(default=None, description='Почта для уведомлений', examples=['neo@example.com'])
+    first_name: str | None = Field(default=None, description='Имя', examples=['Томас'])
+    last_name: str | None = Field(default=None, description='Фамилия', examples=['Андерсон'])
+    timezone: str | None = Field(default=None, description='Часовой пояс IANA', examples=['Europe/Moscow'])
+
+
+class ProfileUpdateSchema(BaseModel):
+    """Изменение контактов и имени.
+
+    Присланы только те поля, которые нужно поменять. Пустая строка очищает
+    поле — так его можно убрать, не изобретая отдельного эндпоинта.
+    """
+
+    email: EmailField | None = None
+    first_name: NameField | None = None
+    last_name: NameField | None = None
+    timezone: TimezoneField | None = None
+
+    @model_validator(mode='after')
+    def not_empty(self) -> 'ProfileUpdateSchema':
+        if not self.model_fields_set:
+            raise ValueError('At least one field must be provided')
+        return self
+
+
+class ContactSchema(Schema):
+    """Контакты пользователя для сервиса уведомлений."""
+
+    id: UUID = Field(description='Идентификатор пользователя')
+    login: str = Field(description='Логин', examples=['neo'])
+    email: str | None = Field(description='Почта', examples=['neo@example.com'])
+    first_name: str | None = Field(description='Имя', examples=['Томас'])
+    last_name: str | None = Field(description='Фамилия', examples=['Андерсон'])
+    timezone: str | None = Field(description='Часовой пояс IANA', examples=['Europe/Moscow'])
+
+
+class ContactsRequestSchema(BaseModel):
+    """Запрос контактов пачкой."""
+
+    user_ids: list[UUID] = Field(
+        min_length=1,
+        max_length=MAX_CONTACTS_PER_REQUEST,
+        description=f'Идентификаторы пользователей, не больше {MAX_CONTACTS_PER_REQUEST} за запрос',
+    )
+
+
+class ContactsPageSchema(Schema):
+    """Страница контактов при обходе всех пользователей."""
+
+    items: list[ContactSchema] = Field(description='Контакты по возрастанию идентификатора')
+    next_after: UUID | None = Field(
+        description='Что передать в параметре after за следующей страницей; null — страниц больше нет',
+    )
 
 
 class ChangeLoginSchema(BaseModel):
