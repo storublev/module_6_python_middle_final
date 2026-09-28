@@ -27,6 +27,7 @@ from models.notification import Recipient
 from services.errors import TemplateInvalidError
 from services.messages import RenderMessage, SendMessage
 from services.renderer import Renderer
+from services.subscriptions import unsubscribe_url
 from storage.base import ContactDirectory, MessagePublisher, TemplateRepository
 from storage.rabbit import STAGE_RENDER, STAGE_SEND
 
@@ -86,6 +87,7 @@ class AssemblyService:
         publisher: MessagePublisher,
         quiet_hours: QuietHours,
         base_url: str,
+        secret: str,
     ) -> None:
         self._templates = templates
         self._directory = directory
@@ -93,6 +95,9 @@ class AssemblyService:
         self._publisher = publisher
         self._quiet = quiet_hours
         self._base_url = base_url
+        # Тот же секрет, которым подписываются токены: им подписывается и
+        # ссылка отписки, чтобы её нельзя было подделать.
+        self._secret = secret
 
     async def assemble(self, message: RenderMessage, now: datetime | None = None) -> int:
         """Собирает письма и отправляет их отправителю. Возвращает число собранных."""
@@ -146,7 +151,10 @@ class AssemblyService:
         context = {
             **message.context,
             'site_url': self._base_url,
-            'unsubscribe_url': f'{self._base_url}/notify/api/v1/unsubscribe',
+            # Ссылка отписки своя у каждого получателя: в ней идентификатор и
+            # подпись. Общая ссылка без них не работает — переход из письма
+            # упирается в проверку параметров.
+            'unsubscribe_url': unsubscribe_url(self._base_url, recipient.user_id, self._secret),
         }
         try:
             subject, body = self._renderer.render(template, recipient, context)

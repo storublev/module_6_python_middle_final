@@ -162,6 +162,7 @@ def build_handler(
                 publisher,
                 quiet_hours,
                 settings.public_base_url,
+                settings.jwt_secret_key.get_secret_value(),
             )
             await service.assemble(RenderMessage.model_validate(payload))
 

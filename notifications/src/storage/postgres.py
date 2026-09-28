@@ -52,6 +52,7 @@ from storage.orm import (
     SubscriptionRow,
     TemplateRow,
     TemplateVersionRow,
+    UserPreferenceRow,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,10 @@ class PostgresSubscriptionRepository(PostgresRepository, SubscriptionRepository)
     async def set_enabled(
         self, user_id: UUID, template_code: str, channel: Channel, enabled: bool,
     ) -> Subscription:
+        # Включение любого типа снимает общий отказ: иначе зритель, однажды
+        # отписавшийся, не смог бы вернуться.
+        if enabled:
+            await self._clear_global_optout(user_id)
         query = (
             pg_insert(SubscriptionRow)
             .values(user_id=user_id, template_code=template_code, channel=channel.value, enabled=enabled)
@@ -221,11 +226,32 @@ class PostgresSubscriptionRepository(PostgresRepository, SubscriptionRepository)
         return _subscription(row)
 
     async def unsubscribe_all(self, user_id: UUID) -> None:
+        mark = (
+            pg_insert(UserPreferenceRow)
+            .values(user_id=user_id, unsubscribed_all=True)
+            .on_conflict_do_update(
+                index_elements=[UserPreferenceRow.user_id],
+                set_={'unsubscribed_all': True, 'updated_at': func.now()},
+            )
+        )
         async with self._errors():
+            # Общий признак — главное: у зрителя, который никогда ничего не
+            # настраивал, записей подписок нет, и выключать было бы нечего.
+            await self.session.execute(mark)
             await self.session.execute(
                 update(SubscriptionRow).where(SubscriptionRow.user_id == user_id).values(enabled=False),
             )
             await self.session.commit()
+
+    async def is_unsubscribed(self, user_ids: Sequence[UUID]) -> set[UUID]:
+        if not user_ids:
+            return set()
+        query = select(UserPreferenceRow.user_id).where(
+            UserPreferenceRow.user_id.in_(user_ids),
+            UserPreferenceRow.unsubscribed_all.is_(True),
+        )
+        async with self._errors():
+            return set((await self.session.scalars(query)).all())
 
     async def filter_enabled(
         self, user_ids: Sequence[UUID], template_code: str, channel: Channel,
@@ -242,7 +268,19 @@ class PostgresSubscriptionRepository(PostgresRepository, SubscriptionRepository)
         )
         async with self._errors():
             disabled = set((await self.session.scalars(query)).all())
+        # Отписавшиеся от всего отсеиваются тем же проходом: иначе отписка из
+        # письма не значила бы ничего для зрителя без явных настроек.
+        disabled |= await self.is_unsubscribed(user_ids)
         return {user_id for user_id in user_ids if user_id not in disabled}
+
+    async def _clear_global_optout(self, user_id: UUID) -> None:
+        async with self._errors():
+            await self.session.execute(
+                update(UserPreferenceRow)
+                .where(UserPreferenceRow.user_id == user_id)
+                .values(unsubscribed_all=False),
+            )
+            await self.session.commit()
 
 
 def _subscription(row: SubscriptionRow) -> Subscription:

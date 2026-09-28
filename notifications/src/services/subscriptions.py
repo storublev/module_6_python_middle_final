@@ -14,10 +14,11 @@
 import hashlib
 import hmac
 import logging
+from urllib.parse import urlencode
 from uuid import UUID
 
 from models.enums import Channel
-from models.notification import Subscription
+from models.notification import Preferences, Subscription
 from services.errors import TokenInvalidError
 from storage.base import SubscriptionRepository
 
@@ -28,6 +29,28 @@ UNSUBSCRIBE_PURPOSE = 'unsubscribe'
 EMAIL_CONFIRMED_CODE = 'email_confirmed'
 
 
+def unsubscribe_token(user_id: UUID, secret: str) -> str:
+    """Подпись для ссылки отписки.
+
+    HMAC от идентификатора зрителя: подобрать её нельзя, а проверять можно,
+    ничего не храня. Отдельная функция, а не метод, потому что нужна в двух
+    местах — здесь и в сборщике письма, который собирает ссылку.
+    """
+    return hmac.new(secret.encode('utf-8'), str(user_id).encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def unsubscribe_url(base_url: str, user_id: UUID, secret: str) -> str:
+    """Готовая ссылка отписки для письма.
+
+    Ссылка своя у каждого получателя: в ней идентификатор и подпись. Без них
+    переход из письма упирается в проверку параметров, и отписаться нельзя —
+    а по закону и по здравому смыслу возможность отписаться в письме быть
+    обязана.
+    """
+    params = urlencode({'user_id': str(user_id), 'token': unsubscribe_token(user_id, secret)})
+    return f'{base_url.rstrip("/")}/notify/api/v1/unsubscribe?{params}'
+
+
 class SubscriptionService:
     """Подписки зрителя и отписка по ссылке из письма."""
 
@@ -35,8 +58,16 @@ class SubscriptionService:
         self._subscriptions = subscriptions
         self._secret = secret
 
-    async def list_for_user(self, user_id: UUID) -> list[Subscription]:
-        return await self._subscriptions.list_for_user(user_id)
+    async def list_for_user(self, user_id: UUID) -> Preferences:
+        """Настройки зрителя вместе с общим признаком отказа.
+
+        Общий признак обязан быть виден: иначе зритель, отписавшийся из
+        письма, не поймёт, почему письма не приходят, и не сможет вернуться.
+        """
+        return Preferences(
+            unsubscribed_all=bool(await self._subscriptions.is_unsubscribed([user_id])),
+            items=await self._subscriptions.list_for_user(user_id),
+        )
 
     async def set_enabled(
         self, user_id: UUID, template_code: str, channel: Channel, enabled: bool,
@@ -62,12 +93,8 @@ class SubscriptionService:
         logger.info('Адрес почты подтверждён', extra={'user_id': str(user_id)})
 
     def unsubscribe_token(self, user_id: UUID) -> str:
-        """Подпись для ссылки отписки.
-
-        HMAC от идентификатора зрителя тем же секретом, которым подписываются
-        токены: подобрать её нельзя, а проверять её можно, ничего не храня.
-        """
-        return hmac.new(self._secret.encode('utf-8'), str(user_id).encode('utf-8'), hashlib.sha256).hexdigest()
+        """Подпись для ссылки отписки этого зрителя."""
+        return unsubscribe_token(user_id, self._secret)
 
     async def unsubscribe_by_token(self, user_id: UUID, token: str) -> None:
         """Отписывает от всего по ссылке из письма.

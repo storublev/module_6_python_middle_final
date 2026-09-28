@@ -320,7 +320,7 @@ def test_subscriptions_are_listed(api_url: str, viewer: Viewer, template: str) -
     response = requests.get(f'{api_url}/me/subscriptions', headers=viewer.auth_headers, timeout=10)
 
     assert response.status_code == HTTPStatus.OK
-    assert any(item['template_code'] == template and not item['enabled'] for item in response.json())
+    assert any(item['template_code'] == template and not item['enabled'] for item in response.json()['items'])
 
 
 def test_unsubscribe_all_stops_everything(api_url: str, viewer: Viewer, template: str) -> None:
@@ -336,7 +336,8 @@ def test_unsubscribe_all_stops_everything(api_url: str, viewer: Viewer, template
 
     assert response.status_code == HTTPStatus.NO_CONTENT
     listed = requests.get(f'{api_url}/me/subscriptions', headers=viewer.auth_headers, timeout=10)
-    assert all(not item['enabled'] for item in listed.json())
+    assert listed.json()['unsubscribed_all'] is True
+    assert all(not item['enabled'] for item in listed.json()['items'])
 
 
 def test_unsubscribe_link_rejects_wrong_signature(api_url: str, viewer: Viewer) -> None:

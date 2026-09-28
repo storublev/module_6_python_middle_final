@@ -100,7 +100,17 @@ class SubscriptionRepository(ABC):
 
     @abstractmethod
     async def unsubscribe_all(self, user_id: UUID) -> None:
-        """Отписывает зрителя от всего сразу."""
+        """Отписывает зрителя от всего сразу.
+
+        Выключает и уже заданные настройки, и ставит общий признак «не писать
+        мне вовсе». Без общего признака отписка ничего не значила бы для
+        зрителя, который никогда ничего не настраивал: выключать было бы
+        нечего, а письма продолжали бы приходить.
+        """
+
+    @abstractmethod
+    async def is_unsubscribed(self, user_ids: Sequence[UUID]) -> set[UUID]:
+        """Кто из перечисленных отписан от всего."""
 
     @abstractmethod
     async def filter_enabled(

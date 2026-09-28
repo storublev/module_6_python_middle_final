@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
     text,
     true,
@@ -112,6 +113,24 @@ class SubscriptionRow(Base):
     template_code: Mapped[str] = mapped_column(String(64))
     channel: Mapped[str] = mapped_column(String(16))
     enabled: Mapped[bool] = mapped_column(server_default=true())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
+
+
+class UserPreferenceRow(Base):
+    """Настройки зрителя, которые не привязаны к одному типу уведомлений.
+
+    Пока здесь одно поле — «отписан от всего». Отдельная строка, а не запись в
+    `subscriptions`, потому что это свойство зрителя: у того, кто никогда
+    ничего не настраивал, записей подписок нет вовсе, и выключать было бы
+    нечего — отписка из письма не делала бы ничего.
+    """
+
+    __tablename__ = 'user_preferences'
+
+    user_id: Mapped[UUID] = mapped_column(primary_key=True)
+    unsubscribed_all: Mapped[bool] = mapped_column(server_default=false())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
     )

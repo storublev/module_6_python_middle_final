@@ -15,6 +15,7 @@ from api.security import CurrentUser
 from api.v1.schemas import (
     DeliveryPageSchema,
     DeliverySchema,
+    PreferencesSchema,
     SubscriptionSchema,
     SubscriptionUpdateSchema,
 )
@@ -48,16 +49,22 @@ async def my_notifications(
 
 @router.get(
     '/subscriptions',
-    response_model=list[SubscriptionSchema],
+    response_model=PreferencesSchema,
     summary='Мои настройки уведомлений',
-    description='Явно заданные настройки. Типа, которого здесь нет, зритель ещё не отключал — '
-                'по умолчанию уведомления приходят.',
+    description='Явно заданные настройки и признак «отписан от всего». Типа, которого нет в списке, '
+                'зритель ещё не отключал — по умолчанию уведомления приходят.\n\n'
+                'Признак `unsubscribed_all` показывается отдельно: он ставится отпиской из письма, '
+                'когда никаких настроек у зрителя ещё нет, и без него было бы непонятно, почему писем нет.',
     responses=error_responses(*TOKEN_ERRORS),
 )
 async def my_subscriptions(
     user: CurrentUser, subscriptions: SubscriptionServiceDep,
-) -> list[SubscriptionSchema]:
-    return [SubscriptionSchema.model_validate(item) for item in await subscriptions.list_for_user(user.user_id)]
+) -> PreferencesSchema:
+    preferences = await subscriptions.list_for_user(user.user_id)
+    return PreferencesSchema(
+        unsubscribed_all=preferences.unsubscribed_all,
+        items=[SubscriptionSchema.model_validate(item) for item in preferences.items],
+    )
 
 
 @router.put(

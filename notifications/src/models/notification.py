@@ -53,6 +53,20 @@ class Subscription(BaseModel):
     updated_at: datetime
 
 
+class Preferences(BaseModel):
+    """Настройки уведомлений зрителя целиком.
+
+    Общий отказ хранится отдельно от списка типов, но показывать его нужно
+    вместе с ним: зритель, отписавшийся из письма, должен видеть, что писем
+    не будет, и уметь вернуться.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    unsubscribed_all: bool
+    items: list[Subscription]
+
+
 class NotificationRecord(BaseModel):
     """Уведомление о данных: о чём зрителю уже сообщали.
 

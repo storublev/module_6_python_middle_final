@@ -19,7 +19,7 @@ async def test_disabled_type_is_remembered(subscriptions: SubscriptionService) -
     await subscriptions.set_enabled(viewer, 'weekly_digest', Channel.EMAIL, enabled=False)
 
     saved = await subscriptions.list_for_user(viewer)
-    assert [(item.template_code, item.enabled) for item in saved] == [('weekly_digest', False)]
+    assert [(item.template_code, item.enabled) for item in saved.items] == [('weekly_digest', False)]
 
 
 async def test_unsubscribe_all_turns_everything_off(subscriptions: SubscriptionService) -> None:
@@ -30,7 +30,39 @@ async def test_unsubscribe_all_turns_everything_off(subscriptions: SubscriptionS
 
     await subscriptions.unsubscribe_all(viewer)
 
-    assert all(not item.enabled for item in await subscriptions.list_for_user(viewer))
+    saved = await subscriptions.list_for_user(viewer)
+    assert saved.unsubscribed_all is True
+    assert all(not item.enabled for item in saved.items)
+
+
+async def test_unsubscribe_works_for_viewer_without_any_settings(
+    subscriptions: SubscriptionService, subscriptions_repo,
+) -> None:
+    """Отписка работает и у зрителя, который ничего не настраивал.
+
+    Это главный случай: настройки есть у единиц, а отписывается из письма кто
+    угодно. Если «отписать от всего» означает только «выключить заданное», то
+    у такого зрителя выключать нечего — и письма продолжают приходить.
+    """
+    viewer = uuid4()
+
+    await subscriptions.unsubscribe_all(viewer)
+
+    allowed = await subscriptions_repo.filter_enabled([viewer], 'weekly_digest', Channel.EMAIL)
+    assert allowed == set()
+
+
+async def test_enabling_a_type_brings_the_viewer_back(
+    subscriptions: SubscriptionService, subscriptions_repo,
+) -> None:
+    """Включение любого типа снимает общий отказ: вернуться должно быть можно."""
+    viewer = uuid4()
+    await subscriptions.unsubscribe_all(viewer)
+
+    await subscriptions.set_enabled(viewer, 'weekly_digest', Channel.EMAIL, enabled=True)
+
+    allowed = await subscriptions_repo.filter_enabled([viewer], 'weekly_digest', Channel.EMAIL)
+    assert allowed == {viewer}
 
 
 async def test_unsubscribe_link_works_without_login(subscriptions: SubscriptionService) -> None:
@@ -40,7 +72,8 @@ async def test_unsubscribe_link_works_without_login(subscriptions: SubscriptionS
 
     await subscriptions.unsubscribe_by_token(viewer, subscriptions.unsubscribe_token(viewer))
 
-    assert all(not item.enabled for item in await subscriptions.list_for_user(viewer))
+    saved = await subscriptions.list_for_user(viewer)
+    assert saved.unsubscribed_all is True
 
 
 async def test_wrong_signature_cannot_unsubscribe_others(subscriptions: SubscriptionService) -> None:
@@ -51,7 +84,9 @@ async def test_wrong_signature_cannot_unsubscribe_others(subscriptions: Subscrip
     with pytest.raises(TokenInvalidError):
         await subscriptions.unsubscribe_by_token(victim, subscriptions.unsubscribe_token(attacker))
 
-    assert all(item.enabled for item in await subscriptions.list_for_user(victim))
+    saved = await subscriptions.list_for_user(victim)
+    assert saved.unsubscribed_all is False
+    assert all(item.enabled for item in saved.items)
 
 
 async def test_confirmation_link_carries_user_and_redirect(shortlinks: ShortLinkService, db: Database) -> None:
@@ -123,4 +158,4 @@ async def test_email_confirmation_is_recorded(subscriptions: SubscriptionService
     await subscriptions.confirm_email(viewer)
 
     saved = await subscriptions.list_for_user(viewer)
-    assert any(item.template_code == 'email_confirmed' and item.enabled for item in saved)
+    assert any(item.template_code == 'email_confirmed' and item.enabled for item in saved.items)

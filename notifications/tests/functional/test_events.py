@@ -170,6 +170,52 @@ def test_viewer_without_email_is_skipped(
     mailbox.expect_no_letter(f'{login}@example.com', within=5)
 
 
+def test_unsubscribe_link_from_the_letter_works(
+    api_url: str, service_headers: dict[str, str], viewer: Viewer, template: str,
+) -> None:
+    """Ссылка отписки **из письма** действительно отписывает.
+
+    Проверять эндпоинт отдельно недостаточно: письмо может нести ссылку без
+    идентификатора и подписи, и тогда отписаться из письма нельзя, хотя сам
+    эндпоинт работает. Именно так и было до этой проверки.
+    """
+    send_event(
+        api_url, service_headers,
+        template_code=template,
+        audience={'kind': 'users', 'user_ids': [viewer.user_id]},
+        context={'film_title': 'Матрица'},
+    )
+    letter = mailbox.wait_for_letter(viewer.email)
+
+    link = _unsubscribe_link_of(letter.html)
+    assert link is not None, 'в письме нет ссылки отписки'
+    response = requests.get(link, timeout=10)
+
+    assert response.status_code == HTTPStatus.NO_CONTENT
+    # Отписка видна зрителю: иначе он не поймёт, почему письма пропали, и не
+    # сможет вернуться.
+    listed = requests.get(f'{api_url}/me/subscriptions', headers=viewer.auth_headers, timeout=10)
+    assert listed.json()['unsubscribed_all'] is True
+    # И, главное, следующее письмо не приходит.
+    mailbox.clear()
+    send_event(
+        api_url, service_headers,
+        template_code=template,
+        audience={'kind': 'users', 'user_ids': [viewer.user_id]},
+        context={'film_title': 'Матрица'},
+    )
+    mailbox.expect_no_letter(viewer.email, within=8)
+
+
+def _unsubscribe_link_of(html: str) -> str | None:
+    """Достаёт ссылку отписки из письма так же, как её нажал бы человек."""
+    import html as html_module
+    import re
+
+    found = re.search(r'href="([^"]*unsubscribe[^"]*)"', html)
+    return html_module.unescape(found.group(1)) if found else None
+
+
 def test_letter_has_plain_and_html_parts(
     api_url: str, service_headers: dict[str, str], viewer: Viewer, template: str,
 ) -> None:

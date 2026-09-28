@@ -145,6 +145,44 @@ async def test_broken_template_skips_one_recipient_not_whole_batch(
     assert built == 2
 
 
+async def test_unsubscribe_link_is_personal_and_signed(
+    assembly: AssemblyService, db: Database, directory: FakeContactDirectory, publisher: FakePublisher,
+) -> None:
+    """Ссылка отписки в письме содержит идентификатор зрителя и подпись.
+
+    Без них переход из письма упирается в проверку параметров и отписаться
+    нельзя. Общая ссылка на всех — это, по сути, её отсутствие.
+    """
+    db.template_versions[('new_episode', 1)] = template(
+        'new_episode', subject='Привет', body='<a href="{{ unsubscribe_url }}">Отписаться</a>',
+    )
+    viewer = uuid4()
+    directory.recipients = {viewer: recipient(viewer)}
+
+    await assembly.assemble(render_message([viewer]), now=NOON_MSK)
+
+    body = publisher.of(STAGE_SEND)[0]['body']
+    assert f'user_id={viewer}' in body
+    assert 'token=' in body
+    assert body.count('&amp;') == 1
+
+
+async def test_unsubscribe_links_differ_between_viewers(
+    assembly: AssemblyService, db: Database, directory: FakeContactDirectory, publisher: FakePublisher,
+) -> None:
+    """У двух зрителей ссылки отписки разные: по чужой отписать нельзя."""
+    db.template_versions[('new_episode', 1)] = template(
+        'new_episode', subject='Привет', body='{{ unsubscribe_url }}',
+    )
+    first, second = uuid4(), uuid4()
+    directory.recipients = {first: recipient(first), second: recipient(second)}
+
+    await assembly.assemble(render_message([first, second]), now=NOON_MSK)
+
+    links = {message['body'] for message in publisher.of(STAGE_SEND)}
+    assert len(links) == 2
+
+
 def test_idempotency_key_is_stable_for_same_event_and_viewer() -> None:
     """Один и тот же ключ у повторной сборки того же события — иначе защита от дублей не работает."""
     message = render_message([uuid4()])

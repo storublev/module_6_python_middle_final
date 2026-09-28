@@ -64,6 +64,9 @@ class Database:
     campaign_context: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     campaign_runs: set[tuple[UUID, str]] = field(default_factory=set)
     links: dict[str, ShortLink] = field(default_factory=dict)
+    # Кто отписался от всего: у такого зрителя записей подписок может не быть
+    # вовсе, а писать ему всё равно нельзя.
+    unsubscribed: set[UUID] = field(default_factory=set)
 
 
 class FakeEventStore(EventStore):
@@ -129,6 +132,8 @@ class FakeSubscriptionRepository(SubscriptionRepository):
     async def set_enabled(
         self, user_id: UUID, template_code: str, channel: Channel, enabled: bool,
     ) -> Subscription:
+        if enabled:
+            self.db.unsubscribed.discard(user_id)
         subscription = Subscription(
             user_id=user_id, template_code=template_code, channel=channel, enabled=enabled, updated_at=now(),
         )
@@ -136,9 +141,13 @@ class FakeSubscriptionRepository(SubscriptionRepository):
         return subscription
 
     async def unsubscribe_all(self, user_id: UUID) -> None:
+        self.db.unsubscribed.add(user_id)
         for key, item in list(self.db.subscriptions.items()):
             if key[0] == user_id:
                 self.db.subscriptions[key] = item.model_copy(update={'enabled': False})
+
+    async def is_unsubscribed(self, user_ids: Sequence[UUID]) -> set[UUID]:
+        return {user_id for user_id in user_ids if user_id in self.db.unsubscribed}
 
     async def filter_enabled(
         self, user_ids: Sequence[UUID], template_code: str, channel: Channel,
@@ -147,6 +156,7 @@ class FakeSubscriptionRepository(SubscriptionRepository):
             key[0] for key, item in self.db.subscriptions.items()
             if key[1] == template_code and key[2] == channel.value and not item.enabled
         }
+        disabled |= self.db.unsubscribed
         return {user_id for user_id in user_ids if user_id not in disabled}
 
 

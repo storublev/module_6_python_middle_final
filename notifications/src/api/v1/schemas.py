@@ -144,6 +144,17 @@ class SubscriptionSchema(Schema):
     updated_at: datetime = Field(description='Когда изменена')
 
 
+class PreferencesSchema(Schema):
+    """Настройки уведомлений зрителя."""
+
+    unsubscribed_all: bool = Field(
+        description='Зритель отписался от всего. Включение любого типа снимает этот признак',
+    )
+    items: list[SubscriptionSchema] = Field(
+        description='Явно заданные настройки. Типа, которого здесь нет, зритель ещё не отключал',
+    )
+
+
 class SubscriptionUpdateSchema(BaseModel):
     """Включение или выключение типа уведомлений."""
 

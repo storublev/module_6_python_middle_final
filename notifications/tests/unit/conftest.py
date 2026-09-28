@@ -123,7 +123,7 @@ def assembly(
     publisher: FakePublisher,
     quiet_hours: QuietHours,
 ) -> AssemblyService:
-    return AssemblyService(templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL)
+    return AssemblyService(templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL, SECRET_KEY)
 
 
 @pytest.fixture
