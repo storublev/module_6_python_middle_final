@@ -11,10 +11,16 @@
 | AS IS — система на конец седьмого спринта | [c4-container-as-is.puml](c4-container-as-is.puml) | [c4-container-as-is.png](c4-container-as-is.png) |
 | TO BE — та же система после восьмого спринта | [c4-container-to-be.puml](c4-container-to-be.puml) | [c4-container-to-be.png](c4-container-to-be.png) |
 | TO BE — после девятого спринта: контент и наблюдаемость | [c4-container-sprint9.puml](c4-container-sprint9.puml) | [c4-container-sprint9.png](c4-container-sprint9.png) |
+| TO BE — после десятого спринта: сервис уведомлений | [c4-container-sprint10.puml](c4-container-sprint10.puml) | [c4-container-sprint10.png](c4-container-sprint10.png) |
 | Путь события (дополнительная) | [event-flow.puml](event-flow.puml) | [event-flow.png](event-flow.png) |
+| Путь уведомления по трём сценариям (дополнительная) | [notification-flow.puml](notification-flow.puml) | [notification-flow.png](notification-flow.png) |
 
 Картинки пересобираются из исходников: `make -C docs/architecture` (нужен
 Docker, образ `plantuml/plantuml`).
+
+Проект сервиса уведомлений десятого спринта — отдельным документом:
+[notifications.md](notifications.md): гибридная подготовка данных по трём
+сценариям, компоненты, очереди и ADR-9…ADR-14.
 
 ## AS IS: что есть сейчас
 

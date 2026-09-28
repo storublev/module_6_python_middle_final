@@ -1,0 +1,75 @@
+@startuml notification-flow
+' Путь уведомления по трём сценариям задания 1: где собираются данные и
+' почему именно там. Схема уровня 2 показывает связи, но не показывает, кто
+' что успевает сделать, — на это отвечает последовательность.
+skinparam backgroundColor #ffffff
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 220
+
+title Гибридная подготовка данных: три сценария
+
+actor "Источник события" as src
+participant "API уведомлений" as api
+queue "RabbitMQ\nточка обмена notify" as mq
+participant "Планировщик" as plan
+participant "Сборщик" as render
+participant "Отправщик" as send
+database "База уведомлений" as db
+participant "Сервис авторизации" as auth
+database "Витрина\n(ClickHouse)" as mart
+participant "Почтовый сервер" as smtp
+
+== Сценарий 1. Мгновенное уведомление от части сайта ==
+
+src -> api: событие: тип, content_id,\nверсия данных, event_id,\nадресат или правило
+note right of src: данные события источник\nуже знает — собирать нечего
+api -> db: проверка event_id
+api -> mq: publish notify.plan\n(confirm, delivery_mode=2)
+api --> src: 202 Accepted (< 100 мс)
+
+mq -> plan: notify.plan
+plan -> db: подписки, окно суток,\nполитика контактов
+plan -> mq: notify.render\nпачками по 1 000
+mq -> render: notify.render
+render -> auth: email и имя\n**одним запросом на пачку**
+render -> db: актуально ли ещё событие?
+render -> mq: notify.send\n(готовые письма)
+mq -> send: notify.send
+send -> db: ключ идемпотентности\n(вставка до отправки)
+send -> smtp: письмо через пул соединений
+send -> db: статус «отправлено»
+
+== Сценарий 2. Периодическая рассылка на большую группу ==
+
+src -> mart: **тяжёлый запрос один раз**\nна сегмент → витрина
+note right of src: здесь источник —\nгенератор событий по cron
+src -> db: ключ запуска\n(тип рассылки, период)
+note right of db: уникальный индекс:\nповторный запуск после простоя\nне разошлёт рассылку второй раз
+src -> api: событие **на сегмент**,\nа не на человека
+api -> mq: publish notify.plan
+mq -> plan: notify.plan
+plan -> mq: notify.render пачками
+mq -> render: notify.render
+render -> mart: персональная статистика\n**по ключу, дёшево**
+render -> auth: email и имя пачкой
+render -> mq: notify.send
+mq -> send: notify.send
+send -> smtp: письма с ограничением темпа
+
+== Сценарий 3. Ручная рассылка менеджера ==
+
+src -> db: сохранение шаблона\n+ валидация (синтаксис,\nразрешённые переменные, рендер)
+note right of src: здесь источник —\nадмин-панель менеджера
+src -> api: заявка: template_id, сегмент,\nканал, время запуска
+note right of api: текст письма не передаётся —\nон лежит в хранилище шаблонов
+api -> mq: publish notify.plan\n(сразу или по расписанию)
+note over mq, send: дальше путь совпадает со сценарием 1
+
+== Отказы ==
+
+send -> smtp: попытка отправки
+smtp --> send: временная ошибка
+send -> mq: в Dead Letter Exchange →\nnotify.retry с задержкой
+note right of mq: очередь не встаёт:\nпроблемное сообщение\nуходит в сторону
+
+@enduml
