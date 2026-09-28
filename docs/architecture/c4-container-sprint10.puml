@@ -1,0 +1,91 @@
+@startuml c4-container-sprint10
+' Схема системы после десятого спринта. За основу взята схема девятого
+' спринта; цветом выделено то, ради чего затевался этот спринт: зелёное —
+' новое, оранжевое — существующее, но изменённое. Наблюдаемость (ELK, Sentry,
+' Jaeger) на схеме не повторяется — она есть на c4-container-sprint9.puml и в
+' этом спринте не меняется, кроме того, что новые сервисы к ней подключаются.
+!include <C4/C4_Container>
+
+title Онлайн-кинотеатр — TO BE (C4, уровень 2): сервис уведомлений
+
+AddElementTag("new", $bgColor="#1f7a3d", $fontColor="#ffffff", $borderColor="#0f4423", $legendText="Новый элемент")
+AddElementTag("changed", $bgColor="#b35c00", $fontColor="#ffffff", $borderColor="#7a3f00", $legendText="Изменённый элемент")
+AddRelTag("new", $textColor="#1f7a3d", $lineColor="#1f7a3d", $legendText="Новое взаимодействие")
+
+Person(viewer, "Зритель", "Смотрит фильмы и получает письма и уведомления в открытой вкладке")
+Person(staff, "Редактор каталога", "Ведёт фильмы, жанры и персоны")
+Person(manager, "Менеджер по маркетингу", "Готовит шаблоны писем и запускает рассылки", $tags="new")
+
+System_Ext(social, "Яндекс ID / Google", "Внешние поставщики OAuth 2.0")
+System_Ext(smtp, "Почтовый сервер", "SMTP поверх TLS или API транзакционной рассылки", $tags="new")
+
+System_Boundary(cinema, "Онлайн-кинотеатр") {
+    Container(nginx, "Шлюз", "nginx 1.27", "Добавлены маршруты /notify/, /ws/ и /s/ для коротких ссылок", $tags="changed")
+
+    Container(api, "Async API", "Python 3.12, FastAPI", "Отдаёт фильмы, жанры и персоны")
+    Container(content, "Сервис пользовательского контента", "Python 3.12, FastAPI, Beanie", "Лайки, рецензии и закладки")
+    Container(ugc, "Сервис сбора событий", "Python 3.12, Flask + gevent", "Принимает пачки событий и кладёт их в брокер")
+    ContainerDb(clickhouse, "Аналитическое хранилище", "ClickHouse 25", "События за три года; источник витрин для персональных писем")
+
+    Container(auth, "Сервис авторизации", "Python 3.12, FastAPI", "Пользователи, права; отдаёт email и имя пачкой по списку user_id", $tags="changed")
+    Container(admin, "Админка", "Python 3.12, Django 5.2", "Каталог и новое приложение рассылок: шаблоны, сегменты, запуск", $tags="changed")
+
+    Container(notify_api, "API уведомлений", "Python 3.12, FastAPI", "Принимает события и заявки на рассылку, проверяет идемпотентность, публикует в брокер. Рассылкой не занимается", $tags="new")
+    ContainerQueue(rabbit, "Брокер уведомлений", "RabbitMQ 4, точка обмена notify (topic) + Dead Letter Exchange", "Очереди notify.plan, notify.render, notify.send, notify.retry, notify.dead", $tags="new")
+
+    Container(planner, "Воркер-планировщик", "Python 3.12, pika", "Разворачивает адресацию в получателей, применяет подписки и окно суток, режет на пачки", $tags="new")
+    Container(render, "Воркер-сборщик", "Python 3.12, Jinja2", "Пачкой добирает данные получателей, проверяет актуальность, рендерит письмо", $tags="new")
+    Container(sender, "Воркер-отправщик", "Python 3.12, smtplib", "Отправляет через пул SMTP-соединений с ограничением темпа", $tags="new")
+    Container(scheduler, "Генератор событий", "Python 3.12, cron", "По расписанию строит витрины и публикует периодические рассылки", $tags="new")
+
+    Container(notify_ws, "Websocket-шлюз", "Python 3.12, websockets", "Держит соединения зрителей, доставляет мгновенные уведомления в открытую вкладку", $tags="new")
+    Container(shortener, "Сокращатель ссылок", "Python 3.12, FastAPI", "Выдаёт короткий ключ, считает переходы, отдаёт 301 или 404 для просроченных", $tags="new")
+
+    ContainerDb(notify_pg, "База уведомлений", "PostgreSQL 16", "Подписки и настройки, шаблоны, записи уведомлений с версией данных, расписания, история отправок, короткие ссылки", $tags="new")
+}
+
+Rel(viewer, nginx, "Каталог, оценки, переходы по коротким ссылкам", "HTTPS/JSON")
+Rel(viewer, nginx, "Держит websocket-соединение", "WSS", $tags="new")
+Rel(viewer, smtp, "Читает письма в своей почте", "IMAP/POP", $tags="new")
+Rel(staff, nginx, "Работа с каталогом", "HTTPS")
+Rel(manager, nginx, "Шаблоны, сегменты, запуск рассылки", "HTTPS", $tags="new")
+
+Rel(nginx, api, "/api/", "HTTP")
+Rel(nginx, auth, "/auth/", "HTTP")
+Rel(nginx, admin, "/admin/", "HTTP")
+Rel(nginx, ugc, "/ugc/", "HTTP")
+Rel(nginx, content, "/content/", "HTTP")
+Rel(nginx, notify_api, "/notify/", "HTTP", $tags="new")
+Rel(nginx, notify_ws, "/ws/ с проверкой токена", "HTTP Upgrade", $tags="new")
+Rel(nginx, shortener, "/s/", "HTTP", $tags="new")
+
+Rel(auth, notify_api, "user-reporting.v1.registered — приветственное письмо", "HTTP/JSON", $tags="new")
+Rel(content, notify_api, "review-reporting.v1.voted — за рецензию проголосовали", "HTTP/JSON", $tags="new")
+Rel(admin, notify_api, "campaign-reporting.v1.started — ручная рассылка", "HTTP/JSON", $tags="new")
+Rel(admin, notify_pg, "Шаблоны, сегменты, расписания", "psycopg", $tags="new")
+Rel(scheduler, notify_api, "Периодические рассылки, событие на сегмент", "HTTP/JSON", $tags="new")
+
+Rel(notify_api, rabbit, "Публикует с confirm, delivery_mode=2", "AMQP", $tags="new")
+Rel(notify_api, notify_pg, "Идемпотентность по event_id, подписки", "asyncpg", $tags="new")
+
+Rel(planner, rabbit, "Читает notify.plan, пишет notify.render", "AMQP", $tags="new")
+Rel(planner, notify_pg, "Подписки, окно суток, политика контактов", "asyncpg", $tags="new")
+Rel(render, rabbit, "Читает notify.render, пишет notify.send", "AMQP", $tags="new")
+Rel(render, auth, "Берёт email и имя пачкой по списку user_id", "HTTP/JSON", $tags="new")
+Rel(render, clickhouse, "Читает витрину персональной статистики по ключу", "HTTP", $tags="new")
+Rel(render, shortener, "Заводит короткие ссылки для письма", "HTTP/JSON", $tags="new")
+Rel(sender, rabbit, "Читает notify.send, неудачное — в Dead Letter Exchange", "AMQP", $tags="new")
+Rel(sender, smtp, "Отправляет письма через пул соединений", "SMTP/TLS", $tags="new")
+Rel(sender, notify_pg, "Пишет факт отправки — ключ идемпотентности", "asyncpg", $tags="new")
+Rel(sender, notify_ws, "Мгновенное уведомление в открытую вкладку", "HTTP/JSON", $tags="new")
+
+Rel(scheduler, clickhouse, "Строит витрину: один запрос на сегмент", "HTTP", $tags="new")
+Rel(scheduler, notify_pg, "Ключ запуска рассылки и версии данных", "asyncpg", $tags="new")
+Rel(notify_ws, notify_pg, "Непрочитанные уведомления зрителя", "asyncpg", $tags="new")
+Rel(shortener, notify_pg, "Короткие ссылки и счётчик переходов", "asyncpg", $tags="new")
+
+Rel(auth, social, "Обмен кода на токены, профиль", "HTTPS/OAuth 2.0")
+Rel(ugc, clickhouse, "События доезжают через брокер и ETL", "через Kafka")
+
+SHOW_LEGEND()
+@enduml
