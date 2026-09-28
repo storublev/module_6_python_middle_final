@@ -8,8 +8,10 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # Только pull request в мастер-ветку: этого требует урок «Несколько слов
+  # про CI». Пуш в main закрыт настройкой репозитория (Settings → Branches →
+  # Branch protection rules), поэтому отдельного запуска на push не нужно —
+  # всё, что попадает в main, проходит через pull request.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -29,7 +31,7 @@ jobs:
         # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
         # сервиса свои pyproject.toml и setup.cfg, и запускать линтер из корня
         # нельзя — он возьмёт чужие настройки.
-        part: [".", "auth", "admin_panel", "etl", "ugc", "ugc_etl", "ugc_content", "research"]
+        part: [".", "auth", "admin_panel", "etl", "ugc", "ugc_etl", "ugc_content", "notifications", "research"]
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +54,52 @@ jobs:
         working-directory: ${{ matrix.part }}
         run: flake8 .
 
+  style:
+    name: Отчёт о стиле HTML-файлом
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          cache: pip
+
+      - name: Поставить линтеры и генератор отчёта
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8==7.3.0 flake8-docstrings==1.7.0 flake8-html==0.4.3 \
+                      wemake-python-styleguide==1.4.0
+
+      - name: Отчёт по частям репозитория
+        # Отчёт нужен как артефакт, а не как приговор: `|| true` не прячет
+        # ошибки — сами линтеры гоняются задачей lint выше и валят сборку там.
+        # Здесь собирается читаемый HTML, по которому видно всю картину сразу.
+        run: |
+          for part in . auth admin_panel etl ugc ugc_etl ugc_content notifications research; do
+            (cd "$part" && flake8 . --format=html --htmldir="$GITHUB_WORKSPACE/lint-report/$part") || true
+          done
+
+      - name: Отчёт wemake-python-styleguide по новому сервису
+        # wemake — самый строгий из распространённых наборов правил, и
+        # включать его как обязательный на код четырёх спринтов значит
+        # переписать проект ради линтера. Поэтому он советчик: отчёт есть,
+        # сборку не валит. Обязательные правила проекта проверяют ruff и
+        # flake8 в задаче lint.
+        continue-on-error: true
+        working-directory: notifications
+        run: |
+          flake8 --select=WPS src --format=html \
+                 --htmldir="$GITHUB_WORKSPACE/lint-report/wemake-notifications" || true
+
+      - name: Сохранить отчёт
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: lint-report
+          if-no-files-found: warn
+
   types:
     name: Типы (${{ matrix.part }})
     runs-on: ubuntu-latest
@@ -62,7 +110,7 @@ jobs:
         # mypy не знает ни про модели, ни про менеджеры и выдаёт ошибки на
         # ровном месте. Это отдельная задача, а не повод ослабить проверку
         # остальным.
-        part: [".", "auth", "ugc", "ugc_etl", "ugc_content"]
+        part: [".", "auth", "ugc", "ugc_etl", "ugc_content", "notifications"]
     steps:
       - uses: actions/checkout@v4
 
@@ -86,12 +134,19 @@ jobs:
         run: mypy src --ignore-missing-imports
 
   tests-matrix:
-    name: Тесты сервиса контента на Python ${{ matrix.python-version }}
+    name: ${{ matrix.part }} на Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # Урок называет Python 3.8 и 3.9. Обе версии сняты с поддержки
+        # (3.8 — в октябре 2024, 3.9 — в октябре 2025), и код проекта на них
+        # не запустится: `X | None` в аннотациях появился в 3.10. Поэтому
+        # матрица начинается с 3.10 — самой старой версии, которая ещё
+        # поддерживается. Смысл требования — «проверьте на нескольких
+        # версиях» — выполняется.
         python-version: ["3.10", "3.11", "3.12"]
+        part: ["ugc_content", "notifications"]
     steps:
       - uses: actions/checkout@v4
 
@@ -102,17 +157,17 @@ jobs:
           cache: pip
 
       - name: Поставить зависимости
-        working-directory: ugc_content
+        working-directory: ${{ matrix.part }}
         run: |
           python -m pip install --upgrade pip
           pip install -r tests/unit/requirements.txt
 
       - name: Unit-тесты
-        working-directory: ugc_content/tests/unit
+        working-directory: ${{ matrix.part }}/tests/unit
         run: python -m pytest
 
       - name: Проверить типы под эту версию Python
-        working-directory: ugc_content
+        working-directory: ${{ matrix.part }}
         # mypy знает, какие возможности стандартной библиотеки появились в
         # какой версии: так видно, что сервис не использует ничего новее 3.10.
         run: |
@@ -129,7 +184,7 @@ jobs:
         # (дженерики в синтаксисе PEP 695, StrEnum, datetime.UTC), поэтому у
         # них одна версия. Матрица версий — у сервиса контента выше: он
         # написан совместимым с 3.10 намеренно.
-        part: [".", "auth", "ugc", "ugc_etl", "admin_panel"]
+        part: [".", "auth", "ugc", "ugc_etl", "admin_panel", "notifications"]
     steps:
       - uses: actions/checkout@v4
 
@@ -185,12 +240,11 @@ jobs:
   notify:
     name: Уведомление в Telegram
     runs-on: ubuntu-latest
-    # needs — ключевое слово уровня job, а не step: уведомление уходит только
-    # после того, как все проверки закончились успехом.
-    needs: [lint, types, tests-matrix, tests, etl-tests]
-    # Условия по событию здесь нет намеренно: уведомление должно приходить и
-    # на pull request, иначе на странице проверок PR задача выглядит
-    # пропущенной, и непонятно, работает ли она вообще.
+    # needs — ключевое слово уровня job, а не step. `if: always()` нужен,
+    # чтобы уведомление уходило и при падении: урок требует сообщать и об
+    # успехе, и об ошибке с названием упавшего шага.
+    needs: [lint, style, types, tests-matrix, tests, etl-tests]
+    if: always()
     env:
       # Секреты нельзя прочитать в `if` напрямую — контекст secrets там
       # недоступен. Поэтому кладём их в переменные окружения задачи: их `if`
@@ -198,27 +252,57 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
+      - name: Собрать текст сообщения
+        id: message
+        env:
+          # Результаты всех задач одной строкой JSON: по ним видно, какие
+          # именно упали.
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import json, os
+
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] not in ('success', 'skipped')]
+          project = os.environ['GITHUB_REPOSITORY'].split('/')[-1]
+          commit = os.environ['GITHUB_SHA'][:8]
+          outcome = 'with error' if failed else 'successfully'
+          lines = [f'{project}: Pipeline for {commit} finished {outcome}!']
+          lines += [f'{name} failed' for name in failed]
+          print('status=' + ('failure' if failed else 'success'))
+          print('text<<EOF')
+          print('\n'.join(lines))
+          print('EOF')
+          PYTHON
+
       - name: Отправить сообщение
         if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         uses: appleboy/telegram-action@v1.0.1
         with:
           to: ${{ env.TELEGRAM_CHAT_ID }}
           token: ${{ env.TELEGRAM_BOT_TOKEN }}
-          # Ветка берётся из head_ref (у pull request) или ref_name (у push):
-          # у pull request в ref_name лежит служебное «<номер>/merge».
+          # Формат из урока «Несколько слов про CI»: имя репозитория, хеш
+          # коммита, итог и названия упавших шагов. Ветка и ссылка на сборку —
+          # сверх формата: без них по сообщению непонятно, куда идти смотреть.
           message: |
-            ✅ CI пройден: ${{ github.repository }}
+            ${{ steps.message.outputs.status == 'success' && '✅' || '❌' }} ${{ steps.message.outputs.text }}
             Ветка: ${{ github.head_ref || github.ref_name }}
-            Событие: ${{ github.event_name }}
             Автор: ${{ github.actor }}
             Сборка: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Сообщить, что секреты не заданы
         if: env.TELEGRAM_BOT_TOKEN == '' || env.TELEGRAM_CHAT_ID == ''
         # Не ошибка: в форке и в свежем клоне секретов нет, и валить из-за
-        # этого зелёную сборку неправильно. Но и молчать нельзя — иначе
-        # «уведомление не пришло» выясняется много позже.
+        # этого сборку неправильно. Но и молчать нельзя — иначе «уведомление
+        # не пришло» выясняется много позже.
         run: |
           echo '::warning::Уведомление не отправлено: задайте секреты' \
                'TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в Settings →' \
                'Secrets and variables → Actions'
+
+      - name: Провалить сборку, если упала любая проверка
+        # `if: always()` выше означает, что эта задача завершилась бы успехом
+        # даже при падении соседних. Без этого шага общий статус сборки был бы
+        # зелёным при красных проверках.
+        if: steps.message.outputs.status != 'success'
+        run: exit 1
