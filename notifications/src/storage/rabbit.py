@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aio_pika
-from aio_pika.abc import AbstractIncomingMessage, AbstractRobustChannel, AbstractRobustConnection
+from aio_pika.abc import AbstractChannel, AbstractIncomingMessage, AbstractRobustConnection
 
 from core.request_id import HEADER as REQUEST_ID_HEADER
 from storage.base import MessagePublisher, StorageUnavailableError
@@ -69,7 +69,7 @@ class RabbitTopology:
     def __init__(self, retry_delay_ms: int) -> None:
         self._retry_delay_ms = retry_delay_ms
 
-    async def declare(self, channel: AbstractRobustChannel) -> None:
+    async def declare(self, channel: AbstractChannel) -> None:
         events = await channel.declare_exchange(EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
         internal = await channel.declare_exchange(INTERNAL_EXCHANGE, aio_pika.ExchangeType.DIRECT, durable=True)
         dlx = await channel.declare_exchange(DLX_EXCHANGE, aio_pika.ExchangeType.DIRECT, durable=True)
@@ -108,8 +108,14 @@ class RabbitTopology:
 
 async def connect(
     url: str, prefetch: int, retry_delay_ms: int,
-) -> tuple[AbstractRobustConnection, AbstractRobustChannel]:
-    """Открывает устойчивое соединение и объявляет схему очередей."""
+) -> tuple[AbstractRobustConnection, AbstractChannel]:
+    """Открывает устойчивое соединение и объявляет схему очередей.
+
+    Канал аннотирован базовым `AbstractChannel`, а не «устойчивым» подтипом:
+    так его объявляет сама библиотека, и код одинаково собирается на всех
+    поддерживаемых версиях. Устойчивость даёт соединение — при обрыве оно
+    переоткрывает канал само, и ничего специфичного от подтипа нам не нужно.
+    """
     try:
         connection = await aio_pika.connect_robust(url)
         channel = await connection.channel()
@@ -123,7 +129,7 @@ async def connect(
 class RabbitPublisher(MessagePublisher):
     """Публикация сообщений с подтверждением и записью на диск."""
 
-    def __init__(self, channel: AbstractRobustChannel) -> None:
+    def __init__(self, channel: AbstractChannel) -> None:
         self._channel = channel
 
     async def publish(self, stage: str, payload: dict[str, Any], request_id: str) -> None:
@@ -167,7 +173,7 @@ def _encode(payload: dict[str, Any]) -> bytes:
 class RabbitConsumer:
     """Чтение очереди этапа с отложенным повтором и очередью разбора."""
 
-    def __init__(self, channel: AbstractRobustChannel, stage: str, max_attempts: int) -> None:
+    def __init__(self, channel: AbstractChannel, stage: str, max_attempts: int) -> None:
         self._channel = channel
         self._stage = stage
         self._max_attempts = max_attempts
