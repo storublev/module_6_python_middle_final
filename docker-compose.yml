@@ -17,6 +17,9 @@ x-auth-env: &auth-env
   AUTH_REDIS_PORT: 6379
   AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
   AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
+  # Служебный доступ к справочнику контактов: им пользуется сервис
+  # уведомлений, чтобы собрать письмо по одному user_id.
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
   # Вход через соцсети. Поставщик включается, только если заданы обе его
   # переменные; без них его эндпоинты отвечают 404, а сервис работает как прежде.
   AUTH_OAUTH_YANDEX_CLIENT_ID: ${AUTH_OAUTH_YANDEX_CLIENT_ID:-}
@@ -44,6 +47,10 @@ x-admin-env: &admin-env
   DJANGO_POSTGRES_USER: ${POSTGRES_USER:-app}
   DJANGO_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
   DJANGO_AUTH_API_URL: http://auth:8000
+  # Страницы рассылок ходят в сервис уведомлений служебным секретом:
+  # своего пользователя в нём у админки нет.
+  DJANGO_NOTIFY_API_URL: http://notify-api:8000
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
   DJANGO_STATIC_ROOT: /opt/app/staticfiles
 
 # Настройки сервиса сбора пользовательских действий. Ключ подписи токенов —
@@ -74,6 +81,39 @@ x-content-env: &content-env
   # Пустой DSN выключает отправку ошибок: локальный стек поднимается без Sentry.
   CONTENT_SENTRY_DSN: ${SENTRY_DSN:-}
   CONTENT_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
+# Настройки сервиса уведомлений. Секреты общие с сервисом авторизации: ключ
+# подписи токенов — потому что подпись проверяется тем же секретом, которым
+# выпущена, а служебный токен — потому что им сервис ходит в справочник
+# контактов, а админка и другие сервисы ходят в него самого.
+x-notify-env: &notify-env
+  NOTIFY_POSTGRES_HOST: notify-postgres
+  NOTIFY_POSTGRES_PORT: 5432
+  NOTIFY_POSTGRES_DB: ${NOTIFY_POSTGRES_DB:-notifications}
+  NOTIFY_POSTGRES_USER: ${NOTIFY_POSTGRES_USER:-notifications}
+  NOTIFY_POSTGRES_PASSWORD: ${NOTIFY_POSTGRES_PASSWORD:?задайте NOTIFY_POSTGRES_PASSWORD в .env}
+  NOTIFY_RABBIT_URL: amqp://${RABBIT_USER:-notify}:${RABBIT_PASSWORD:?задайте RABBIT_PASSWORD в .env}@rabbitmq:5672/
+  NOTIFY_LOG_LEVEL: ${NOTIFY_LOG_LEVEL:-INFO}
+  NOTIFY_AUTH_URL: http://auth:8000
+  NOTIFY_WEBSOCKET_URL: http://notify-ws:8000
+  NOTIFY_PUBLIC_BASE_URL: ${NOTIFY_PUBLIC_BASE_URL:-http://localhost}
+  # Почтовый сервер. По умолчанию — приёмник Mailpit в этом же стеке: на нём
+  # видно, что именно ушло бы зрителю, а настоящую почту в учебном стенде
+  # рассылать незачем. Для реального сервера достаточно сменить эти переменные.
+  NOTIFY_SMTP_HOST: ${NOTIFY_SMTP_HOST:-mailpit}
+  NOTIFY_SMTP_PORT: ${NOTIFY_SMTP_PORT:-1025}
+  NOTIFY_SMTP_USE_TLS: ${NOTIFY_SMTP_USE_TLS:-false}
+  NOTIFY_SMTP_USER: ${NOTIFY_SMTP_USER:-}
+  NOTIFY_SMTP_PASSWORD: ${NOTIFY_SMTP_PASSWORD:-}
+  NOTIFY_SMTP_FROM: ${NOTIFY_SMTP_FROM:-Practix <noreply@practix.local>}
+  NOTIFY_RETRY_DELAY: ${NOTIFY_RETRY_DELAY:-60}
+  NOTIFY_QUIET_HOURS_START: ${NOTIFY_QUIET_HOURS_START:-21}
+  NOTIFY_QUIET_HOURS_END: ${NOTIFY_QUIET_HOURS_END:-9}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  NOTIFY_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  NOTIFY_SENTRY_DSN: ${SENTRY_DSN:-}
+  NOTIFY_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
 
 # Настройки ETL событий. Топик тот же, что у сервиса приёма: это две стороны
 # одной трубы, и расходиться им нельзя.
@@ -456,6 +496,146 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Сервис уведомлений ──────────────────────────────────────────────────
+  # Пять процессов из одного образа: API, три воркера конвейера и генератор
+  # событий, плюс websocket-шлюз. Разделение не декоративное: у сборщика узкое
+  # место — чужие сервисы, у отправителя — почтовый сервер, и масштабируются
+  # они независимо (ADR-10 в docs/architecture/notifications.md).
+  notify-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${NOTIFY_POSTGRES_DB:-notifications}
+      POSTGRES_USER: ${NOTIFY_POSTGRES_USER:-notifications}
+      POSTGRES_PASSWORD: ${NOTIFY_POSTGRES_PASSWORD:?задайте NOTIFY_POSTGRES_PASSWORD в .env}
+    volumes:
+      - notify_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFY_POSTGRES_USER:-notifications}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER:-notify}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:?задайте RABBIT_PASSWORD в .env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      # Панель управления брокером: по ней видно длину очередей и возраст
+      # самого старого сообщения — единственную метрику, по которой понятно,
+      # что рассылка встала.
+      - "${RABBIT_UI_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # Приёмник почты для стенда: письма никуда не уходят, но их видно целиком.
+  # Настоящий SMTP подключается сменой NOTIFY_SMTP_* — код при этом не меняется.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    restart: unless-stopped
+
+  notify-migrations:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      notify-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  notify-api:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      WEB_CONCURRENCY: ${NOTIFY_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/notify/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  notify-planner:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: plan
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-render:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: render
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-sender:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: send
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-scheduler:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "scheduler.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-ws:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "ws.py"]
+    expose:
+      - 8000
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     env_file: *env-file
@@ -477,6 +657,8 @@ services:
       - django-admin
       - ugc
       - ugc-content
+      - notify-api
+      - notify-ws
     restart: unless-stopped
 
 volumes:
@@ -493,3 +675,5 @@ volumes:
   auth_postgres_data:
   auth_redis_data:
   admin_static:
+  notify_postgres_data:
+  rabbitmq_data:
