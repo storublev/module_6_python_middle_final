@@ -124,8 +124,17 @@ else
     [ "$status" = 200 ] && ok "/notify/api/v1/health → $status" || bad "/notify/api/v1/health → $status"
 
     # Зрителю нужны контакты: без адреса письмо собрать не из чего.
+    #
+    # Часовой пояс подбирается так, чтобы у зрителя сейчас был полдень.
+    # Сервис не пишет ночью (окно тишины 21:00–09:00 по времени получателя),
+    # и с фиксированным поясом эта проверка падала бы каждую ночь — не
+    # потому, что стенд сломан, а потому, что он работает правильно.
+    OFFSET=$(( (12 - $(date -u +%-H) + 24) % 24 ))
+    [ "$OFFSET" -gt 12 ] && OFFSET=$(( OFFSET - 24 ))
+    # В именах Etc/GMT знак обратный: Etc/GMT-3 — это UTC+3.
+    if [ "$OFFSET" -ge 0 ]; then VIEWER_TZ="Etc/GMT-$OFFSET"; else VIEWER_TZ="Etc/GMT+$(( -OFFSET ))"; fi
     profile=$(curl -s -X PATCH "$BASE/auth/api/v1/users/me/profile" "${AUTH[@]}" \
-        -d "{\"email\": \"$LOGIN\", \"first_name\": \"Проверка\", \"timezone\": \"Europe/Moscow\"}")
+        -d "{\"email\": \"$LOGIN\", \"first_name\": \"Проверка\", \"timezone\": \"$VIEWER_TZ\"}")
     printf '%s' "$profile" | grep -q "$LOGIN" && ok 'контакты зрителя заполнены' || bad "контакты: $profile"
 
     EVENT_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
@@ -157,7 +166,8 @@ else
         [ "${found:-0}" -ge 1 ] 2>/dev/null && delivered=1 && break
         sleep 1
     done
-    [ "$delivered" = 1 ] && ok "письмо доставлено (см. $MAILPIT)" || bad 'письмо не дошло за 30 с'
+    [ "$delivered" = 1 ] && ok "письмо доставлено (см. $MAILPIT)" \
+        || bad "письмо не дошло за 30 с (часовой пояс проверки: $VIEWER_TZ)"
 
     # Короткая ссылка: сокращаем и проверяем перенаправление.
     link=$(curl -s -X POST "$BASE/notify/api/v1/links" "${SERVICE[@]}" \
