@@ -1,0 +1,12 @@
+{% extends "campaigns/base.html" %}
+{% load i18n %}
+
+{% block inner %}
+  <h1>{% translate "New mailing" %}</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <p><button type="submit" class="default">{% translate "Create" %}</button></p>
+  </form>
+  <p>{% translate "Leaving both the send time and the schedule empty sends the mailing right away." %}</p>
+{% endblock %}

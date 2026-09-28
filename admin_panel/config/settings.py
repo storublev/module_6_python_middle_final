@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # перепроверить доступ нечем. Дальше сессия админки закрывается.
     auth_unavailable_grace: float = 300.0
 
+    # Сервис уведомлений: менеджер ведёт в админке шаблоны и рассылки, а
+    # хранятся они там. Своего пользователя у админки в нём нет, поэтому она
+    # опознаётся общим служебным секретом.
+    notify_api_url: str = 'http://notify-api:8000'
+    notify_service_token: SecretStr = Field(default=SecretStr(''), validation_alias='AUTH_SERVICE_TOKEN')
+    notify_connect_timeout: float = 1.0
+    notify_read_timeout: float = 5.0
+
     static_root: Path = BASE_DIR / 'staticfiles'
     static_url: str = '/static/'
 
@@ -101,6 +109,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'movies.apps.MoviesConfig',
     'users.apps.UsersConfig',
+    'campaigns.apps.CampaignsConfig',
 ]
 
 MIDDLEWARE = [

@@ -16,6 +16,8 @@ COPY manage.py .
 COPY config/ config/
 COPY movies/ movies/
 COPY users/ users/
+# Страницы рассылок: шаблоны писем и запуск рассылок для менеджера.
+COPY campaigns/ campaigns/
 
 # Статика админки собирается в образ, а раздаёт её nginx из общего тома:
 # одноразовый контейнер копирует её туда при запуске стека.

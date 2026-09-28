@@ -1,0 +1,18 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate "Home" %}</a>
+    &rsaquo; <a href="{% url 'campaigns:campaigns' %}">{% translate "Mailings" %}</a>
+    {% block extra_breadcrumbs %}{% endblock %}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <p>
+    <a class="button" href="{% url 'campaigns:campaigns' %}">{% translate "Mailings" %}</a>
+    <a class="button" href="{% url 'campaigns:templates' %}">{% translate "Templates" %}</a>
+  </p>
+  {% block inner %}{% endblock %}
+{% endblock %}

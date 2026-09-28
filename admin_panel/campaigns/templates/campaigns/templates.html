@@ -1,0 +1,29 @@
+{% extends "campaigns/base.html" %}
+{% load i18n %}
+
+{% block inner %}
+  <h1>{% translate "Message templates" %}</h1>
+  <p><a class="button" href="{% url 'campaigns:template_create' %}">{% translate "New template" %}</a></p>
+  <table>
+    <thead>
+      <tr>
+        <th>{% translate "code" %}</th><th>{% translate "name" %}</th><th>{% translate "channel" %}</th>
+        <th>{% translate "subject" %}</th><th>{% translate "version" %}</th><th>{% translate "active" %}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in templates %}
+        <tr>
+          <td><a href="{% url 'campaigns:template_edit' item.code %}">{{ item.code }}</a></td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.channel }}</td>
+          <td>{{ item.subject }}</td>
+          <td>{{ item.version }}</td>
+          <td>{{ item.is_active|yesno }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6">{% translate "No templates yet" %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
