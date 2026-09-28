@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from api.dependencies import ProfileServiceDep, SocialAuthServiceDep
+from api.dependencies import DirectoryServiceDep, ProfileServiceDep, SocialAuthServiceDep
 from api.errors import TOKEN_ERRORS, error_responses
 from api.security import PrincipalDep
 from api.v1.auth import client_info
@@ -12,17 +12,19 @@ from api.v1.schemas import (
     ChangePasswordSchema,
     LoginRecordSchema,
     ProfileSchema,
+    ProfileUpdateSchema,
     SocialAccountSchema,
     UserSchema,
 )
 from models.social import SocialAccount
-from models.user import LoginRecord, User
+from models.user import LoginRecord, ProfileUpdate, User
 from services.errors import (
     LastLoginMethodError,
     LoginTakenError,
     PasswordAlreadySetError,
     SocialAccountNotLinkedError,
     TooManyRequestsError,
+    UnknownTimezoneError,
     WrongPasswordError,
 )
 from services.profile import Pagination
@@ -46,6 +48,28 @@ def get_pagination(
     responses=error_responses(*TOKEN_ERRORS),
 )
 async def me(principal: PrincipalDep, profiles: ProfileServiceDep) -> ProfileSchema:
+    profile = await profiles.get_profile(principal)
+    return ProfileSchema.model_validate({**profile.user.model_dump(), 'roles': profile.roles})
+
+
+@router.patch(
+    '/me/profile',
+    response_model=ProfileSchema,
+    summary='Контакты и имя',
+    description='Меняет почту, имя, фамилию и часовой пояс — то, из чего сервис уведомлений собирает письмо. '
+                'Присылаются только изменяемые поля; пустая строка очищает поле. '
+                'Часовой пояс задаётся именем из базы IANA (`Europe/Moscow`): по нему решается, '
+                'в какое время суток писать, поэтому неизвестное имя отклоняется сразу.',
+    responses=error_responses(*TOKEN_ERRORS, UnknownTimezoneError),
+)
+async def change_profile(
+    body: ProfileUpdateSchema, principal: PrincipalDep, directory: DirectoryServiceDep, profiles: ProfileServiceDep,
+) -> ProfileSchema:
+    # Пустая строка — это «очистить поле», поэтому она превращается в None уже
+    # здесь: в ProfileUpdate None означает «не трогать», и различать их должен
+    # слой API, а не бизнес-логика.
+    changes = ProfileUpdate(**{key: (value or None) for key, value in body.model_dump(exclude_unset=True).items()})
+    await directory.update_profile(principal.user_id, changes)
     profile = await profiles.get_profile(principal)
     return ProfileSchema.model_validate({**profile.user.model_dump(), 'roles': profile.roles})
 

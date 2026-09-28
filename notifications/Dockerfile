@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Таймаут чтения у pip по умолчанию 15 секунд: на медленном канале
+    # крупные пакеты не докачиваются и сборка падает на ровном месте.
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
+    # Количество процессов uvicorn; каждый держит свой event loop.
+    WEB_CONCURRENCY=2
+
+WORKDIR /opt/app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Миграции едут в том же образе: их применяет отдельный одноразовый контейнер
+# (alembic upgrade head) до запуска сервиса.
+COPY alembic.ini .
+COPY migrations/ migrations/
+COPY src/ .
+
+RUN useradd --no-create-home --shell /usr/sbin/nologin app
+USER app
+
+EXPOSE 8000
+
+# Один образ — четыре роли: API, воркеры (NOTIFY_WORKER_ROLE), websocket-шлюз
+# и генератор событий. Команду задаёт compose, по умолчанию поднимается API.
+STOPSIGNAL SIGTERM
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

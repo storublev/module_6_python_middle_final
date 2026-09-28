@@ -21,7 +21,7 @@ from api.errors import (
     storage_unavailable_handler,
     validation_error_handler,
 )
-from api.v1 import access, auth, oauth, profile, roles
+from api.v1 import access, auth, directory, oauth, profile, roles
 from core.config import settings
 from core.logger import LOGGING
 from core.middleware import RequestIdMiddleware
@@ -131,6 +131,11 @@ OPENAPI_TAGS = [
     {'name': 'roles', 'description': 'Управление ролями. Нужно право `access.manage`.'},
     {'name': 'access', 'description': 'Назначение ролей пользователям и проверка прав.'},
     {'name': 'oauth', 'description': 'Вход через соцсети: сторона потребителя OAuth 2.0.'},
+    {
+        'name': 'directory',
+        'description': 'Служебный справочник контактов для сервиса уведомлений. '
+                       'Доступ по заголовку `X-Service-Token`; пока секрет не задан, доступа нет ни у кого.',
+    },
 ]
 
 app = FastAPI(
@@ -179,6 +184,11 @@ app.include_router(profile.router, prefix=f'{API_PREFIX}/users', tags=['profile'
 app.include_router(roles.router, prefix=f'{API_PREFIX}/roles', tags=['roles'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(access.router, prefix=API_PREFIX, tags=['access'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 app.include_router(oauth.router, prefix=API_PREFIX, tags=['oauth'], responses=SERVICE_UNAVAILABLE_RESPONSE)
+# Справочник подключается всегда, а не только при заданном секрете: иначе
+# спецификация OpenAPI зависела бы от настроек стенда и расходилась бы с
+# файлом в репозитории. Без секрета в него просто нельзя попасть — пустое
+# ожидаемое значение не совпадает ни с одним присланным.
+app.include_router(directory.router, prefix=API_PREFIX, tags=['directory'], responses=SERVICE_UNAVAILABLE_RESPONSE)
 
 
 if __name__ == '__main__':

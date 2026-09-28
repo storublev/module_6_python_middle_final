@@ -1,0 +1,7 @@
+# Свой список для образа тестов: общий notifications/.dockerignore исключает tests.
+.env
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+src
+migrations

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Живая проверка поднятого стека кинотеатра: документация сервисов, полный
-# путь зрителя через сервис пользовательского контента и приём события
-# сервисом сбора действий.
+# путь зрителя через сервис пользовательского контента, приём события
+# сервисом сбора действий и путь уведомления до письма в почтовом ящике.
 #
 # Зачем скриптом: после `docker compose up -d` хочется одной командой увидеть,
 # что работает не только «контейнер запущен», но и сквозной сценарий —
@@ -111,6 +111,69 @@ PY
 )
 status=$(code -X POST "$BASE/ugc/api/v1/events" "${AUTH[@]}" -d "$EVENT")
 [ "$status" = 202 ] && ok 'событие принято (202)' || bad "событие: $status"
+
+echo '5. Уведомления'
+# Служебный секрет нужен и сервисам, и этому скрипту: событие присылает не
+# пользователь, а другая часть системы.
+SERVICE_TOKEN=${AUTH_SERVICE_TOKEN:-}
+if [ -z "$SERVICE_TOKEN" ]; then
+    bad 'AUTH_SERVICE_TOKEN не задан — проверить уведомления нечем'
+else
+    SERVICE=(-H "X-Service-Token: $SERVICE_TOKEN" -H 'Content-Type: application/json')
+    status=$(code "$BASE/notify/api/v1/health")
+    [ "$status" = 200 ] && ok "/notify/api/v1/health → $status" || bad "/notify/api/v1/health → $status"
+
+    # Зрителю нужны контакты: без адреса письмо собрать не из чего.
+    profile=$(curl -s -X PATCH "$BASE/auth/api/v1/users/me/profile" "${AUTH[@]}" \
+        -d "{\"email\": \"$LOGIN\", \"first_name\": \"Проверка\", \"timezone\": \"Europe/Moscow\"}")
+    printf '%s' "$profile" | grep -q "$LOGIN" && ok 'контакты зрителя заполнены' || bad "контакты: $profile"
+
+    EVENT_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+    USER_ID=$(curl -s "$BASE/auth/api/v1/users/me" "${AUTH[@]}" | json_field id)
+    event=$(curl -s -X POST "$BASE/notify/api/v1/events" "${SERVICE[@]}" -d "{
+        \"event_id\": \"$EVENT_ID\",
+        \"routing_key\": \"film-reporting.v1.episode-added\",
+        \"template_code\": \"new_episode\",
+        \"audience\": {\"kind\": \"users\", \"user_ids\": [\"$USER_ID\"]},
+        \"context\": {\"film_title\": \"Проверка стенда\", \"episode\": 8}
+    }")
+    printf '%s' "$event" | grep -q '"accepted":true' && ok 'событие принято' || bad "событие: $event"
+
+    # Повтор с тем же event_id не должен создать второго письма.
+    repeat=$(curl -s -X POST "$BASE/notify/api/v1/events" "${SERVICE[@]}" -d "{
+        \"event_id\": \"$EVENT_ID\",
+        \"routing_key\": \"film-reporting.v1.episode-added\",
+        \"template_code\": \"new_episode\",
+        \"audience\": {\"kind\": \"users\", \"user_ids\": [\"$USER_ID\"]}
+    }")
+    printf '%s' "$repeat" | grep -q '"accepted":false' \
+        && ok 'повтор события отбит' || bad "повтор: $repeat"
+
+    # Письмо проходит три очереди и трёх воркеров — ждём его в Mailpit.
+    MAILPIT=${MAILPIT_URL:-http://localhost:${MAILPIT_UI_PORT:-8025}}
+    delivered=0
+    for _ in $(seq 1 30); do
+        found=$(curl -s "$MAILPIT/api/v1/search?query=to:$LOGIN" | json_field total)
+        [ "${found:-0}" -ge 1 ] 2>/dev/null && delivered=1 && break
+        sleep 1
+    done
+    [ "$delivered" = 1 ] && ok "письмо доставлено (см. $MAILPIT)" || bad 'письмо не дошло за 30 с'
+
+    # Короткая ссылка: сокращаем и проверяем перенаправление.
+    link=$(curl -s -X POST "$BASE/notify/api/v1/links" "${SERVICE[@]}" \
+        -d '{"target_url": "http://localhost/api/openapi"}')
+    KEY=$(printf '%s' "$link" | json_field key)
+    if [ -n "$KEY" ]; then
+        status=$(code -o /dev/null "$BASE/s/$KEY")
+        [ "$status" = 302 ] && ok 'короткая ссылка ведёт на адрес (302)' || bad "короткая ссылка: $status"
+    else
+        bad "короткая ссылка: $link"
+    fi
+
+    notifications=$(curl -s "$BASE/notify/api/v1/me/notifications" -H "Authorization: Bearer $TOKEN")
+    printf '%s' "$notifications" | grep -q '"total"' \
+        && ok 'уведомления видны в личном кабинете' || bad "личный кабинет: $notifications"
+fi
 
 echo
 [ "$FAILED" = 0 ] && echo 'ИТОГ: стенд работает' || echo 'ИТОГ: есть ошибки'

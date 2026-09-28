@@ -1,0 +1,36 @@
+{% extends "campaigns/base.html" %}
+{% load i18n %}
+
+{% block inner %}
+  <h1>{% translate "Mailings" %}</h1>
+  <p><a class="button" href="{% url 'campaigns:campaign_create' %}">{% translate "New mailing" %}</a></p>
+  <table>
+    <thead>
+      <tr>
+        <th>{% translate "title" %}</th><th>{% translate "template" %}</th><th>{% translate "status" %}</th>
+        <th>{% translate "send at" %}</th><th>{% translate "schedule" %}</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in campaigns %}
+        <tr>
+          <td>{{ item.title }}</td>
+          <td>{{ item.template_code }}</td>
+          <td>{{ item.status }}</td>
+          <td>{{ item.scheduled_at|default:"—" }}</td>
+          <td>{{ item.cron|default:"—" }}</td>
+          <td>
+            <form method="post" action="{% url 'campaigns:campaign_run' item.id %}" style="display:inline">
+              {% csrf_token %}<button type="submit">{% translate "Run now" %}</button>
+            </form>
+            <form method="post" action="{% url 'campaigns:campaign_cancel' item.id %}" style="display:inline">
+              {% csrf_token %}<button type="submit">{% translate "Cancel" %}</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6">{% translate "No mailings yet" %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

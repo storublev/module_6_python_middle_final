@@ -19,7 +19,7 @@ from uuid import UUID
 from models.role import Role, UserAccess
 from models.session import Session
 from models.social import SocialAccount, SocialProfile
-from models.user import LoginRecord, User
+from models.user import Contact, LoginRecord, ProfileUpdate, User
 
 
 class StorageUnavailableError(Exception):
@@ -64,6 +64,28 @@ class UserRepository(ABC):
     @abstractmethod
     async def get_credentials_version(self, user_id: UUID) -> int | None:
         """Возвращает текущую версию учётных данных или None, если пользователя нет."""
+
+    @abstractmethod
+    async def update_profile(self, user_id: UUID, changes: ProfileUpdate) -> User:
+        """Меняет контакты и имя. Поля со значением None остаются как были."""
+
+    @abstractmethod
+    async def contacts_by_ids(self, user_ids: Sequence[UUID]) -> list[Contact]:
+        """Отдаёт контакты перечисленных пользователей одним запросом.
+
+        Так сервис уведомлений собирает письма пачкой: на тысячу адресатов —
+        один запрос, а не тысяча. Ненайденные идентификаторы просто
+        отсутствуют в ответе.
+        """
+
+    @abstractmethod
+    async def contacts_page(self, after_id: UUID | None, limit: int) -> list[Contact]:
+        """Страница контактов по возрастанию идентификатора — для рассылки всем.
+
+        Листание по ключу, а не по смещению: рассылка обходит миллионы
+        записей, и `OFFSET` на каждой странице перечитывал бы всё
+        предыдущее. Возвращаются только пользователи с заполненной почтой.
+        """
 
     @abstractmethod
     async def get_access(self, user_id: UUID) -> UserAccess | None:

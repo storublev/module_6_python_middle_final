@@ -1,0 +1,19 @@
+{% extends "campaigns/base.html" %}
+{% load i18n %}
+
+{% block inner %}
+  <h1>{% if code %}{% translate "Edit template" %}: {{ code }}{% else %}{% translate "New template" %}{% endif %}</h1>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <p>
+      <button type="submit" name="action" value="preview">{% translate "Preview" %}</button>
+      <button type="submit" name="action" value="save" class="default">{% translate "Save" %}</button>
+    </p>
+  </form>
+  {% if preview %}
+    <h2>{% translate "Preview on sample data" %}</h2>
+    <p><strong>{% translate "Subject" %}:</strong> {{ preview.subject }}</p>
+    <div style="border:1px solid #ccc;padding:12px;max-width:720px">{{ preview.body|safe }}</div>
+  {% endif %}
+{% endblock %}

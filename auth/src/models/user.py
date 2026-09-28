@@ -46,11 +46,57 @@ class User(BaseModel):
     credentials_version: int
     is_superuser: bool
     created_at: datetime
+    # Контакты для уведомлений. Необязательные: учётная запись, заведённая до
+    # появления сервиса уведомлений или входом через соцсеть, их не имеет.
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    timezone: str | None = None
 
     @property
     def has_password(self) -> bool:
         """Может ли пользователь войти по логину и паролю."""
         return self.password_hash is not None
+
+
+class Contact(BaseModel):
+    """Всё, что нужно, чтобы написать пользователю письмо.
+
+    Отдельная модель, а не `User`: наружу, в сервис уведомлений, уезжает
+    минимальный набор бизнес-данных, а не то, что лежит в таблице. Так учит
+    урок про отчётные события — контракт не должен повторять схему базы,
+    иначе её нельзя будет менять.
+    """
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    id: UUID
+    login: str
+    email: str | None
+    first_name: str | None
+    last_name: str | None
+    timezone: str | None
+
+    @property
+    def full_name(self) -> str:
+        """Имя для обращения в письме; пустая строка, если имени нет."""
+        return ' '.join(part for part in (self.first_name, self.last_name) if part)
+
+
+class ProfileUpdate(BaseModel):
+    """Что пользователь может поменять в своём профиле.
+
+    Значение None означает «не трогать это поле», поэтому очистить поле через
+    этот объект нельзя — для очистки пользователь присылает пустую строку,
+    которую проверка приводит к None на уровне API.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    timezone: str | None = None
 
 
 class LoginRecord(BaseModel):
