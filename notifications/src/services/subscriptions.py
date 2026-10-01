@@ -25,8 +25,6 @@ from storage.base import SubscriptionRepository
 logger = logging.getLogger(__name__)
 
 UNSUBSCRIBE_PURPOSE = 'unsubscribe'
-# Служебный код подписки, которым отмечается подтверждённый адрес.
-EMAIL_CONFIRMED_CODE = 'email_confirmed'
 
 
 def unsubscribe_token(user_id: UUID, secret: str) -> str:
@@ -80,17 +78,6 @@ class SubscriptionService:
 
     async def unsubscribe_all(self, user_id: UUID) -> None:
         await self._subscriptions.unsubscribe_all(user_id)
-
-    async def confirm_email(self, user_id: UUID) -> None:
-        """Отмечает адрес подтверждённым.
-
-        Переход по короткой ссылке с неугадываемым ключом и есть
-        доказательство, что письмо дошло до владельца ящика. Отметка ставится
-        явной подпиской на почтовый канал: подтверждённый адрес — это адрес, на
-        который можно писать.
-        """
-        await self._subscriptions.set_enabled(user_id, EMAIL_CONFIRMED_CODE, Channel.EMAIL, True)
-        logger.info('Адрес почты подтверждён', extra={'user_id': str(user_id)})
 
     def unsubscribe_token(self, user_id: UUID) -> str:
         """Подпись для ссылки отписки этого зрителя."""

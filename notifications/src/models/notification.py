@@ -163,6 +163,24 @@ class ShortLink(BaseModel):
     created_at: datetime
 
 
+class EmailConfirmation(BaseModel):
+    """Подтверждённый адрес почты зрителя.
+
+    Хранится отдельно от подписок: подтверждение говорит, что ящик
+    принадлежит зрителю, а не что он согласен на рассылки. Смешай их — и
+    переход по ссылке включал бы письма тому, кто от них отказался.
+
+    Адрес записывается вместе с отметкой: если зритель потом сменит почту,
+    подтверждение старого адреса к новому не относится.
+    """
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    user_id: UUID
+    email: str
+    confirmed_at: datetime
+
+
 class TemplateDraft(BaseModel):
     """Что менеджер присылает при создании или правке шаблона."""
 

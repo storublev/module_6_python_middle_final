@@ -230,3 +230,35 @@ class ShortLinkRow(Timestamped, Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     visits: Mapped[int] = mapped_column(server_default=text('0'))
     purpose: Mapped[str | None] = mapped_column(String(32))
+
+
+class EmailConfirmationTokenRow(Timestamped, Base):
+    """Выданный токен подтверждения почты.
+
+    Ключ — SHA-256 токена, а не сам токен: утечка таблицы не должна давать
+    готовые ссылки. Токен привязан к зрителю **и** адресу: подтверждается
+    ровно тот ящик, куда ушло письмо.
+    """
+
+    __tablename__ = 'email_confirmation_tokens'
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[UUID]
+    email: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Когда токен погашен. Заполненное поле делает ссылку недействительной.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailConfirmationRow(Base):
+    """Подтверждённый адрес зрителя.
+
+    Отдельно от подписок: подтверждение говорит о владении ящиком, а не о
+    согласии на рассылки.
+    """
+
+    __tablename__ = 'email_confirmations'
+
+    user_id: Mapped[UUID] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

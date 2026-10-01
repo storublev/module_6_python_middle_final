@@ -23,7 +23,8 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.request_id import get_request_id
-from models.notification import Recipient
+from models.notification import Recipient, Template
+from services.confirmation import EmailConfirmationService
 from services.errors import TemplateInvalidError
 from services.messages import RenderMessage, SendMessage
 from services.renderer import Renderer
@@ -32,6 +33,9 @@ from storage.base import ContactDirectory, MessagePublisher, TemplateRepository
 from storage.rabbit import STAGE_RENDER, STAGE_SEND
 
 logger = logging.getLogger(__name__)
+
+# Переменная шаблона со ссылкой подтверждения почты.
+CONFIRM_VARIABLE = 'confirm_url'
 
 
 class QuietHours:
@@ -88,6 +92,8 @@ class AssemblyService:
         quiet_hours: QuietHours,
         base_url: str,
         secret: str,
+        confirmations: EmailConfirmationService | None = None,
+        confirm_redirect_url: str = '',
     ) -> None:
         self._templates = templates
         self._directory = directory
@@ -98,6 +104,8 @@ class AssemblyService:
         # Тот же секрет, которым подписываются токены: им подписывается и
         # ссылка отписки, чтобы её нельзя было подделать.
         self._secret = secret
+        self._confirmations = confirmations
+        self._confirm_redirect_url = confirm_redirect_url or f'{base_url.rstrip("/")}/'
 
     async def assemble(self, message: RenderMessage, now: datetime | None = None) -> int:
         """Собирает письма и отправляет их отправителю. Возвращает число собранных."""
@@ -116,9 +124,14 @@ class AssemblyService:
         if deferred:
             await self._defer(message, deferred)
 
+        # Ссылка подтверждения — только если шаблон её выводит: токен на
+        # каждое письмо подборки засорял бы базу ссылками, по которым никто не
+        # перейдёт.
+        wants_confirmation = self._confirmations is not None and self._renderer.uses(template, CONFIRM_VARIABLE)
         built = 0
         for recipient in ready:
-            send = self._build(template, recipient, message)
+            extra = await self._confirmation_context(recipient) if wants_confirmation else {}
+            send = self._build(template, recipient, message, extra)
             if send is None:
                 continue
             await self._publisher.publish(STAGE_SEND, send.model_dump(mode='json'), get_request_id())
@@ -147,9 +160,23 @@ class AssemblyService:
             extra={'event_id': str(message.event_id), 'deferred': len(recipients)},
         )
 
-    def _build(self, template: Any, recipient: Recipient, message: RenderMessage) -> SendMessage | None:
+    async def _confirmation_context(self, recipient: Recipient) -> dict[str, Any]:
+        """Персональная ссылка подтверждения почты.
+
+        Токен привязан к адресу, на который уходит письмо: подтвердить можно
+        только тот ящик, который его получил.
+        """
+        if self._confirmations is None or not recipient.email:
+            return {}
+        url = await self._confirmations.link_for(recipient.user_id, recipient.email, self._confirm_redirect_url)
+        return {CONFIRM_VARIABLE: url}
+
+    def _build(
+        self, template: Template, recipient: Recipient, message: RenderMessage, extra: dict[str, Any],
+    ) -> SendMessage | None:
         context = {
             **message.context,
+            **extra,
             'site_url': self._base_url,
             # Ссылка отписки своя у каждого получателя: в ней идентификатор и
             # подпись. Общая ссылка без них не работает — переход из письма

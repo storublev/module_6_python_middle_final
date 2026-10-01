@@ -9,12 +9,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from api.dependencies import Deliveries, SubscriptionServiceDep
+from api.dependencies import ConfirmationServiceDep, Deliveries, SubscriptionServiceDep
 from api.errors import TOKEN_ERRORS, error_responses
 from api.security import CurrentUser
 from api.v1.schemas import (
     DeliveryPageSchema,
     DeliverySchema,
+    EmailConfirmationSchema,
     PreferencesSchema,
     SubscriptionSchema,
     SubscriptionUpdateSchema,
@@ -88,3 +89,21 @@ async def set_subscription(
 )
 async def unsubscribe_all(user: CurrentUser, subscriptions: SubscriptionServiceDep) -> None:
     await subscriptions.unsubscribe_all(user.user_id)
+
+
+@router.get(
+    '/email-confirmation',
+    response_model=EmailConfirmationSchema,
+    summary='Подтверждён ли мой адрес почты',
+    description='Какой адрес зритель подтвердил и когда. Пустые поля — подтверждения не было.\n\n'
+                'Отдаётся именно подтверждённый адрес: если зритель с тех пор сменил почту в профиле, '
+                'новый адрес не подтверждён, пока он не перейдёт по ссылке из письма на него.',
+    responses=error_responses(*TOKEN_ERRORS),
+)
+async def my_email_confirmation(
+    user: CurrentUser, confirmations: ConfirmationServiceDep,
+) -> EmailConfirmationSchema:
+    confirmation = await confirmations.status(user.user_id)
+    if confirmation is None:
+        return EmailConfirmationSchema(email=None, confirmed_at=None)
+    return EmailConfirmationSchema(email=confirmation.email, confirmed_at=confirmation.confirmed_at)

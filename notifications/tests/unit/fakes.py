@@ -22,6 +22,7 @@ from models.enums import CampaignStatus, Channel, DeliveryStatus
 from models.event import Audience, Event
 from models.notification import (
     Delivery,
+    EmailConfirmation,
     NotificationRecord,
     Page,
     Recipient,
@@ -36,6 +37,7 @@ from storage.base import (
     CampaignRepository,
     ContactDirectory,
     DeliveryRepository,
+    EmailConfirmationRepository,
     EventStore,
     MessagePublisher,
     NotificationRepository,
@@ -67,6 +69,9 @@ class Database:
     # Кто отписался от всего: у такого зрителя записей подписок может не быть
     # вовсе, а писать ему всё равно нельзя.
     unsubscribed: set[UUID] = field(default_factory=set)
+    # Токены подтверждения почты по хешу и подтверждённые адреса.
+    confirmation_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
+    confirmations: dict[UUID, EmailConfirmation] = field(default_factory=dict)
 
 
 class FakeEventStore(EventStore):
@@ -300,6 +305,28 @@ class FakeShortLinkRepository(ShortLinkRepository):
         if link.expires_at is not None and link.expires_at <= at:
             return None
         return self.db.links[key]
+
+
+class FakeEmailConfirmationRepository(EmailConfirmationRepository):
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def issue(self, token_hash: str, user_id: UUID, email: str, expires_at: datetime) -> None:
+        self.db.confirmation_tokens[token_hash] = {
+            'user_id': user_id, 'email': email, 'expires_at': expires_at, 'used_at': None,
+        }
+
+    async def confirm(self, token_hash: str, at: datetime) -> EmailConfirmation | None:
+        token = self.db.confirmation_tokens.get(token_hash)
+        if token is None or token['used_at'] is not None or token['expires_at'] <= at:
+            return None
+        token['used_at'] = at
+        confirmation = EmailConfirmation(user_id=token['user_id'], email=token['email'], confirmed_at=at)
+        self.db.confirmations[confirmation.user_id] = confirmation
+        return confirmation
+
+    async def get(self, user_id: UUID) -> EmailConfirmation | None:
+        return self.db.confirmations.get(user_id)
 
 
 class FakeContactDirectory(ContactDirectory):

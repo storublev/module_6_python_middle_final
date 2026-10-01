@@ -108,8 +108,11 @@ class Settings(BaseSettings):
 
     # Базовый адрес кинотеатра: из него собираются ссылки в письмах.
     public_base_url: str = 'http://localhost'
-    # Сколько живёт короткая ссылка подтверждения почты.
+    # Сколько живёт ссылка подтверждения почты: и короткая ссылка, и токен в ней.
     confirm_link_ttl: Duration = timedelta(days=3)
+    # Куда вести зрителя после подтверждения. Пустое значение — на главную
+    # кинотеатра по `public_base_url`.
+    confirm_redirect_url: str = ''
 
     # Идентификатор запроса ставит nginx, поэтому его отсутствие значит, что
     # запрос пришёл мимо шлюза, — и по умолчанию такой запрос отклоняется.
@@ -118,6 +121,10 @@ class Settings(BaseSettings):
     sentry_dsn: str = ''
     sentry_environment: str = 'local'
     otlp_endpoint: str = ''
+
+    @property
+    def confirm_redirect(self) -> str:
+        return self.confirm_redirect_url or f'{self.public_base_url.rstrip("/")}/'
 
     @property
     def postgres_dsn(self) -> str:

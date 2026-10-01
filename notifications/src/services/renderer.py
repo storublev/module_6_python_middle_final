@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # переменных, которыми они могут воспользоваться».
 ALLOWED_VARIABLES = frozenset({
     'first_name', 'last_name', 'full_name', 'email', 'login',
-    'site_url', 'unsubscribe_url', 'action_url', 'subject',
+    'site_url', 'unsubscribe_url', 'action_url', 'confirm_url', 'subject',
     'film_title', 'episode', 'count', 'items', 'year', 'month',
 })
 # Данные для пробного рендера при сохранении шаблона.
@@ -41,7 +41,8 @@ PROBE_CONTEXT: dict[str, Any] = {
     'first_name': 'Томас', 'last_name': 'Андерсон', 'full_name': 'Томас Андерсон',
     'email': 'neo@example.com', 'login': 'neo',
     'site_url': 'https://practix.local', 'unsubscribe_url': 'https://practix.local/s/abc1234',
-    'action_url': 'https://practix.local/s/abc1234', 'subject': 'Проверка шаблона',
+    'action_url': 'https://practix.local/s/abc1234', 'confirm_url': 'https://practix.local/s/def5678',
+    'subject': 'Проверка шаблона',
     'film_title': 'Матрица', 'episode': 8, 'count': 3, 'items': ['Матрица', 'Начало'],
     'year': 2026, 'month': 9,
 }
@@ -98,6 +99,16 @@ class Renderer:
         """
         return self._render_one(subject, PROBE_CONTEXT), self._render_one(body, PROBE_CONTEXT)
 
+    def uses(self, template: Template, variable: str) -> bool:
+        """Встречается ли переменная в теме или теле шаблона.
+
+        Нужно, чтобы не выдавать зря то, что стоит денег или места в базе:
+        токен подтверждения почты заводится, только если шаблон его выводит.
+        """
+        return any(variable in self._variables_of(part, name) for part, name in (
+            (template.subject, 'subject'), (template.body, 'body'),
+        ))
+
     def _variables_of(self, source: str, part: str) -> set[str]:
         from jinja2 import meta
 
@@ -126,7 +137,7 @@ class Renderer:
 # необязательной переменной, а письмо важнее аккуратности шаблона.
 PROBE_CONTEXT_DEFAULTS: dict[str, Any] = {
     'first_name': '', 'last_name': '', 'full_name': '', 'email': '', 'login': '',
-    'site_url': '', 'unsubscribe_url': '', 'action_url': '', 'subject': '',
+    'site_url': '', 'unsubscribe_url': '', 'action_url': '', 'confirm_url': '', 'subject': '',
     'film_title': '', 'episode': '', 'count': 0, 'items': [], 'year': '', 'month': '',
 }
 

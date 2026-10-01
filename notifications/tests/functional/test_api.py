@@ -396,3 +396,33 @@ def test_link_creation_requires_service_token(api_url: str) -> None:
     )
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_confirmation_by_user_id_alone_is_impossible(api_url: str, viewer: Viewer) -> None:
+    """Зная только идентификатор зрителя, адрес не подтвердить.
+
+    Ровно это и позволял прежний эндпоинт: `?user_id=…&redirectUrl=…`.
+    """
+    by_id = requests.get(
+        f'{api_url}/confirm-email',
+        params={'user_id': viewer.user_id, 'redirectUrl': 'https://example.com/'},
+        allow_redirects=False, timeout=10,
+    )
+    forged = requests.get(
+        f'{api_url}/confirm-email',
+        params={'token': viewer.user_id, 'redirectUrl': 'https://example.com/'},
+        allow_redirects=False, timeout=10,
+    )
+
+    assert by_id.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert forged.status_code == HTTPStatus.NOT_FOUND
+    assert forged.json()['code'] == 'confirmation_link_invalid'
+    status = requests.get(f'{api_url}/me/email-confirmation', headers=viewer.auth_headers, timeout=10)
+    assert status.json() == {'email': None, 'confirmed_at': None}
+
+
+def test_email_confirmation_requires_token(api_url: str) -> None:
+    """Статус подтверждения виден только самому зрителю."""
+    response = requests.get(f'{api_url}/me/email-confirmation', timeout=10)
+
+    assert response.status_code == HTTPStatus.UNAUTHORIZED

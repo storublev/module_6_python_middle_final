@@ -246,3 +246,66 @@ def _wait_for_count(address: str, expected: int, timeout: float = 30.0) -> None:
             return
         time.sleep(0.5)
     raise AssertionError(f'На {address} пришло {len(mailbox.letters_for(address))} писем вместо {expected}')
+
+
+def test_confirmation_link_from_welcome_letter_confirms_address(
+    api_url: str, service_headers: dict[str, str], viewer: Viewer,
+) -> None:
+    """Ссылка подтверждения **из письма** подтверждает адрес, и только один раз.
+
+    Переход идёт так же, как у человека: короткая ссылка → эндпоинт
+    подтверждения с токеном → адрес возврата.
+    """
+    send_event(api_url, service_headers, audience={'kind': 'users', 'user_ids': [viewer.user_id]})
+    letter = mailbox.wait_for_letter(viewer.email)
+
+    confirm_url = _follow_short_link(_confirmation_link_of(letter.html))
+    assert 'token=' in confirm_url
+    assert 'user_id' not in confirm_url
+    confirmed = requests.get(confirm_url, allow_redirects=False, timeout=10)
+
+    assert confirmed.status_code == HTTPStatus.FOUND
+    status = requests.get(f'{api_url}/me/email-confirmation', headers=viewer.auth_headers, timeout=10)
+    assert status.status_code == HTTPStatus.OK
+    assert status.json()['email'] == viewer.email
+    assert status.json()['confirmed_at'] is not None
+
+    repeated = requests.get(confirm_url, allow_redirects=False, timeout=10)
+    assert repeated.status_code == HTTPStatus.NOT_FOUND
+    assert repeated.json()['code'] == 'confirmation_link_invalid'
+
+
+def test_confirmation_does_not_bring_back_unsubscribed_viewer(
+    api_url: str, service_headers: dict[str, str], viewer: Viewer,
+) -> None:
+    """Подтверждение адреса не снимает отказ от рассылок.
+
+    Раньше подтверждение ставилось подпиской и заодно возвращало письма тому,
+    кто от них отказался.
+    """
+    send_event(api_url, service_headers, audience={'kind': 'users', 'user_ids': [viewer.user_id]})
+    letter = mailbox.wait_for_letter(viewer.email)
+    requests.delete(f'{api_url}/me/subscriptions', headers=viewer.auth_headers, timeout=10).raise_for_status()
+
+    confirm_url = _follow_short_link(_confirmation_link_of(letter.html))
+    assert requests.get(confirm_url, allow_redirects=False, timeout=10).status_code == HTTPStatus.FOUND
+
+    listed = requests.get(f'{api_url}/me/subscriptions', headers=viewer.auth_headers, timeout=10).json()
+    assert listed['unsubscribed_all'] is True
+    assert listed['items'] == []
+
+
+def _confirmation_link_of(html: str) -> str:
+    """Ссылка подтверждения из приветственного письма — короткая, вида `/s/<ключ>`."""
+    import html as html_module
+    import re
+
+    found = re.search(r'href="([^"]*/s/[^"]*)"', html)
+    assert found is not None, 'в письме нет ссылки подтверждения'
+    return html_module.unescape(found.group(1))
+
+
+def _follow_short_link(url: str) -> str:
+    response = requests.get(url, allow_redirects=False, timeout=10)
+    assert response.status_code == HTTPStatus.FOUND
+    return response.headers['location']

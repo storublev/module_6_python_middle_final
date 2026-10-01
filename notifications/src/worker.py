@@ -32,14 +32,18 @@ from core.request_id import set_request_id
 from core.sentry import configure_sentry
 from models.enums import Channel
 from services.assembly import AssemblyService, QuietHours
+from services.confirmation import EmailConfirmationService
 from services.messages import PlanMessage, RenderMessage, SendMessage
 from services.planner import PlannerService
 from services.renderer import Renderer
 from services.sender import SenderService
+from services.shortlinks import ShortLinkService
 from storage.auth import AuthContactDirectory
 from storage.postgres import (
     PostgresDeliveryRepository,
+    PostgresEmailConfirmationRepository,
     PostgresNotificationRepository,
+    PostgresShortLinkRepository,
     PostgresSubscriptionRepository,
     PostgresTemplateRepository,
 )
@@ -155,6 +159,12 @@ def build_handler(
     async def handle_render(payload: dict[str, Any], request_id: str) -> None:
         set_request_id(request_id)
         async with sessions() as session:
+            confirmations = EmailConfirmationService(
+                PostgresEmailConfirmationRepository(session),
+                ShortLinkService(PostgresShortLinkRepository(session), settings.public_base_url),
+                settings.public_base_url,
+                settings.confirm_link_ttl,
+            )
             service = AssemblyService(
                 PostgresTemplateRepository(session),
                 directory,
@@ -163,6 +173,8 @@ def build_handler(
                 quiet_hours,
                 settings.public_base_url,
                 settings.jwt_secret_key.get_secret_value(),
+                confirmations,
+                settings.confirm_redirect,
             )
             await service.assemble(RenderMessage.model_validate(payload))
 

@@ -1,8 +1,8 @@
 """Эндпоинты, доступные из письма, где зритель не залогинен.
 
-Отписка и подтверждение адреса подтверждаются не сессией, а подписью и
-одноразовым ключом ссылки: отписать или подтвердить чужого по угаданному
-адресу нельзя.
+Отписка подтверждается не сессией, а подписью в ссылке, подтверждение
+адреса — одноразовым токеном: отписать чужого или подтвердить чужой адрес,
+зная только идентификатор зрителя, нельзя.
 """
 
 from datetime import timedelta
@@ -13,10 +13,16 @@ from uuid import UUID
 from fastapi import APIRouter, Query
 from fastapi.responses import RedirectResponse
 
-from api.dependencies import ServiceToken, ShortLinkServiceDep, SubscriptionServiceDep
+from api.dependencies import ConfirmationServiceDep, ServiceToken, ShortLinkServiceDep, SubscriptionServiceDep
 from api.errors import error_responses
 from api.v1.schemas import HealthSchema, ShortenSchema, ShortLinkSchema
-from services.errors import LinkNotFoundError, ServiceTokenInvalidError, TokenInvalidError
+from services.confirmation import TOKEN_BYTES
+from services.errors import (
+    ConfirmationLinkInvalidError,
+    LinkNotFoundError,
+    ServiceTokenInvalidError,
+    TokenInvalidError,
+)
 
 router = APIRouter()
 
@@ -41,21 +47,26 @@ async def unsubscribe(
     '/confirm-email',
     status_code=HTTPStatus.FOUND,
     summary='Подтвердить адрес почты',
-    description='Сюда ведёт короткая ссылка из приветственного письма. Помечает адрес подтверждённым и '
-                'перенаправляет на `redirectUrl` — адрес, который настраивается в админ-панели.',
+    description='Сюда ведёт короткая ссылка из приветственного письма. Одноразовый токен из ссылки '
+                'подтверждает, что письмо дошло до владельца ящика: адрес помечается подтверждённым, и '
+                'зритель уходит на `redirectUrl`.\n\n'
+                'Токен привязан к зрителю и адресу, действует ограниченное время и гасится при первом '
+                'переходе. Подписки и отказ от рассылок подтверждение не меняет.',
     response_class=RedirectResponse,
+    responses=error_responses(ConfirmationLinkInvalidError),
 )
 async def confirm_email(
-    subscriptions: SubscriptionServiceDep,
-    user_id: Annotated[UUID, Query(description='Кому принадлежит адрес')],
+    confirmations: ConfirmationServiceDep,
+    token: Annotated[
+        # Предел длины — с запасом над длиной настоящего токена: base64 от 32
+        # байт занимает 43 символа, а длинная строка в запросе к базе незачем.
+        str, Query(min_length=1, max_length=TOKEN_BYTES * 4, description='Одноразовый токен из письма'),
+    ],
     redirect_url: Annotated[
         str, Query(alias='redirectUrl', description='Куда вести после подтверждения'),
     ],
 ) -> RedirectResponse:
-    # Сам факт перехода по ссылке с неугадываемым ключом и есть подтверждение
-    # того, что письмо дошло до владельца ящика. Отметка ставится подпиской на
-    # почтовый канал: подтверждённый адрес — это адрес, на который можно писать.
-    await subscriptions.confirm_email(user_id)
+    await confirmations.confirm(token)
     return RedirectResponse(redirect_url, status_code=HTTPStatus.FOUND)
 
 

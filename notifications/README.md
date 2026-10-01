@@ -103,7 +103,8 @@ docker compose up -d --build
 | `GET` | `/notify/api/v1/me/notifications` | зритель: свои уведомления |
 | `GET/PUT/DELETE` | `/notify/api/v1/me/subscriptions` | зритель: настройки уведомлений |
 | `GET` | `/notify/api/v1/unsubscribe` | зритель из письма, **без входа** |
-| `GET` | `/notify/api/v1/confirm-email` | зритель из приветственного письма |
+| `GET` | `/notify/api/v1/me/email-confirmation` | зритель: подтверждён ли адрес почты |
+| `GET` | `/notify/api/v1/confirm-email?token=…` | зритель из приветственного письма: одноразовый токен, привязанный к адресу |
 | `POST` | `/notify/api/v1/links` | сокращение ссылки |
 | `GET` | `/s/{key}` | переход по короткой ссылке: 302 или 404, если срок вышел |
 | `WS` | `/ws/notifications?token=…` | зритель: мгновенные уведомления в открытую вкладку |

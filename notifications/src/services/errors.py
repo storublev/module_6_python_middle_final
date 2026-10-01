@@ -62,6 +62,13 @@ class LinkNotFoundError(NotFoundError):
     message = 'Short link not found or expired'
 
 
+class ConfirmationLinkInvalidError(NotFoundError):
+    # Одним кодом на все три случая — нет, истёк, уже использован: различать
+    # их вслух значит подсказывать, какие токены существуют.
+    code = 'confirmation_link_invalid'
+    message = 'Confirmation link is invalid, expired or already used'
+
+
 class ConflictError(ServiceError):
     code = 'conflict'
     message = 'Object already exists'

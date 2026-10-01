@@ -1,9 +1,12 @@
 """Сервисы на хранилищах в памяти."""
 
+from datetime import timedelta
+
 import pytest
 
 from services.assembly import AssemblyService, QuietHours
 from services.campaigns import CampaignService
+from services.confirmation import EmailConfirmationService
 from services.ingest import IngestService
 from services.planner import PlannerService
 from services.renderer import Renderer
@@ -18,6 +21,7 @@ from tests.unit.fakes import (
     FakeChannel,
     FakeContactDirectory,
     FakeDeliveryRepository,
+    FakeEmailConfirmationRepository,
     FakeEventStore,
     FakeNotificationRepository,
     FakePublisher,
@@ -29,6 +33,7 @@ from tests.unit.fakes import (
 BASE_URL = 'https://practix.local'
 # Маленькая пачка, чтобы упереться в неё на трёх получателях.
 BATCH_SIZE = 2
+CONFIRM_TTL = timedelta(days=3)
 
 
 @pytest.fixture
@@ -69,6 +74,11 @@ def campaigns_repo(db: Database) -> FakeCampaignRepository:
 @pytest.fixture
 def links_repo(db: Database) -> FakeShortLinkRepository:
     return FakeShortLinkRepository(db)
+
+
+@pytest.fixture
+def confirmations_repo(db: Database) -> FakeEmailConfirmationRepository:
+    return FakeEmailConfirmationRepository(db)
 
 
 @pytest.fixture
@@ -122,8 +132,11 @@ def assembly(
     renderer: Renderer,
     publisher: FakePublisher,
     quiet_hours: QuietHours,
+    confirmations: EmailConfirmationService,
 ) -> AssemblyService:
-    return AssemblyService(templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL, SECRET_KEY)
+    return AssemblyService(
+        templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL, SECRET_KEY, confirmations,
+    )
 
 
 @pytest.fixture
@@ -156,6 +169,11 @@ def template_service(templates_repo: FakeTemplateRepository, renderer: Renderer)
 
 @pytest.fixture
 def shortlinks(links_repo: FakeShortLinkRepository) -> ShortLinkService:
-    from datetime import timedelta
+    return ShortLinkService(links_repo, BASE_URL)
 
-    return ShortLinkService(links_repo, BASE_URL, timedelta(days=3))
+
+@pytest.fixture
+def confirmations(
+    confirmations_repo: FakeEmailConfirmationRepository, shortlinks: ShortLinkService,
+) -> EmailConfirmationService:
+    return EmailConfirmationService(confirmations_repo, shortlinks, BASE_URL, CONFIRM_TTL)

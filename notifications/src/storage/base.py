@@ -22,6 +22,7 @@ from models.enums import Channel, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    EmailConfirmation,
     NotificationRecord,
     Page,
     Recipient,
@@ -222,6 +223,32 @@ class ShortLinkRepository(ABC):
     @abstractmethod
     async def resolve(self, key: str, at: datetime) -> ShortLink | None:
         """Отдаёт ссылку и считает переход; None — ключа нет или срок вышел."""
+
+
+class EmailConfirmationRepository(ABC):
+    """Токены подтверждения почты и подтверждённые адреса."""
+
+    @abstractmethod
+    async def issue(self, token_hash: str, user_id: UUID, email: str, expires_at: datetime) -> None:
+        """Запоминает выданный токен.
+
+        Хранится хеш, а не сам токен: утечка таблицы не должна давать
+        готовые ссылки подтверждения.
+        """
+
+    @abstractmethod
+    async def confirm(self, token_hash: str, at: datetime) -> EmailConfirmation | None:
+        """Гасит токен и отмечает адрес подтверждённым — одной операцией.
+
+        None — токена нет, срок вышел или его уже использовали. Погашение и
+        отметка неразделимы: иначе два одновременных перехода по ссылке
+        прошли бы оба, а сбой между шагами оставил бы токен погашенным, а адрес
+        неподтверждённым.
+        """
+
+    @abstractmethod
+    async def get(self, user_id: UUID) -> EmailConfirmation | None:
+        """Подтверждённый адрес зрителя или None."""
 
 
 class ContactDirectory(ABC):

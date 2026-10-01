@@ -23,6 +23,7 @@ from models.enums import CampaignStatus, Channel, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    EmailConfirmation,
     NotificationRecord,
     Page,
     RenderedMessage,
@@ -35,6 +36,7 @@ from storage.base import (
     AlreadyExistsError,
     CampaignRepository,
     DeliveryRepository,
+    EmailConfirmationRepository,
     EventStore,
     NotificationRepository,
     ShortLinkRepository,
@@ -46,6 +48,8 @@ from storage.orm import (
     CampaignRow,
     CampaignRunRow,
     DeliveryRow,
+    EmailConfirmationRow,
+    EmailConfirmationTokenRow,
     EventRow,
     NotificationRow,
     ShortLinkRow,
@@ -521,6 +525,54 @@ class PostgresShortLinkRepository(PostgresRepository, ShortLinkRepository):
         if link.expires_at is not None and link.expires_at <= at:
             return None
         return link
+
+
+class PostgresEmailConfirmationRepository(PostgresRepository, EmailConfirmationRepository):
+    async def issue(self, token_hash: str, user_id: UUID, email: str, expires_at: datetime) -> None:
+        async with self._errors():
+            self.session.add(
+                EmailConfirmationTokenRow(token_hash=token_hash, user_id=user_id, email=email, expires_at=expires_at),
+            )
+            await self.session.commit()
+
+    async def confirm(self, token_hash: str, at: datetime) -> EmailConfirmation | None:
+        # Токен гасится условным UPDATE: из двух одновременных переходов по
+        # ссылке строку получит только один, второй увидит used_at и уйдёт ни
+        # с чем. Проверка «не погашен ли» отдельным SELECT этого не даёт.
+        spend = (
+            update(EmailConfirmationTokenRow)
+            .where(
+                EmailConfirmationTokenRow.token_hash == token_hash,
+                EmailConfirmationTokenRow.used_at.is_(None),
+                EmailConfirmationTokenRow.expires_at > at,
+            )
+            .values(used_at=at)
+            .returning(EmailConfirmationTokenRow.user_id, EmailConfirmationTokenRow.email)
+        )
+        async with self._errors():
+            spent = (await self.session.execute(spend)).first()
+            if spent is None:
+                await self.session.rollback()
+                return None
+            user_id, email = spent
+            mark = (
+                pg_insert(EmailConfirmationRow)
+                .values(user_id=user_id, email=email, confirmed_at=at)
+                .on_conflict_do_update(
+                    index_elements=[EmailConfirmationRow.user_id],
+                    set_={'email': email, 'confirmed_at': at},
+                )
+            )
+            await self.session.execute(mark)
+            # Одна транзакция на погашение и отметку: сбой между ними не
+            # оставит токен погашенным, а адрес неподтверждённым.
+            await self.session.commit()
+        return EmailConfirmation(user_id=user_id, email=email, confirmed_at=at)
+
+    async def get(self, user_id: UUID) -> EmailConfirmation | None:
+        async with self._errors():
+            row = await self.session.get(EmailConfirmationRow, user_id)
+        return EmailConfirmation.model_validate(row) if row else None
 
 
 def new_id() -> UUID:
