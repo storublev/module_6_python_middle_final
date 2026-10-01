@@ -263,3 +263,16 @@ async def test_viewers_with_the_same_morning_share_one_task(
 
     tasks = sorted(sorted(item['user_ids']) for item in db.outbox_of(STAGE_RENDER))
     assert tasks == sorted([sorted([str(first), str(second)]), [str(far)]])
+
+
+async def test_letter_carries_viewer_timezone_for_the_sender(
+    assembly: AssemblyService, db: Database, directory: FakeContactDirectory, publisher: FakePublisher,
+) -> None:
+    """Готовое письмо несёт часовой пояс зрителя: по нему отправитель перепроверит ночь."""
+    db.template_versions[('new_episode', 1)] = template('new_episode')
+    viewer = uuid4()
+    directory.recipients = {viewer: recipient(viewer, timezone='Asia/Vladivostok')}
+
+    await assembly.assemble(render_message([viewer]), now=datetime(2026, 9, 28, 3, 0, tzinfo=timezone.utc))
+
+    assert publisher.of(STAGE_SEND)[0]['timezone'] == 'Asia/Vladivostok'

@@ -7,9 +7,10 @@ import pytest
 from channels.base import ChannelUnavailableError
 from models.enums import Channel, DeliveryStatus
 from services.messages import SendMessage
+from services.quiet_hours import QuietHours
 from services.sender import DeliveryInProgressError, SenderService
 from tests.unit.conftest import SEND_LEASE
-from tests.unit.fakes import Database, FakeChannel, FakeDeliveryRepository
+from tests.unit.fakes import Database, FakeChannel, FakeDeliveryRepository, FakeOutbox
 
 
 def send_message(**overrides: object) -> SendMessage:
@@ -112,10 +113,13 @@ async def test_permanent_rejection_is_recorded_and_not_retried(
 
 
 async def test_unknown_channel_is_recorded_as_failure(
-    deliveries_repo: FakeDeliveryRepository, notifications_repo, db: Database,
+    deliveries_repo: FakeDeliveryRepository, notifications_repo, subscriptions_repo, db: Database,
 ) -> None:
     """Сообщение в неподключённый канал не теряется молча, а попадает в историю с ошибкой."""
-    sender = SenderService(deliveries_repo, notifications_repo, {}, SEND_LEASE)
+    sender = SenderService(
+        deliveries_repo, notifications_repo, {}, SEND_LEASE,
+        subscriptions_repo, FakeOutbox(db), QuietHours(0, 0, 'Europe/Moscow'),
+    )
     message = send_message(channel=Channel.SMS)
 
     sent = await sender.send(message)
@@ -220,3 +224,102 @@ async def test_only_one_sender_takes_over_an_abandoned_letter(
     assert first.state is ClaimState.CLAIMED
     assert first.recovered is True
     assert second.state is ClaimState.BUSY
+
+
+async def test_letter_is_cancelled_if_viewer_unsubscribed_while_it_waited(
+    sender: SenderService, subscriptions_repo, db: Database, channel: FakeChannel,
+) -> None:
+    """Отписка, случившаяся пока письмо ждало в очереди, отменяет письмо.
+
+    Раньше подписка проверялась только при выборе получателей, и готовое
+    письмо уходило уже отписавшемуся зрителю.
+    """
+    message = send_message()
+    await subscriptions_repo.set_enabled(message.user_id, message.template_code, Channel.EMAIL, enabled=False)
+
+    sent = await sender.send(message)
+
+    assert sent is False
+    assert channel.sent == []
+    assert db.deliveries[message.idempotency_key].status is DeliveryStatus.SKIPPED
+
+
+async def test_global_unsubscribe_also_cancels_waiting_letter(
+    sender: SenderService, subscriptions_repo, db: Database, channel: FakeChannel,
+) -> None:
+    """Отписка от всего по ссылке из письма тоже отменяет письмо, ждущее отправки."""
+    message = send_message()
+    await subscriptions_repo.unsubscribe_all(message.user_id)
+
+    assert await sender.send(message) is False
+    assert channel.sent == []
+
+
+async def test_cancelled_letter_is_not_sent_after_resubscribing(
+    sender: SenderService, subscriptions_repo, channel: FakeChannel,
+) -> None:
+    """Отменённое письмо не воскресает, если зритель потом подписался снова."""
+    message = send_message()
+    await subscriptions_repo.set_enabled(message.user_id, message.template_code, Channel.EMAIL, enabled=False)
+    await sender.send(message)
+    await subscriptions_repo.set_enabled(message.user_id, message.template_code, Channel.EMAIL, enabled=True)
+
+    assert await sender.send(message) is False
+    assert channel.sent == []
+
+
+def night_sender(
+    deliveries_repo: FakeDeliveryRepository, notifications_repo, subscriptions_repo, channel: FakeChannel, db: Database,
+) -> SenderService:
+    return SenderService(
+        deliveries_repo, notifications_repo, {channel.channel.value: channel}, SEND_LEASE,
+        subscriptions_repo, FakeOutbox(db), QuietHours(21, 9, 'Europe/Moscow'),
+    )
+
+
+async def test_letter_is_postponed_if_night_came_while_it_waited(
+    deliveries_repo: FakeDeliveryRepository, notifications_repo, subscriptions_repo,
+    channel: FakeChannel, db: Database,
+) -> None:
+    """Письмо, дождавшееся отправки ночью по времени зрителя, откладывается до утра.
+
+    Собрано днём, а очередь разобралась ночью — раньше оно уходило будить
+    зрителя.
+    """
+    from datetime import datetime, timezone
+
+    from storage.rabbit import STAGE_SEND
+
+    sender = night_sender(deliveries_repo, notifications_repo, subscriptions_repo, channel, db)
+    message = send_message(timezone='Asia/Vladivostok')
+    # 15:00 UTC — 01:00 во Владивостоке.
+    night = datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc)
+
+    sent = await sender.send(message, now=night)
+
+    assert sent is False
+    assert channel.sent == []
+    [task] = db.outbox.values()
+    assert task['publication'].stage == STAGE_SEND
+    # 09:00 во Владивостоке — 23:00 UTC того же дня.
+    assert task['available_at'] == datetime(2026, 9, 28, 23, 0, tzinfo=timezone.utc)
+    # Аренда снята: утром письмо заберёт любой отправитель.
+    assert message.idempotency_key not in db.delivery_leases
+    assert db.deliveries[message.idempotency_key].status is DeliveryStatus.PENDING
+
+
+async def test_postponed_letter_is_sent_in_the_morning(
+    deliveries_repo: FakeDeliveryRepository, notifications_repo, subscriptions_repo,
+    channel: FakeChannel, db: Database,
+) -> None:
+    """Утром отложенное письмо уходит — тем же ключом, без дубля."""
+    from datetime import datetime, timezone
+
+    sender = night_sender(deliveries_repo, notifications_repo, subscriptions_repo, channel, db)
+    message = send_message(timezone='Asia/Vladivostok')
+    await sender.send(message, now=datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc))
+
+    sent = await sender.send(message, now=datetime(2026, 9, 28, 23, 0, tzinfo=timezone.utc))
+
+    assert sent is True
+    assert len(channel.sent) == 1

@@ -25,6 +25,16 @@
 нему (Gmail так делает), покажут одно. Такие повторы отмечаются в журнале
 предупреждением — по ним видно, сколько писем могли задвоиться.
 
+Прямо перед отправкой — ещё две проверки, которые раньше делались только в
+начале конвейера. Между выбором получателей и отправкой письмо может долго
+лежать в очереди: за это время зритель успевает отписаться, а у него
+наступает ночь. Поэтому:
+
+* **подписка** проверяется снова: отписался — письмо отменяется (`SKIPPED`) и
+  не уходит, даже если подпишется обратно — это письмо он уже отверг;
+* **тихие часы** проверяются снова: ночь — письмо откладывается до утра в
+  outbox и вернётся в очередь отправки в 9:00 по времени зрителя.
+
 Временная ошибка канала снимает аренду и поднимается наружу: воркер отправит
 сообщение в отложенный повтор, и письмо всё-таки уйдёт. Постоянный отказ
 (нет такого ящика) повторять бессмысленно — он записывается как неудача.
@@ -34,10 +44,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from channels.base import ChannelUnavailableError, DeliveryChannel, MessageRejectedError
+from core.request_id import get_request_id
 from models.enums import ClaimState, DeliveryStatus
 from models.notification import RenderedMessage
+from models.outbox import OutboxDraft
 from services.messages import SendMessage
-from storage.base import DeliveryRepository, NotificationRepository
+from services.quiet_hours import QuietHours
+from storage.base import DeliveryRepository, NotificationRepository, Outbox, SubscriptionRepository
+from storage.rabbit import STAGE_SEND
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +74,17 @@ class SenderService:
         notifications: NotificationRepository,
         channels: dict[str, DeliveryChannel],
         lease: timedelta,
+        subscriptions: SubscriptionRepository,
+        outbox: Outbox,
+        quiet_hours: QuietHours,
     ) -> None:
         self._deliveries = deliveries
         self._notifications = notifications
         self._channels = channels
         self._lease = lease
+        self._subscriptions = subscriptions
+        self._outbox = outbox
+        self._quiet = quiet_hours
 
     async def send(self, message: SendMessage, now: datetime | None = None) -> bool:
         """Отправляет сообщение. Возвращает False, если отправлять не нужно.
@@ -97,6 +117,21 @@ class SenderService:
                 extra=log_extra,
             )
 
+        allowed = await self._subscriptions.filter_enabled(
+            [message.user_id], message.template_code, message.channel,
+        )
+        if message.user_id not in allowed:
+            # Отписка между планированием и отправкой: письмо отменяется
+            # окончательно, а в истории видно, почему оно не пришло.
+            await self._deliveries.finish(
+                message.idempotency_key, DeliveryStatus.SKIPPED, 'Зритель отписался до отправки',
+            )
+            logger.info('Зритель отписался, пока письмо ждало отправки: письмо отменено', extra=log_extra)
+            return False
+        if self._quiet.is_quiet(moment, message.timezone):
+            await self._postpone(message, moment)
+            return False
+
         channel = self._channels.get(message.channel.value)
         if channel is None:
             await self._deliveries.finish(
@@ -127,3 +162,23 @@ class SenderService:
             )
         logger.info('Сообщение отправлено', extra={**log_extra, 'channel': message.channel.value})
         return True
+
+    async def _postpone(self, message: SendMessage, moment: datetime) -> None:
+        """Откладывает готовое письмо до утра зрителя.
+
+        Письмо ждёт в outbox и вернётся в очередь отправки, когда наступит
+        утро. Аренда снимается: утром письмо заберёт тот отправитель, к
+        которому оно попадёт.
+        """
+        morning = self._quiet.next_open(moment, message.timezone)
+        await self._outbox.put(OutboxDraft(
+            stage=STAGE_SEND,
+            payload=message.model_dump(mode='json'),
+            request_id=get_request_id(),
+            available_at=morning,
+        ))
+        await self._deliveries.release(message.idempotency_key, f'Отложено до {morning.isoformat()}: ночь у зрителя')
+        logger.info(
+            'У зрителя наступила ночь, пока письмо ждало отправки: отложено до утра',
+            extra={'user_id': str(message.user_id), 'template': message.template_code, 'until': morning.isoformat()},
+        )

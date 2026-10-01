@@ -155,9 +155,17 @@ def assembly(
 def sender(
     deliveries_repo: FakeDeliveryRepository,
     notifications_repo: FakeNotificationRepository,
+    subscriptions_repo: FakeSubscriptionRepository,
     channel: FakeChannel,
+    db: Database,
 ) -> SenderService:
-    return SenderService(deliveries_repo, notifications_repo, {channel.channel.value: channel}, SEND_LEASE)
+    # Тихие часы здесь выключены (окно 0–0): большинство проверок отправителя
+    # о другом, и с настоящим окном они падали бы по ночам. Ночь проверяется
+    # отдельными тестами с фиксированным временем.
+    return SenderService(
+        deliveries_repo, notifications_repo, {channel.channel.value: channel}, SEND_LEASE,
+        subscriptions_repo, FakeOutbox(db), QuietHours(0, 0, 'Europe/Moscow'),
+    )
 
 
 @pytest.fixture

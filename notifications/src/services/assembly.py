@@ -210,6 +210,7 @@ class AssemblyService:
             body=body,
             content_id=message.content_id,
             content_version=message.content_version,
+            timezone=recipient.timezone,
         )
 
 

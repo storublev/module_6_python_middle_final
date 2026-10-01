@@ -194,6 +194,9 @@ def build_handler(
                 PostgresNotificationRepository(session),
                 channels,
                 settings.send_lease,
+                PostgresSubscriptionRepository(session),
+                PostgresOutbox(session),
+                quiet_hours,
             )
             await service.send(SendMessage.model_validate(payload))
 
