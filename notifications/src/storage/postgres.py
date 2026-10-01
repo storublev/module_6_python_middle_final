@@ -19,10 +19,11 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.campaign import Campaign, CampaignDraft
-from models.enums import CampaignStatus, Channel, DeliveryStatus
+from models.enums import CampaignStatus, Channel, ClaimState, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    DeliveryClaim,
     EmailConfirmation,
     NotificationRecord,
     Page,
@@ -399,8 +400,9 @@ class PostgresNotificationRepository(PostgresRepository, NotificationRepository)
 
 
 class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
-    async def reserve(self, message: RenderedMessage) -> Delivery | None:
-        query = (
+    async def claim(self, message: RenderedMessage, lease: timedelta, now: datetime) -> DeliveryClaim:
+        locked_until = now + lease
+        create = (
             pg_insert(DeliveryRow)
             .values(
                 idempotency_key=message.idempotency_key,
@@ -409,17 +411,45 @@ class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
                 template_code=message.template_code,
                 subject=message.subject[:255],
                 status=DeliveryStatus.PENDING.value,
+                locked_until=locked_until,
+                attempts=1,
             )
             .on_conflict_do_nothing(index_elements=[DeliveryRow.idempotency_key])
-            .returning(DeliveryRow)
+            .returning(DeliveryRow.id)
+        )
+        # Чужая запись читается с блокировкой строки: из нескольких
+        # отправителей, одновременно увидевших вышедшую аренду, решение примет
+        # один, а остальные дождутся его и увидят уже новую аренду.
+        current = (
+            select(DeliveryRow.status, DeliveryRow.locked_until)
+            .where(DeliveryRow.idempotency_key == message.idempotency_key)
+            .with_for_update()
         )
         async with self._errors():
-            row = await self.session.scalar(query)
+            if await self.session.scalar(create) is not None:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.CLAIMED)
+            row = (await self.session.execute(current)).one()
+            status, held_until = row.status, row.locked_until
+            if status != DeliveryStatus.PENDING.value:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.DONE)
+            if held_until is not None and held_until > now:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.BUSY)
+            await self.session.execute(
+                update(DeliveryRow)
+                .where(DeliveryRow.idempotency_key == message.idempotency_key)
+                .values(locked_until=locked_until, attempts=DeliveryRow.attempts + 1),
+            )
             await self.session.commit()
-        return _delivery(row) if row else None
+        # Аренда была, но вышла без итога: прошлый держатель пропал, и исход
+        # его попытки неизвестен. Пустая аренда — прошлая попытка честно
+        # закончилась временной ошибкой.
+        return DeliveryClaim(state=ClaimState.CLAIMED, recovered=held_until is not None)
 
     async def finish(self, idempotency_key: str, status: DeliveryStatus, error: str | None = None) -> None:
-        values: dict[str, Any] = {'status': status.value, 'error': error}
+        values: dict[str, Any] = {'status': status.value, 'error': error, 'locked_until': None}
         if status is DeliveryStatus.SENT:
             values['sent_at'] = func.now()
         async with self._errors():
@@ -428,15 +458,17 @@ class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
             )
             await self.session.commit()
 
-    async def release(self, idempotency_key: str) -> None:
+    async def release(self, idempotency_key: str, error: str) -> None:
         async with self._errors():
             await self.session.execute(
-                delete(DeliveryRow).where(
+                update(DeliveryRow)
+                .where(
                     DeliveryRow.idempotency_key == idempotency_key,
-                    # Снимается только бронь: отправленное письмо из истории
-                    # не исчезает, даже если повтор пришёл после успеха.
+                    # Снимается только незавершённое: отправленное письмо из
+                    # истории не исчезает, даже если повтор пришёл после успеха.
                     DeliveryRow.status == DeliveryStatus.PENDING.value,
-                ),
+                )
+                .values(locked_until=None, error=error),
             )
             await self.session.commit()
 

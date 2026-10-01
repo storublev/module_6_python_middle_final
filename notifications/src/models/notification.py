@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.enums import Channel, DeliveryStatus
+from models.enums import Channel, ClaimState, DeliveryStatus
 
 # Дженерик через TypeVar, а не синтаксисом PEP 695: `class Page[T]` требует
 # Python 3.12, а CI по заданию гоняет код и на 3.10.
@@ -100,6 +100,18 @@ class Delivery(BaseModel):
     error: str | None
     created_at: datetime
     sent_at: datetime | None
+
+
+class DeliveryClaim(BaseModel):
+    """Итог попытки забрать письмо на отправку."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: ClaimState
+    # Письмо забрано у отправителя, чья аренда вышла без итога. Такой
+    # отправитель мог успеть отдать письмо почтовому серверу и упасть до
+    # записи: исход прошлой попытки неизвестен.
+    recovered: bool = False
 
 
 class Recipient(BaseModel):

@@ -178,6 +178,11 @@ class DeliveryRow(Timestamped, Base):
     status: Mapped[str] = mapped_column(String(16))
     error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # До какого момента письмо держит отправитель. Пусто — никто не держит;
+    # в прошлом — держатель пропал, и письмо может забрать другой.
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Сколько раз письмо забирали на отправку.
+    attempts: Mapped[int] = mapped_column(server_default=text('0'))
 
 
 class CampaignRow(Timestamped, Base):

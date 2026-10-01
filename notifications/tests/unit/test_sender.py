@@ -7,7 +7,8 @@ import pytest
 from channels.base import ChannelUnavailableError
 from models.enums import Channel, DeliveryStatus
 from services.messages import SendMessage
-from services.sender import SenderService
+from services.sender import DeliveryInProgressError, SenderService
+from tests.unit.conftest import SEND_LEASE
 from tests.unit.fakes import Database, FakeChannel, FakeDeliveryRepository
 
 
@@ -63,10 +64,10 @@ async def test_delivery_is_recorded_before_sending(
 async def test_temporary_failure_releases_the_key(
     sender: SenderService, db: Database, channel: FakeChannel,
 ) -> None:
-    """Временный отказ канала снимает бронь ключа и поднимается наружу.
+    """Временный отказ канала снимает аренду, оставляя письмо в истории с причиной.
 
-    Без снятия брони повтор упёрся бы в собственный ключ, и письмо не ушло бы
-    никогда — то есть «ничего не теряется» превратилось бы в «тихо потеряли».
+    Без снятия аренды повтор ждал бы её конца, а запись с причиной видна в
+    личном кабинете и при разборе.
     """
     channel.unavailable_times = 1
     message = send_message()
@@ -74,7 +75,10 @@ async def test_temporary_failure_releases_the_key(
     with pytest.raises(ChannelUnavailableError):
         await sender.send(message)
 
-    assert message.idempotency_key not in db.deliveries
+    delivery = db.deliveries[message.idempotency_key]
+    assert delivery.status is DeliveryStatus.PENDING
+    assert delivery.error == 'Почтовый сервер не отвечает'
+    assert message.idempotency_key not in db.delivery_leases
 
 
 async def test_message_is_delivered_after_retry(sender: SenderService, channel: FakeChannel) -> None:
@@ -111,7 +115,7 @@ async def test_unknown_channel_is_recorded_as_failure(
     deliveries_repo: FakeDeliveryRepository, notifications_repo, db: Database,
 ) -> None:
     """Сообщение в неподключённый канал не теряется молча, а попадает в историю с ошибкой."""
-    sender = SenderService(deliveries_repo, notifications_repo, {})
+    sender = SenderService(deliveries_repo, notifications_repo, {}, SEND_LEASE)
     message = send_message(channel=Channel.SMS)
 
     sent = await sender.send(message)
@@ -149,3 +153,70 @@ async def test_failed_send_does_not_mark_content_as_notified(
     await sender.send(message)
 
     assert await notifications_repo.get(message.user_id, message.template_code, 'series-42') is None
+
+
+async def test_crash_before_sending_does_not_lose_the_letter(
+    sender: SenderService, deliveries_repo: FakeDeliveryRepository, channel: FakeChannel,
+) -> None:
+    """Отправитель упал между захватом и отправкой — письмо уходит после конца аренды.
+
+    Раньше брошенная запись `PENDING` считалась «уже отправлено»: после
+    перезапуска письмо пропускалось, а сообщение подтверждалось брокеру.
+    """
+    from datetime import datetime, timezone
+
+    from models.notification import RenderedMessage
+
+    message = send_message()
+    start = datetime.now(timezone.utc)
+    # Упавший отправитель успел только забрать письмо.
+    await deliveries_repo.claim(RenderedMessage(**message.model_dump(exclude={'content_id', 'content_version'})),
+                                SEND_LEASE, start)
+
+    sent = await sender.send(message, now=start + SEND_LEASE)
+
+    assert sent is True
+    assert len(channel.sent) == 1
+
+
+async def test_letter_in_flight_is_retried_not_acknowledged(
+    sender: SenderService, deliveries_repo: FakeDeliveryRepository, channel: FakeChannel,
+) -> None:
+    """Пока чужая аренда идёт, повтор не отправляет письмо и не считает его отправленным.
+
+    Он поднимает ошибку, и сообщение уходит в отложенный повтор: если
+    держатель упадёт, письмо заберут позже, а не потеряют.
+    """
+    from datetime import datetime, timezone
+
+    from models.notification import RenderedMessage
+
+    message = send_message()
+    start = datetime.now(timezone.utc)
+    await deliveries_repo.claim(RenderedMessage(**message.model_dump(exclude={'content_id', 'content_version'})),
+                                SEND_LEASE, start)
+
+    with pytest.raises(DeliveryInProgressError):
+        await sender.send(message, now=start + SEND_LEASE / 2)
+    assert channel.sent == []
+
+
+async def test_only_one_sender_takes_over_an_abandoned_letter(
+    deliveries_repo: FakeDeliveryRepository,
+) -> None:
+    """Брошенное письмо забирает ровно один отправитель, второй видит занятую аренду."""
+    from datetime import datetime, timezone
+
+    from models.enums import ClaimState
+    from models.notification import RenderedMessage
+
+    rendered = RenderedMessage(**send_message().model_dump(exclude={'content_id', 'content_version'}))
+    start = datetime.now(timezone.utc)
+    await deliveries_repo.claim(rendered, SEND_LEASE, start)
+
+    first = await deliveries_repo.claim(rendered, SEND_LEASE, start + SEND_LEASE)
+    second = await deliveries_repo.claim(rendered, SEND_LEASE, start + SEND_LEASE)
+
+    assert first.state is ClaimState.CLAIMED
+    assert first.recovered is True
+    assert second.state is ClaimState.BUSY

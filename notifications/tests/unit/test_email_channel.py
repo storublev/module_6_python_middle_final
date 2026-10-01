@@ -35,6 +35,21 @@ def test_email_has_required_headers() -> None:
     assert mail['Subject'] == 'Добро пожаловать в Practix!'
 
 
+def test_message_id_is_stable_for_the_same_letter() -> None:
+    """Повтор того же письма уходит с тем же Message-ID.
+
+    Если сервер принял письмо, а ответ потерялся, повтор неизбежен: SMTP не
+    даёт узнать, дошло ли письмо. Постоянный идентификатор позволяет почтовой
+    службе склеить повтор с оригиналом.
+    """
+    first = build_email(SENDER, message(idempotency_key='abc123'))
+    again = build_email(SENDER, message(idempotency_key='abc123'))
+    other = build_email(SENDER, message(idempotency_key='def456'))
+
+    assert first['Message-ID'] == again['Message-ID'] == '<abc123@practix.local>'
+    assert other['Message-ID'] != first['Message-ID']
+
+
 def test_cyrillic_subject_is_encoded() -> None:
     """Кириллица в теме кодируется, а не уезжает кракозябрами.
 

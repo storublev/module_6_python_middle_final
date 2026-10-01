@@ -5,7 +5,7 @@
 устроены тесты остальных сервисов кинотеатра.
 
 Заглушки повторяют не форму таблиц, а **поведение контракта**: например,
-`remember` возвращает False на повтор, а `reserve` — None на занятый ключ.
+`remember` возвращает False на повтор, а `claim` — BUSY, пока идёт чужая аренда.
 Если заглушка будет мягче настоящего хранилища, тесты пройдут там, где
 рабочий код упадёт.
 """
@@ -18,10 +18,11 @@ from uuid import UUID, uuid4
 
 from channels.base import ChannelUnavailableError, DeliveryChannel, MessageRejectedError
 from models.campaign import Campaign, CampaignDraft
-from models.enums import CampaignStatus, Channel, DeliveryStatus
+from models.enums import CampaignStatus, Channel, ClaimState, DeliveryStatus
 from models.event import Audience, Event
 from models.notification import (
     Delivery,
+    DeliveryClaim,
     EmailConfirmation,
     NotificationRecord,
     Page,
@@ -64,6 +65,8 @@ class Database:
     subscriptions: dict[tuple[UUID, str, str], Subscription] = field(default_factory=dict)
     notifications: dict[tuple[UUID, str, str], NotificationRecord] = field(default_factory=dict)
     deliveries: dict[str, Delivery] = field(default_factory=dict)
+    # Аренды отправок: ключ идемпотентности → до какого момента держат.
+    delivery_leases: dict[str, datetime] = field(default_factory=dict)
     campaigns: dict[UUID, Campaign] = field(default_factory=dict)
     campaign_context: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     campaign_runs: set[tuple[UUID, str]] = field(default_factory=set)
@@ -243,29 +246,39 @@ class FakeDeliveryRepository(DeliveryRepository):
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    async def reserve(self, message: RenderedMessage) -> Delivery | None:
-        if message.idempotency_key in self.db.deliveries:
-            return None
-        delivery = Delivery(
-            id=uuid4(), idempotency_key=message.idempotency_key, user_id=message.user_id,
-            channel=message.channel, template_code=message.template_code, subject=message.subject,
-            status=DeliveryStatus.PENDING, error=None, created_at=now(), sent_at=None,
-        )
-        self.db.deliveries[message.idempotency_key] = delivery
-        return delivery
+    async def claim(self, message: RenderedMessage, lease: timedelta, now: datetime) -> DeliveryClaim:
+        key = message.idempotency_key
+        delivery = self.db.deliveries.get(key)
+        if delivery is None:
+            self.db.deliveries[key] = Delivery(
+                id=uuid4(), idempotency_key=key, user_id=message.user_id,
+                channel=message.channel, template_code=message.template_code, subject=message.subject,
+                status=DeliveryStatus.PENDING, error=None, created_at=now, sent_at=None,
+            )
+            self.db.delivery_leases[key] = now + lease
+            return DeliveryClaim(state=ClaimState.CLAIMED)
+        if delivery.status is not DeliveryStatus.PENDING:
+            return DeliveryClaim(state=ClaimState.DONE)
+        held_until = self.db.delivery_leases.get(key)
+        if held_until is not None and held_until > now:
+            return DeliveryClaim(state=ClaimState.BUSY)
+        self.db.delivery_leases[key] = now + lease
+        return DeliveryClaim(state=ClaimState.CLAIMED, recovered=held_until is not None)
 
     async def finish(self, idempotency_key: str, status: DeliveryStatus, error: str | None = None) -> None:
         delivery = self.db.deliveries.get(idempotency_key)
         if delivery is None:
             return
+        self.db.delivery_leases.pop(idempotency_key, None)
         self.db.deliveries[idempotency_key] = delivery.model_copy(update={
             'status': status, 'error': error, 'sent_at': now() if status is DeliveryStatus.SENT else None,
         })
 
-    async def release(self, idempotency_key: str) -> None:
+    async def release(self, idempotency_key: str, error: str) -> None:
         delivery = self.db.deliveries.get(idempotency_key)
         if delivery is not None and delivery.status is DeliveryStatus.PENDING:
-            del self.db.deliveries[idempotency_key]
+            self.db.delivery_leases.pop(idempotency_key, None)
+            self.db.deliveries[idempotency_key] = delivery.model_copy(update={'error': error})
 
     async def list_for_user(self, user_id: UUID, page_number: int, page_size: int) -> Page[Delivery]:
         items = sorted(

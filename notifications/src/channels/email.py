@@ -19,6 +19,7 @@ Exchange-аккаунта — 30 в минуту. Воркер сам себя �
 import asyncio
 import logging
 from email.message import EmailMessage
+from email.utils import parseaddr
 from time import monotonic
 
 import aiosmtplib
@@ -173,11 +174,21 @@ def build_email(sender: str, message: RenderedMessage) -> EmailMessage:
     mail['From'] = sender
     mail['To'] = message.address
     mail['Subject'] = message.subject
+    # Постоянный идентификатор из ключа идемпотентности. Если сервер принял
+    # письмо, а ответ потерялся, повтор уйдёт с тем же Message-ID, и почтовая
+    # служба, склеивающая письма по нему, покажет одно, а не два.
+    mail['Message-ID'] = f'<{message.idempotency_key}@{_domain_of(sender)}>'
     # Текстовая часть — для почтовых клиентов без HTML и для антиспама: письмо
     # из одного HTML чаще считают подозрительным.
     mail.set_content(strip_html(message.body))
     mail.add_alternative(message.body, subtype='html')
     return mail
+
+
+def _domain_of(sender: str) -> str:
+    """Домен адреса отправителя для Message-ID; запасной — если адрес без домена."""
+    _, address = parseaddr(sender)
+    return address.rpartition('@')[2] or 'practix.local'
 
 
 def strip_html(html: str) -> str:

@@ -34,6 +34,7 @@ BASE_URL = 'https://practix.local'
 # Маленькая пачка, чтобы упереться в неё на трёх получателях.
 BATCH_SIZE = 2
 CONFIRM_TTL = timedelta(days=3)
+SEND_LEASE = timedelta(minutes=2)
 
 
 @pytest.fixture
@@ -152,7 +153,7 @@ def sender(
     notifications_repo: FakeNotificationRepository,
     channel: FakeChannel,
 ) -> SenderService:
-    return SenderService(deliveries_repo, notifications_repo, {channel.channel.value: channel})
+    return SenderService(deliveries_repo, notifications_repo, {channel.channel.value: channel}, SEND_LEASE)
 
 
 @pytest.fixture

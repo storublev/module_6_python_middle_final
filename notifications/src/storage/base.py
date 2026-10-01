@@ -22,6 +22,7 @@ from models.enums import Channel, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    DeliveryClaim,
     EmailConfirmation,
     NotificationRecord,
     Page,
@@ -177,25 +178,31 @@ class DeliveryRepository(ABC):
     """История отправок и ключи идемпотентности."""
 
     @abstractmethod
-    async def reserve(self, message: RenderedMessage) -> Delivery | None:
-        """Занимает ключ идемпотентности до отправки.
+    async def claim(self, message: RenderedMessage, lease: timedelta, now: datetime) -> DeliveryClaim:
+        """Забирает письмо на отправку под аренду.
 
-        None означает, что ключ уже занят: письмо отправлено или отправляется
-        прямо сейчас, и второй раз его слать не нужно. Это и есть защита от
-        дублей поверх гарантии at-least-once (ADR-11).
+        * записи нет — заводится в `PENDING` с арендой: письмо наше;
+        * запись в `PENDING`, аренды нет или она вышла — аренда переходит к
+          нам. Забирает её ровно один отправитель: проверка и захват — одна
+          операция;
+        * аренда ещё идёт — письмо отправляет кто-то другой (`BUSY`);
+        * письмо в окончательном состоянии — отправлять нечего (`DONE`).
+
+        Аренда закрывает дыру прежней брони: отправитель, упавший между
+        бронью и отправкой, оставлял запись, которую любой повтор принимал за
+        «уже отправлено», и письмо не уходило никогда.
         """
 
     @abstractmethod
     async def finish(self, idempotency_key: str, status: DeliveryStatus, error: str | None = None) -> None:
-        """Проставляет итог отправки."""
+        """Проставляет окончательный итог и снимает аренду."""
 
     @abstractmethod
-    async def release(self, idempotency_key: str) -> None:
-        """Снимает бронь, чтобы сообщение можно было повторить.
+    async def release(self, idempotency_key: str, error: str) -> None:
+        """Снимает аренду, оставляя письмо в `PENDING`: следующий повтор заберёт его сразу.
 
         Нужен, когда отправка не состоялась по причине, которая пройдёт сама
-        (почтовый сервер не ответил): без этого повтор упёрся бы в свой же
-        ключ и письмо не ушло бы никогда.
+        (почтовый сервер не ответил). Запись остаётся в истории с причиной.
         """
 
     @abstractmethod

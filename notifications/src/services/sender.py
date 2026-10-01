@@ -2,33 +2,53 @@
 
 Порядок шагов здесь — главное в защите от дублей (ADR-11):
 
-1. **занять ключ идемпотентности** в базе. Если он занят, письмо уже
-   отправлено или отправляется прямо сейчас — выходим, ничего не делая. Это и
-   есть страховка поверх гарантии at-least-once: брокер вправе доставить
-   сообщение повторно, и это нормально;
+1. **забрать письмо под аренду** по ключу идемпотентности. Письмо уже
+   отправлено (или отклонено) — выходим, ничего не делая: брокер вправе
+   доставить сообщение повторно, и это нормально. Письмо прямо сейчас
+   отправляет другой отправитель — сообщение возвращается в отложенный
+   повтор, а не подтверждается: если тот отправитель упадёт, письмо должно
+   уйти, а не потеряться;
 2. отправить через канал;
 3. отметить итог.
 
-Почему бронь до отправки, а не после. Падение между отправкой и записью в
-худшем случае даёт письмо, помеченное отправленным, но не ушедшее: это видно
-в истории и чинится повтором. Обратный порядок дал бы дубль — а дубль
-пользователю виден и обиден, о чём прямо говорит урок.
+Почему аренда, а не вечная бронь. Раньше запись `PENDING` ставилась до
+отправки, а повтор принимал любую запись за «уже отправлено». Отправитель,
+упавший между бронью и отправкой, оставлял письмо неотправленным навсегда.
+Аренда даёт срок: вышел — письмо забирает другой отправитель, и ровно один.
 
-Временная ошибка канала снимает бронь и поднимается наружу: воркер отправит
+Чего аренда не решает и не может. Почтовый сервер мог принять письмо, а
+ответ — потеряться (обрыв, таймаут). Узнать, ушло ли письмо, нельзя: SMTP не
+даёт ни подтверждения по ключу, ни способа спросить. Выбор — между риском
+потерять письмо и риском прислать его дважды. Мы повторяем (at-least-once),
+но у каждого письма постоянный `Message-ID` из ключа идемпотентности: повтор
+несёт тот же идентификатор, и почтовые службы, которые склеивают письма по
+нему (Gmail так делает), покажут одно. Такие повторы отмечаются в журнале
+предупреждением — по ним видно, сколько писем могли задвоиться.
+
+Временная ошибка канала снимает аренду и поднимается наружу: воркер отправит
 сообщение в отложенный повтор, и письмо всё-таки уйдёт. Постоянный отказ
 (нет такого ящика) повторять бессмысленно — он записывается как неудача.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from channels.base import ChannelUnavailableError, DeliveryChannel, MessageRejectedError
-from models.enums import DeliveryStatus
+from models.enums import ClaimState, DeliveryStatus
 from models.notification import RenderedMessage
 from services.messages import SendMessage
 from storage.base import DeliveryRepository, NotificationRepository
 
 logger = logging.getLogger(__name__)
+
+
+class DeliveryInProgressError(Exception):
+    """Письмо прямо сейчас отправляет другой отправитель.
+
+    Это не ошибка письма: сообщение надо повторить позже. К тому времени
+    письмо будет либо отправлено (повтор выйдет ничего не делая), либо
+    брошено (аренда выйдет, и повтор его заберёт).
+    """
 
 
 class SenderService:
@@ -39,16 +59,19 @@ class SenderService:
         deliveries: DeliveryRepository,
         notifications: NotificationRepository,
         channels: dict[str, DeliveryChannel],
+        lease: timedelta,
     ) -> None:
         self._deliveries = deliveries
         self._notifications = notifications
         self._channels = channels
+        self._lease = lease
 
     async def send(self, message: SendMessage, now: datetime | None = None) -> bool:
-        """Отправляет сообщение. Возвращает False, если оно уже было отправлено.
+        """Отправляет сообщение. Возвращает False, если отправлять не нужно.
 
         Raises:
             ChannelUnavailableError: канал временно не работает — повторить позже.
+            DeliveryInProgressError: письмо отправляет другой отправитель — повторить позже.
         """
         moment = now or datetime.now(timezone.utc)
         rendered = RenderedMessage(
@@ -60,13 +83,19 @@ class SenderService:
             subject=message.subject,
             body=message.body,
         )
-        reserved = await self._deliveries.reserve(rendered)
-        if reserved is None:
-            logger.info(
-                'Письмо уже отправлено, повтор пропущен',
-                extra={'user_id': str(message.user_id), 'template': message.template_code},
-            )
+        claim = await self._deliveries.claim(rendered, self._lease, moment)
+        log_extra = {'user_id': str(message.user_id), 'template': message.template_code}
+        if claim.state is ClaimState.DONE:
+            logger.info('Письмо уже отправлено или отклонено, повтор пропущен', extra=log_extra)
             return False
+        if claim.state is ClaimState.BUSY:
+            raise DeliveryInProgressError('Письмо отправляет другой отправитель')
+        if claim.recovered:
+            logger.warning(
+                'Письмо забрано у отправителя, пропавшего без итога: возможен дубль, '
+                'его склеит постоянный Message-ID',
+                extra=log_extra,
+            )
 
         channel = self._channels.get(message.channel.value)
         if channel is None:
@@ -78,18 +107,15 @@ class SenderService:
         try:
             await channel.send(rendered)
         except MessageRejectedError as error:
-            # Навсегда: адрес не станет существующим от ожидания. Бронь не
-            # снимаем — повтор ничего не изменит, а запись нужна для разбора.
+            # Навсегда: адрес не станет существующим от ожидания. Запись
+            # остаётся окончательной неудачей — повтор ничего не изменит.
             await self._deliveries.finish(message.idempotency_key, DeliveryStatus.FAILED, str(error))
-            logger.warning(
-                'Канал отказался от сообщения навсегда: %s', error,
-                extra={'user_id': str(message.user_id)},
-            )
+            logger.warning('Канал отказался от сообщения навсегда: %s', error, extra=log_extra)
             return False
-        except ChannelUnavailableError:
-            # Временно: снимаем бронь, иначе повтор упрётся в собственный ключ
-            # и письмо не уйдёт никогда.
-            await self._deliveries.release(message.idempotency_key)
+        except ChannelUnavailableError as error:
+            # Временно: снимаем аренду, чтобы повтор забрал письмо сразу, а не
+            # ждал её конца.
+            await self._deliveries.release(message.idempotency_key, str(error))
             raise
 
         await self._deliveries.finish(message.idempotency_key, DeliveryStatus.SENT)
@@ -99,9 +125,5 @@ class SenderService:
             await self._notifications.mark_notified(
                 message.user_id, message.template_code, message.content_id, message.content_version, moment,
             )
-        logger.info(
-            'Сообщение отправлено',
-            extra={'user_id': str(message.user_id), 'template': message.template_code,
-                   'channel': message.channel.value},
-        )
+        logger.info('Сообщение отправлено', extra={**log_extra, 'channel': message.channel.value})
         return True
