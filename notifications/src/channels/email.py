@@ -70,17 +70,31 @@ class SmtpConnectionPool:
         self._slots = asyncio.Semaphore(size)
 
     async def acquire(self) -> aiosmtplib.SMTP:
+        """Отдаёт соединение из пула или открывает новое.
+
+        Место в пуле занимается до подключения, а значит, и вернуть его
+        обязан тот, кто занял, если подключиться не удалось. Иначе каждая
+        неудачная попытка навсегда съедает место: при пуле из четырёх
+        соединений четыре сбоя сервера — и все следующие письма ждут
+        освобождения, которого не будет, даже когда сервер уже поднялся.
+        """
         await self._slots.acquire()
         try:
-            client = self._free.get_nowait()
-        except asyncio.QueueEmpty:
-            client = await self._connect()
+            try:
+                client = self._free.get_nowait()
+            except asyncio.QueueEmpty:
+                return await self._connect()
+            if not client.is_connected:
+                # Сервер мог закрыть простаивающее соединение сам — тогда просто
+                # открываем новое вместо того, чтобы отдавать сломанное.
+                client = await self._connect()
             return client
-        if not client.is_connected:
-            # Сервер мог закрыть простаивающее соединение сам — тогда просто
-            # открываем новое вместо того, чтобы отдавать сломанное.
-            client = await self._connect()
-        return client
+        except BaseException:
+            # BaseException, а не Exception: отмена задачи (CancelledError) тоже
+            # должна вернуть место, иначе остановка воркера посреди
+            # подключения оставит пул меньше, чем он был.
+            self._slots.release()
+            raise
 
     def release(self, client: aiosmtplib.SMTP, broken: bool = False) -> None:
         if broken:
@@ -99,8 +113,14 @@ class SmtpConnectionPool:
             await client.connect()
             if self._user:
                 await client.login(self._user, self._password)
-        except (aiosmtplib.SMTPException, OSError) as error:
-            raise ChannelUnavailableError(f'SMTP недоступен: {error}') from error
+        except BaseException as error:
+            # Соединение могло успеть открыться, а вход — нет. Такое соединение
+            # не годится и в пул не попадёт, поэтому закрываем его здесь, а не
+            # оставляем висеть до таймаута сервера.
+            client.close()
+            if isinstance(error, (aiosmtplib.SMTPException, OSError)):
+                raise ChannelUnavailableError(f'SMTP недоступен: {error}') from error
+            raise
         return client
 
     async def close(self) -> None:

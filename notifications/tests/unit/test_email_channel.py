@@ -121,3 +121,103 @@ def test_message_without_address_is_rejected() -> None:
 
     with pytest.raises(MessageRejectedError):
         asyncio.run(channel.send(message(address='')))
+
+
+class FlakySmtp:
+    """Подставной SMTP-клиент: подключение и вход ломаются по команде теста."""
+
+    connect_fails = False
+    login_fails = False
+    connect_hangs = False
+    instances: list['FlakySmtp'] = []
+
+    def __init__(self, **_: object) -> None:
+        self.is_connected = False
+        self.closed = False
+        FlakySmtp.instances.append(self)
+
+    async def connect(self) -> None:
+        if FlakySmtp.connect_hangs:
+            await asyncio.sleep(3600)
+        if FlakySmtp.connect_fails:
+            raise ConnectionRefusedError('сервер не отвечает')
+        self.is_connected = True
+
+    async def login(self, user: str, password: str) -> None:
+        if FlakySmtp.login_fails:
+            import aiosmtplib
+
+            raise aiosmtplib.SMTPAuthenticationError(535, 'неверный пароль')
+
+    def close(self) -> None:
+        self.closed = True
+        self.is_connected = False
+
+
+@pytest.fixture
+def flaky_smtp(monkeypatch: pytest.MonkeyPatch) -> type[FlakySmtp]:
+    import channels.email
+
+    FlakySmtp.connect_fails = FlakySmtp.login_fails = FlakySmtp.connect_hangs = False
+    FlakySmtp.instances = []
+    monkeypatch.setattr(channels.email.aiosmtplib, 'SMTP', FlakySmtp)
+    return FlakySmtp
+
+
+def pool(size: int = 2, user: str = '') -> 'SmtpConnectionPool':  # noqa: F821 - импорт внутри
+    from channels.email import SmtpConnectionPool
+
+    return SmtpConnectionPool('smtp.local', 25, False, user, 'secret', size, 5.0)
+
+
+async def test_failed_connections_do_not_exhaust_the_pool(flaky_smtp: type[FlakySmtp]) -> None:
+    """Сбои подключения не съедают места в пуле.
+
+    Раньше место занималось до подключения и не возвращалось при ошибке:
+    после стольких сбоев, сколько мест в пуле, все следующие письма ждали
+    вечно, даже когда сервер уже поднялся.
+    """
+    from channels.base import ChannelUnavailableError
+
+    smtp_pool = pool(size=2)
+    flaky_smtp.connect_fails = True
+    for _ in range(5):
+        with pytest.raises(ChannelUnavailableError):
+            await smtp_pool.acquire()
+
+    flaky_smtp.connect_fails = False
+    first = await asyncio.wait_for(smtp_pool.acquire(), timeout=1)
+    second = await asyncio.wait_for(smtp_pool.acquire(), timeout=1)
+
+    assert first.is_connected and second.is_connected
+
+
+async def test_failed_login_closes_the_connection(flaky_smtp: type[FlakySmtp]) -> None:
+    """Соединение, на котором не удался вход, закрывается и место возвращается."""
+    from channels.base import ChannelUnavailableError
+
+    smtp_pool = pool(size=1, user='mailer')
+    flaky_smtp.login_fails = True
+
+    with pytest.raises(ChannelUnavailableError):
+        await smtp_pool.acquire()
+
+    assert flaky_smtp.instances[0].closed is True
+    flaky_smtp.login_fails = False
+    client = await asyncio.wait_for(smtp_pool.acquire(), timeout=1)
+    assert client.is_connected
+
+
+async def test_cancelled_connection_returns_its_slot(flaky_smtp: type[FlakySmtp]) -> None:
+    """Отмена посреди подключения тоже возвращает место: так останавливается воркер."""
+    smtp_pool = pool(size=1)
+    flaky_smtp.connect_hangs = True
+    pending = asyncio.create_task(smtp_pool.acquire())
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    flaky_smtp.connect_hangs = False
+    client = await asyncio.wait_for(smtp_pool.acquire(), timeout=1)
+    assert client.is_connected
