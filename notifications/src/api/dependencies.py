@@ -1,7 +1,8 @@
 """Сборка сервисов для эндпоинтов (Composition Root).
 
-Только здесь выбираются конкретные реализации: PostgreSQL, RabbitMQ и
-сервис авторизации по HTTP. Бизнес-логика получает их через конструктор и
+Только здесь выбираются конкретные реализации: PostgreSQL и сервис
+авторизации по HTTP. RabbitMQ в API не нужен: события ставятся в очередь через
+outbox, а публикует их ретранслятор. Бизнес-логика получает их через конструктор и
 зависит от интерфейсов из `storage/base.py`, поэтому ничего не знает ни о
 SQLAlchemy, ни о aio-pika, ни о FastAPI.
 """
@@ -26,7 +27,6 @@ from storage.base import (
     DeliveryRepository,
     EmailConfirmationRepository,
     EventStore,
-    MessagePublisher,
     ShortLinkRepository,
     SubscriptionRepository,
     TemplateRepository,
@@ -45,11 +45,6 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 # Линтер принимает имя заголовка за пароль из-за слова token.
 SERVICE_TOKEN_HEADER = 'X-Service-Token'  # noqa: S105
-
-
-def get_publisher(request: Request) -> MessagePublisher:
-    """Публикатор живёт всё время работы приложения: соединение с брокером одно."""
-    return request.app.state.publisher
 
 
 def get_events(session: DbSession) -> EventStore:
@@ -87,19 +82,18 @@ Deliveries = Annotated[DeliveryRepository, Depends(get_deliveries_repo)]
 Campaigns = Annotated[CampaignRepository, Depends(get_campaigns_repo)]
 Links = Annotated[ShortLinkRepository, Depends(get_links_repo)]
 Confirmations = Annotated[EmailConfirmationRepository, Depends(get_confirmations_repo)]
-Publisher = Annotated[MessagePublisher, Depends(get_publisher)]
 
 
-def get_ingest_service(events: Events, publisher: Publisher) -> IngestService:
-    return IngestService(events, publisher)
+def get_ingest_service(events: Events) -> IngestService:
+    return IngestService(events)
 
 
 def get_template_service(request: Request, templates: Templates) -> TemplateService:
     return TemplateService(templates, request.app.state.renderer)
 
 
-def get_campaign_service(campaigns: Campaigns, templates: Templates, publisher: Publisher) -> CampaignService:
-    return CampaignService(campaigns, templates, publisher)
+def get_campaign_service(campaigns: Campaigns, templates: Templates) -> CampaignService:
+    return CampaignService(campaigns, templates)
 
 
 def get_subscription_service(subscriptions: Subscriptions) -> SubscriptionService:

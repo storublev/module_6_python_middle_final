@@ -10,7 +10,7 @@ from models.event import Audience
 from services.campaigns import CampaignService, last_fire_time
 from services.errors import CampaignNotRunnableError, TemplateNotFoundError
 from storage.rabbit import STAGE_PLAN
-from tests.unit.fakes import Database, FakePublisher, template
+from tests.unit.fakes import Database, template
 
 FRIDAY_18_00 = datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc)
 AUDIENCE = Audience(kind=AudienceKind.ALL)
@@ -23,7 +23,7 @@ def draft(**overrides: object) -> CampaignDraft:
 
 
 async def test_campaign_without_schedule_starts_immediately(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Рассылка без расписания уходит сразу — это кнопка «Отправить»."""
     db.templates['weekly_digest'] = template('weekly_digest')
@@ -31,11 +31,11 @@ async def test_campaign_without_schedule_starts_immediately(
     campaign = await campaigns.create(draft(), created_by='manager')
 
     assert campaign.status is CampaignStatus.RUNNING
-    assert len(publisher.of(STAGE_PLAN)) == 1
+    assert len(db.outbox_of(STAGE_PLAN)) == 1
 
 
 async def test_scheduled_campaign_waits(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Отложенная рассылка не уходит в момент создания."""
     db.templates['weekly_digest'] = template('weekly_digest')
@@ -44,7 +44,7 @@ async def test_scheduled_campaign_waits(
     campaign = await campaigns.create(draft(scheduled_at=later), created_by='manager')
 
     assert campaign.status is CampaignStatus.SCHEDULED
-    assert publisher.of(STAGE_PLAN) == []
+    assert db.outbox_of(STAGE_PLAN) == []
 
 
 async def test_campaign_with_unknown_template_is_rejected(campaigns: CampaignService) -> None:
@@ -58,7 +58,7 @@ async def test_campaign_with_unknown_template_is_rejected(campaigns: CampaignSer
 
 
 async def test_due_scheduled_campaign_is_launched(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Генератор запускает отложенную рассылку, когда её время пришло."""
     db.templates['weekly_digest'] = template('weekly_digest')
@@ -68,11 +68,11 @@ async def test_due_scheduled_campaign_is_launched(
     launched = await campaigns.launch_due(datetime.now(timezone.utc))
 
     assert launched == 1
-    assert len(publisher.of(STAGE_PLAN)) == 1
+    assert len(db.outbox_of(STAGE_PLAN)) == 1
 
 
 async def test_second_pass_does_not_launch_the_same_period_twice(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Два прохода генератора подряд не рассылают одно и то же дважды.
 
@@ -87,11 +87,11 @@ async def test_second_pass_does_not_launch_the_same_period_twice(
     second = await campaigns.launch_due(datetime.now(timezone.utc))
 
     assert (first, second) == (1, 0)
-    assert len(publisher.of(STAGE_PLAN)) == 1
+    assert len(db.outbox_of(STAGE_PLAN)) == 1
 
 
 async def test_recurring_campaign_launches_once_per_period(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Повторяемая рассылка уходит один раз за срабатывание расписания.
 
@@ -108,7 +108,7 @@ async def test_recurring_campaign_launches_once_per_period(
 
 
 async def test_recurring_campaign_launches_again_next_week(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Через неделю та же рассылка уходит снова: это другой период."""
     db.templates['weekly_digest'] = template('weekly_digest')
@@ -118,11 +118,11 @@ async def test_recurring_campaign_launches_again_next_week(
     next_week = await campaigns.launch_due(FRIDAY_18_00 + timedelta(days=7))
 
     assert next_week == 1
-    assert len(publisher.of(STAGE_PLAN)) == 2
+    assert len(db.outbox_of(STAGE_PLAN)) == 2
 
 
 async def test_downtime_does_not_resend_old_periods(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Генератор, проснувшийся через сутки, не рассылает прошлые периоды.
 
@@ -136,7 +136,7 @@ async def test_downtime_does_not_resend_old_periods(
     launched = await campaigns.launch_due(FRIDAY_18_00 + timedelta(days=1))
 
     assert launched == 0
-    assert publisher.of(STAGE_PLAN) == []
+    assert db.outbox_of(STAGE_PLAN) == []
 
 
 async def test_cancelled_campaign_cannot_be_run(
@@ -153,14 +153,14 @@ async def test_cancelled_campaign_cannot_be_run(
 
 
 async def test_campaign_context_reaches_the_queue(
-    campaigns: CampaignService, db: Database, publisher: FakePublisher,
+    campaigns: CampaignService, db: Database,
 ) -> None:
     """Данные, заданные менеджером, доезжают до планировщика."""
     db.templates['weekly_digest'] = template('weekly_digest')
 
     await campaigns.create(draft(context={'items': ['Матрица']}), created_by='manager')
 
-    assert publisher.of(STAGE_PLAN)[0]['context'] == {'items': ['Матрица']}
+    assert db.outbox_of(STAGE_PLAN)[0]['context'] == {'items': ['Матрица']}
 
 
 def test_cron_matches_weekday_and_time() -> None:
@@ -185,3 +185,27 @@ def test_broken_cron_never_fires() -> None:
     assert last_fire_time('каждую пятницу', FRIDAY_18_00) is None
     assert last_fire_time('0 18 * *', FRIDAY_18_00) is None
     assert last_fire_time('99 18 * * 5', FRIDAY_18_00) is None
+
+
+async def test_campaign_launch_survives_broker_outage(campaigns: CampaignService, db: Database) -> None:
+    """Запуск рассылки при лежащем брокере не «съедается»: событие ждёт в outbox.
+
+    Раньше запуск отмечался до публикации: брокер не принял событие, а
+    повторить запуск было уже нельзя — период считался отработанным.
+    """
+    from services.relay import OutboxRelay
+    from storage.base import StorageUnavailableError
+    from tests.unit.fakes import FakeOutbox, FakePublisher
+
+    db.templates['weekly_digest'] = template('weekly_digest')
+    publisher = FakePublisher()
+    publisher.fail_with = StorageUnavailableError('брокер лежит')
+    relay = OutboxRelay(FakeOutbox(db), publisher, 100, timedelta(seconds=30), timedelta(seconds=60))
+
+    await campaigns.create(draft(), created_by='manager')
+    now = datetime.now(timezone.utc)
+    await relay.relay_once(now)
+    publisher.fail_with = None
+    await relay.relay_once(now + timedelta(minutes=1))
+
+    assert len(publisher.of(STAGE_PLAN)) == 1

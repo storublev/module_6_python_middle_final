@@ -262,3 +262,24 @@ class EmailConfirmationRow(Base):
     user_id: Mapped[UUID] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255))
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class OutboxRow(Timestamped, Base):
+    """Задание на публикацию в RabbitMQ.
+
+    Пишется той же транзакцией, что и данные, к которым относится, а в брокер
+    его переносит ретранслятор. `available_at` — с какого момента задание
+    можно брать: ретранслятор сдвигает его вперёд на срок аренды, а
+    отложенные до утра письма ставятся сразу в будущее.
+    """
+
+    __tablename__ = 'outbox'
+    __table_args__ = (Index('ix_outbox_available_at', 'available_at'),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    stage: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict[str, Any]] = mapped_column(Json)
+    request_id: Mapped[str] = mapped_column(String(128))
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempts: Mapped[int] = mapped_column(server_default=text('0'))
+    last_error: Mapped[str | None] = mapped_column(Text)

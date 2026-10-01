@@ -156,8 +156,6 @@ services:
     depends_on:
       notify-postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/notify/api/v1/health')"]
       interval: 2s
@@ -174,6 +172,20 @@ services:
     depends_on:
       notify-api:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Ретранслятор outbox: API в брокер не пишет, события в очередь переносит он.
+  notify-relay:
+    build: ../..
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "relay.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   notify-render:
     build: ../..
@@ -184,6 +196,8 @@ services:
     command: ["python", "worker.py"]
     depends_on:
       notify-api:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       auth:
         condition: service_healthy
@@ -197,6 +211,8 @@ services:
     command: ["python", "worker.py"]
     depends_on:
       notify-api:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       mailpit:
         condition: service_healthy

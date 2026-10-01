@@ -115,8 +115,8 @@ def quiet_hours() -> QuietHours:
 
 
 @pytest.fixture
-def ingest(events: FakeEventStore, publisher: FakePublisher) -> IngestService:
-    return IngestService(events, publisher)
+def ingest(events: FakeEventStore) -> IngestService:
+    return IngestService(events)
 
 
 @pytest.fixture
@@ -159,9 +159,8 @@ def sender(
 def campaigns(
     campaigns_repo: FakeCampaignRepository,
     templates_repo: FakeTemplateRepository,
-    publisher: FakePublisher,
 ) -> CampaignService:
-    return CampaignService(campaigns_repo, templates_repo, publisher)
+    return CampaignService(campaigns_repo, templates_repo)
 
 
 @pytest.fixture

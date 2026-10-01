@@ -11,6 +11,10 @@
 скрипт дважды». Два экземпляра генератора, поднятые одновременно, не разошлют
 одно и то же — ключ запуска `(рассылка, период)` уникален.
 
+В RabbitMQ генератор не пишет: запуск рассылки и задание на публикацию
+ложатся в базу одной транзакцией, а в брокер их переносит ретранслятор
+(`relay.py`). Поэтому лежащий брокер не «съедает» запуск.
+
 Отсюда же следует, что простой генератора не превращается в лавину: проснувшись
 через сутки, он увидит, что запуски за прошедшие периоды уже отмечены, и
 разошлёт только то, что действительно не ушло (НФТ-5).
@@ -31,7 +35,6 @@ from core.sentry import configure_sentry
 from services.campaigns import CampaignService
 from storage.base import StorageUnavailableError
 from storage.postgres import PostgresCampaignRepository, PostgresTemplateRepository
-from storage.rabbit import RabbitPublisher, connect
 
 dictConfig(LOGGING)
 logger = logging.getLogger(__name__)
@@ -45,12 +48,6 @@ async def run() -> None:
     configure_sentry(settings.sentry_dsn, f'{settings.project_name}-scheduler', settings.sentry_environment)
     postgres.engine = postgres.create_engine(settings)
     sessions = async_sessionmaker(postgres.engine, expire_on_commit=False)
-    connection, channel = await connect(
-        settings.rabbit_url.get_secret_value(),
-        settings.rabbit_prefetch,
-        int(settings.retry_delay.total_seconds() * 1000),
-    )
-    publisher = RabbitPublisher(channel)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -60,9 +57,9 @@ async def run() -> None:
     logger.info('Генератор автоматических событий запущен')
     while not stop.is_set():
         try:
-            await tick(sessions, publisher)
+            await tick(sessions)
         except StorageUnavailableError as error:
-            # База или брокер прилегли: ждём следующего шага. Пропущенные
+            # База прилегла: ждём следующего шага. Пропущенные
             # периоды не потеряются — их подхватит следующий проход.
             logger.warning('Шаг генератора пропущен: %s', error)
         except Exception:
@@ -75,20 +72,18 @@ async def run() -> None:
             # 3.10 — его версии проверяет матрица в CI.
             continue
 
-    await connection.close()
     if postgres.engine is not None:
         await postgres.engine.dispose()
     logger.info('Генератор остановлен')
 
 
-async def tick(sessions: async_sessionmaker, publisher: RabbitPublisher) -> int:  # noqa: ANN001
+async def tick(sessions: async_sessionmaker) -> int:  # noqa: ANN001
     """Один проход: запускает всё, чему пора. Возвращает число запущенных рассылок."""
     moment = datetime.now(timezone.utc)
     async with sessions() as session:
         service = CampaignService(
             PostgresCampaignRepository(session),
             PostgresTemplateRepository(session),
-            publisher,
         )
         launched = await service.launch_due(moment)
     if launched:

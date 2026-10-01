@@ -13,7 +13,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -32,6 +32,7 @@ from models.notification import (
     Template,
     TemplateDraft,
 )
+from models.outbox import OutboxDraft, OutboxMessage
 
 
 class StorageUnavailableError(Exception):
@@ -43,17 +44,44 @@ class AlreadyExistsError(Exception):
 
 
 class EventStore(ABC):
-    """Принятые события. Нужен только ради идемпотентности приёма."""
+    """Принятые события. Нужен ради идемпотентности приёма."""
 
     @abstractmethod
-    async def remember(self, event: Event) -> bool:
-        """Запоминает событие; False — такое `event_id` уже принимали.
+    async def remember(self, event: Event, publication: OutboxDraft) -> bool:
+        """Запоминает событие вместе с заданием на публикацию; False — такое `event_id` уже принимали.
 
-        Повтор запроса после потерянного ответа не должен рождать второе
-        уведомление (ФТ-2), поэтому решение принимается по уникальному ключу
-        в базе, а не проверкой «нет ли такого» перед вставкой: между проверкой
-        и вставкой успевает пройти соперник.
+        Событие и задание записываются одной транзакцией: событие, принятое,
+        но не попавшее в очередь, невозможно — как и обратное. Повтор запроса
+        после потерянного ответа не должен рождать второе уведомление (ФТ-2),
+        поэтому решение принимается по уникальному ключу в базе, а не
+        проверкой «нет ли такого» перед вставкой: между проверкой и вставкой
+        успевает пройти соперник.
         """
+
+
+class Outbox(ABC):
+    """Задания на публикацию в брокер, ожидающие отправки."""
+
+    @abstractmethod
+    async def put(self, publication: OutboxDraft) -> None:
+        """Кладёт задание отдельно от других данных: например, отложенное до утра."""
+
+    @abstractmethod
+    async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
+        """Забирает задания, которым пора, и откладывает их на срок аренды.
+
+        Пока аренда идёт, другие ретрансляторы этих заданий не видят. Не
+        удалённое за срок аренды задание вернётся само: так переживается
+        падение ретранслятора посреди публикации.
+        """
+
+    @abstractmethod
+    async def done(self, message_id: UUID) -> None:
+        """Удаляет опубликованное задание."""
+
+    @abstractmethod
+    async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
+        """Откладывает задание до следующей попытки и запоминает причину."""
 
 
 class TemplateRepository(ABC):
@@ -199,8 +227,15 @@ class CampaignRepository(ABC):
         """Рассылки, которым пора: наступило время разовой или срок повторяемой."""
 
     @abstractmethod
-    async def claim_run(self, campaign_id: UUID, period_key: str, event_id: UUID) -> bool:
-        """Отмечает запуск рассылки за период; False — его уже отмечали.
+    async def claim_run(
+        self, campaign_id: UUID, period_key: str, event_id: UUID, publication: OutboxDraft, finish: bool,
+    ) -> bool:
+        """Отмечает запуск рассылки за период и ставит его событие в очередь; False — запуск уже был.
+
+        Отметка, задание на публикацию и, для разовой рассылки, перевод её в
+        «завершена» (`finish`) — одна транзакция. Иначе сбой брокера после
+        отметки оставлял запуск «состоявшимся», хотя ни одного письма не ушло,
+        и повторить его было нельзя.
 
         Уникальный ключ `(campaign_id, period_key)` — защита от повторов после
         простоя генератора (НФТ-5).

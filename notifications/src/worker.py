@@ -66,7 +66,7 @@ async def run(role: str) -> None:
         settings.rabbit_prefetch,
         int(settings.retry_delay.total_seconds() * 1000),
     )
-    publisher = RabbitPublisher(channel)
+    publisher = RabbitPublisher(channel, settings.rabbit_publish_timeout)
     auth_client = httpx.AsyncClient(base_url=settings.auth_url, timeout=settings.auth_timeout)
     channels = build_channels()
 

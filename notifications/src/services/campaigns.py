@@ -2,8 +2,8 @@
 
 Три способа запуска из чек-листа задания:
 
-* **сразу** — рассылка создаётся в состоянии «идёт», и событие уходит в
-  очередь тем же вызовом;
+* **сразу** — рассылка создаётся в состоянии «идёт», и событие ставится в
+  очередь тем же вызовом (через outbox, см. `services/ingest.py`);
 * **отложенно** (через 1–n часов) — `scheduled_at`, запуск подхватит генератор;
 * **повторяемо** («каждую пятницу», «каждый Новый год») — расписание в формате
   cron.
@@ -25,9 +25,10 @@ from uuid import UUID, uuid4
 from core.request_id import get_request_id
 from models.campaign import Campaign, CampaignDraft
 from models.enums import CampaignStatus, Urgency
+from models.outbox import OutboxDraft
 from services.errors import CampaignNotFoundError, CampaignNotRunnableError, TemplateNotFoundError
 from services.messages import PlanMessage
-from storage.base import CampaignRepository, MessagePublisher, TemplateRepository
+from storage.base import CampaignRepository, TemplateRepository
 from storage.rabbit import STAGE_PLAN
 
 logger = logging.getLogger(__name__)
@@ -44,11 +45,9 @@ class CampaignService:
         self,
         campaigns: CampaignRepository,
         templates: TemplateRepository,
-        publisher: MessagePublisher,
     ) -> None:
         self._campaigns = campaigns
         self._templates = templates
-        self._publisher = publisher
 
     async def create(self, draft: CampaignDraft, created_by: str | None) -> Campaign:
         """Создаёт рассылку и, если она без расписания, сразу запускает.
@@ -107,18 +106,14 @@ class CampaignService:
         return campaign
 
     async def launch(self, campaign: Campaign, period_key: str) -> bool:
-        """Публикует событие рассылки. False — этот период уже запускали.
+        """Ставит событие рассылки в очередь. False — этот период уже запускали.
 
         Ключ периода и есть защита от повторов: два генератора, проснувшиеся
-        одновременно, не разошлют одно и то же дважды.
+        одновременно, не разошлют одно и то же дважды. Отметка запуска и
+        задание на публикацию пишутся вместе: сбой брокера больше не оставляет
+        запуск «состоявшимся» без единого письма.
         """
         event_id = uuid4()
-        if not await self._campaigns.claim_run(campaign.id, period_key, event_id):
-            logger.info(
-                'Запуск рассылки за этот период уже был, повтор пропущен',
-                extra={'campaign_id': str(campaign.id), 'period': period_key},
-            )
-            return False
         context = await self._campaigns.context_of(campaign.id)
         message = PlanMessage(
             event_id=event_id,
@@ -130,10 +125,17 @@ class CampaignService:
             context=context,
             campaign_id=campaign.id,
         )
-        await self._publisher.publish(STAGE_PLAN, message.model_dump(mode='json'), get_request_id())
-        if campaign.cron is None:
-            # Разовая рассылка отработала — больше её запускать не нужно.
-            await self._campaigns.set_status(campaign.id, CampaignStatus.DONE.value)
+        publication = OutboxDraft(
+            stage=STAGE_PLAN, payload=message.model_dump(mode='json'), request_id=get_request_id(),
+        )
+        # Разовая рассылка после запуска завершена — больше её запускать не нужно.
+        finish = campaign.cron is None
+        if not await self._campaigns.claim_run(campaign.id, period_key, event_id, publication, finish):
+            logger.info(
+                'Запуск рассылки за этот период уже был, повтор пропущен',
+                extra={'campaign_id': str(campaign.id), 'period': period_key},
+            )
+            return False
         logger.info(
             'Рассылка запущена', extra={'campaign_id': str(campaign.id), 'period': period_key},
         )

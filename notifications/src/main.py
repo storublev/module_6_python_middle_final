@@ -34,7 +34,6 @@ from core.tracing import configure_tracing
 from services.errors import ServiceError
 from services.render_sandbox import IsolatedEngine
 from storage.base import StorageUnavailableError
-from storage.rabbit import RabbitPublisher, connect
 
 dictConfig(LOGGING)
 logger = logging.getLogger(__name__)
@@ -48,12 +47,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Соединения живут всё время работы приложения, а не создаются на запрос."""
     postgres.engine = postgres.create_engine(settings)
     postgres.session_factory = async_sessionmaker(postgres.engine, expire_on_commit=False)
-    connection, channel = await connect(
-        settings.rabbit_url.get_secret_value(),
-        settings.rabbit_prefetch,
-        int(settings.retry_delay.total_seconds() * 1000),
-    )
-    app.state.publisher = RabbitPublisher(channel)
     app.state.renderer = IsolatedEngine(settings.render_timeout, settings.render_memory_limit)
     app.state.verifier = get_verifier(settings)
     logger.info('Сервис уведомлений готов принимать события')
@@ -61,7 +54,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.renderer.close()
-        await connection.close()
         if postgres.engine is not None:
             await postgres.engine.dispose()
 
@@ -69,9 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 API_DESCRIPTION = """
 Сервис уведомлений онлайн-кинотеатра.
 
-**Как устроено.** Это центральный узел: он принимает события и кладёт их в
+**Как устроено.** Это центральный узел: он принимает события и ставит их в
 очередь, а собирают и отправляют письма воркеры. Поэтому ответ приходит сразу
-и не зависит от того, сколько адресатов у события и жив ли почтовый сервер.
+и не зависит от того, сколько адресатов у события, жив ли почтовый сервер и
+даже жив ли брокер: событие записывается в базу вместе с заданием на
+публикацию, а в RabbitMQ его переносит отдельный процесс.
 
 **Идемпотентность.** У события есть `event_id`, который задаёт отправитель.
 Повтор запроса после потерянного ответа вернёт `accepted: false` и второго

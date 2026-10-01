@@ -12,7 +12,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from models.notification import (
     Template,
     TemplateDraft,
 )
+from models.outbox import OutboxDraft, OutboxMessage
 from storage.base import (
     AlreadyExistsError,
     CampaignRepository,
@@ -41,6 +42,7 @@ from storage.base import (
     EventStore,
     MessagePublisher,
     NotificationRepository,
+    Outbox,
     ShortLinkRepository,
     StorageUnavailableError,
     SubscriptionRepository,
@@ -72,17 +74,61 @@ class Database:
     # Токены подтверждения почты по хешу и подтверждённые адреса.
     confirmation_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
     confirmations: dict[UUID, EmailConfirmation] = field(default_factory=dict)
+    # Задания outbox: идентификатор → (задание, с какого момента брать, попытки).
+    outbox: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+
+    def add_outbox(self, publication: OutboxDraft) -> None:
+        self.outbox[uuid4()] = {
+            'publication': publication,
+            'available_at': publication.available_at or datetime.min.replace(tzinfo=timezone.utc),
+            'attempts': 0,
+        }
+
+    def outbox_of(self, stage: str) -> list[dict[str, Any]]:
+        """Задания этапа, ещё не перенесённые в брокер."""
+        return [item['publication'].payload for item in self.outbox.values() if item['publication'].stage == stage]
 
 
 class FakeEventStore(EventStore):
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    async def remember(self, event: Event) -> bool:
+    async def remember(self, event: Event, publication: OutboxDraft) -> bool:
         if event.event_id in self.db.events:
             return False
         self.db.events[event.event_id] = event
+        self.db.add_outbox(publication)
         return True
+
+
+class FakeOutbox(Outbox):
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def put(self, publication: OutboxDraft) -> None:
+        self.db.add_outbox(publication)
+
+    async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
+        due = sorted(
+            (item for item in self.db.outbox.items() if item[1]['available_at'] <= now),
+            key=lambda item: item[1]['available_at'],
+        )[:limit]
+        claimed = []
+        for message_id, item in due:
+            item['available_at'] = now + lease
+            item['attempts'] += 1
+            publication = item['publication']
+            claimed.append(OutboxMessage(
+                id=message_id, stage=publication.stage, payload=publication.payload,
+                request_id=publication.request_id, attempts=item['attempts'],
+            ))
+        return claimed
+
+    async def done(self, message_id: UUID) -> None:
+        self.db.outbox.pop(message_id, None)
+
+    async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
+        self.db.outbox[message_id]['available_at'] = at
 
 
 class FakeTemplateRepository(TemplateRepository):
@@ -269,11 +315,16 @@ class FakeCampaignRepository(CampaignRepository):
             and (campaign.cron or campaign.scheduled_at is None or campaign.scheduled_at <= moment)
         ]
 
-    async def claim_run(self, campaign_id: UUID, period_key: str, event_id: UUID) -> bool:
+    async def claim_run(
+        self, campaign_id: UUID, period_key: str, event_id: UUID, publication: OutboxDraft, finish: bool,
+    ) -> bool:
         key = (campaign_id, period_key)
         if key in self.db.campaign_runs:
             return False
         self.db.campaign_runs.add(key)
+        self.db.add_outbox(publication)
+        if finish:
+            await self.set_status(campaign_id, CampaignStatus.DONE.value)
         return True
 
     async def context_of(self, campaign_id: UUID) -> dict[str, Any]:

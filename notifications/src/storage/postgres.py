@@ -9,7 +9,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from models.notification import (
     Template,
     TemplateDraft,
 )
+from models.outbox import OutboxDraft, OutboxMessage
 from storage.base import (
     AlreadyExistsError,
     CampaignRepository,
@@ -39,6 +40,7 @@ from storage.base import (
     EmailConfirmationRepository,
     EventStore,
     NotificationRepository,
+    Outbox,
     ShortLinkRepository,
     StorageUnavailableError,
     SubscriptionRepository,
@@ -52,6 +54,7 @@ from storage.orm import (
     EmailConfirmationTokenRow,
     EventRow,
     NotificationRow,
+    OutboxRow,
     ShortLinkRow,
     SubscriptionRow,
     TemplateRow,
@@ -96,8 +99,15 @@ class PostgresRepository:
             logger.debug('Откат транзакции не удался: %s', error)
 
 
+def _outbox_row(publication: OutboxDraft) -> OutboxRow:
+    row = OutboxRow(stage=publication.stage, payload=publication.payload, request_id=publication.request_id)
+    if publication.available_at is not None:
+        row.available_at = publication.available_at
+    return row
+
+
 class PostgresEventStore(PostgresRepository, EventStore):
-    async def remember(self, event: Event) -> bool:
+    async def remember(self, event: Event, publication: OutboxDraft) -> bool:
         # ON CONFLICT DO NOTHING, а не «проверить и вставить»: между проверкой
         # и вставкой успевает пройти соперник, и тогда события задвоятся.
         query = (
@@ -113,8 +123,54 @@ class PostgresEventStore(PostgresRepository, EventStore):
         )
         async with self._errors():
             inserted = await self.session.scalar(query)
+            if inserted is not None:
+                # Задание на публикацию — в той же транзакции: событие без
+                # задания (принято, но в очередь не попало) невозможно.
+                self.session.add(_outbox_row(publication))
             await self.session.commit()
         return inserted is not None
+
+
+class PostgresOutbox(PostgresRepository, Outbox):
+    async def put(self, publication: OutboxDraft) -> None:
+        async with self._errors():
+            self.session.add(_outbox_row(publication))
+            await self.session.commit()
+
+    async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
+        # SKIP LOCKED: два ретранслятора разбирают разные задания, а не ждут
+        # друг друга на одних и тех же строках. Аренда — тот же available_at,
+        # сдвинутый вперёд: отдельная колонка «кто взял» не нужна.
+        due = (
+            select(OutboxRow.id)
+            .where(OutboxRow.available_at <= now)
+            .order_by(OutboxRow.available_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        query = (
+            update(OutboxRow)
+            .where(OutboxRow.id.in_(due.scalar_subquery()))
+            .values(available_at=now + lease, attempts=OutboxRow.attempts + 1)
+            .returning(OutboxRow)
+        )
+        async with self._errors():
+            rows = (await self.session.scalars(query)).all()
+            messages = [OutboxMessage.model_validate(row) for row in rows]
+            await self.session.commit()
+        return messages
+
+    async def done(self, message_id: UUID) -> None:
+        async with self._errors():
+            await self.session.execute(delete(OutboxRow).where(OutboxRow.id == message_id))
+            await self.session.commit()
+
+    async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
+        async with self._errors():
+            await self.session.execute(
+                update(OutboxRow).where(OutboxRow.id == message_id).values(available_at=at, last_error=error),
+            )
+            await self.session.commit()
 
 
 class PostgresTemplateRepository(PostgresRepository, TemplateRepository):
@@ -458,7 +514,9 @@ class PostgresCampaignRepository(PostgresRepository, CampaignRepository):
             if row.cron or row.scheduled_at is None or row.scheduled_at <= moment
         ]
 
-    async def claim_run(self, campaign_id: UUID, period_key: str, event_id: UUID) -> bool:
+    async def claim_run(
+        self, campaign_id: UUID, period_key: str, event_id: UUID, publication: OutboxDraft, finish: bool,
+    ) -> bool:
         query = (
             pg_insert(CampaignRunRow)
             .values(campaign_id=campaign_id, period_key=period_key, event_id=event_id)
@@ -467,6 +525,17 @@ class PostgresCampaignRepository(PostgresRepository, CampaignRepository):
         )
         async with self._errors():
             claimed = await self.session.scalar(query)
+            if claimed is not None:
+                # Отметка запуска, задание на публикацию и завершение разовой
+                # рассылки — одной транзакцией: «запуск был, а событие не ушло»
+                # больше не случается.
+                self.session.add(_outbox_row(publication))
+                if finish:
+                    await self.session.execute(
+                        update(CampaignRow)
+                        .where(CampaignRow.id == campaign_id)
+                        .values(status=CampaignStatus.DONE.value),
+                    )
             await self.session.commit()
         return claimed is not None
 
