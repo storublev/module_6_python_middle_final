@@ -31,10 +31,11 @@ from core.logger import LOGGING
 from core.request_id import set_request_id
 from core.sentry import configure_sentry
 from models.enums import Channel
-from services.assembly import AssemblyService, QuietHours
+from services.assembly import AssemblyService
 from services.confirmation import EmailConfirmationService
 from services.messages import PlanMessage, RenderMessage, SendMessage
 from services.planner import PlannerService
+from services.quiet_hours import QuietHours
 from services.render_sandbox import IsolatedEngine
 from services.renderer import TemplateEngine
 from services.sender import SenderService
@@ -44,6 +45,7 @@ from storage.postgres import (
     PostgresDeliveryRepository,
     PostgresEmailConfirmationRepository,
     PostgresNotificationRepository,
+    PostgresOutbox,
     PostgresShortLinkRepository,
     PostgresSubscriptionRepository,
     PostgresTemplateRepository,
@@ -175,6 +177,7 @@ def build_handler(
                 directory,
                 renderer,
                 publisher,
+                PostgresOutbox(session),
                 quiet_hours,
                 settings.public_base_url,
                 settings.jwt_secret_key.get_secret_value(),

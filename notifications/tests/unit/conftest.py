@@ -4,11 +4,12 @@ from datetime import timedelta
 
 import pytest
 
-from services.assembly import AssemblyService, QuietHours
+from services.assembly import AssemblyService
 from services.campaigns import CampaignService
 from services.confirmation import EmailConfirmationService
 from services.ingest import IngestService
 from services.planner import PlannerService
+from services.quiet_hours import QuietHours
 from services.renderer import InlineEngine, Renderer
 from services.sender import SenderService
 from services.shortlinks import ShortLinkService
@@ -24,6 +25,7 @@ from tests.unit.fakes import (
     FakeEmailConfirmationRepository,
     FakeEventStore,
     FakeNotificationRepository,
+    FakeOutbox,
     FakePublisher,
     FakeShortLinkRepository,
     FakeSubscriptionRepository,
@@ -141,9 +143,11 @@ def assembly(
     publisher: FakePublisher,
     quiet_hours: QuietHours,
     confirmations: EmailConfirmationService,
+    db: Database,
 ) -> AssemblyService:
     return AssemblyService(
-        templates_repo, directory, engine, publisher, quiet_hours, BASE_URL, SECRET_KEY, confirmations,
+        templates_repo, directory, engine, publisher, FakeOutbox(db), quiet_hours, BASE_URL, SECRET_KEY,
+        confirmations,
     )
 
 

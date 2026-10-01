@@ -7,8 +7,9 @@
 Здесь же — два решения, которые принимаются только в последний момент:
 
 * **окно суток.** Письмо, собранное ночью по времени зрителя, не уходит: оно
-  вернётся в очередь и подождёт утра. Ночная отправка — самая обидная ошибка
-  рассылки, о ней прямо предупреждает урок «Как испортить жизнь клиенту»;
+  ждёт утра в базе и возвращается в очередь, когда утро наступит. Ночная
+  отправка — самая обидная ошибка рассылки, о ней прямо предупреждает урок
+  «Как испортить жизнь клиенту»;
 * **актуальность.** Между событием и сборкой могло пройти время, и событие
   успело протухнуть: зритель уже посмотрел ту самую серию. Право не отправлять
   урок отдаёт именно воркеру, и оно реализуется здесь.
@@ -17,67 +18,26 @@
 import hashlib
 import logging
 from collections.abc import Sequence
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.request_id import get_request_id
 from models.notification import Recipient, Template
+from models.outbox import OutboxDraft
 from services.confirmation import EmailConfirmationService
 from services.errors import TemplateInvalidError
 from services.messages import RenderMessage, SendMessage
+from services.quiet_hours import QuietHours
 from services.renderer import TemplateEngine, letter_data
 from services.subscriptions import unsubscribe_url
-from storage.base import ContactDirectory, MessagePublisher, TemplateRepository
+from storage.base import ContactDirectory, MessagePublisher, Outbox, TemplateRepository
 from storage.rabbit import STAGE_RENDER, STAGE_SEND
 
 logger = logging.getLogger(__name__)
 
 # Переменная шаблона со ссылкой подтверждения почты.
 CONFIRM_VARIABLE = 'confirm_url'
-
-
-class QuietHours:
-    """Окно суток, в которое зрителю писать нельзя.
-
-    Считается в его собственном часовом поясе: у кинотеатра зрители от
-    Калининграда до Владивостока, и одно московское время для всех означает
-    письмо в три ночи половине страны.
-    """
-
-    def __init__(self, start_hour: int, end_hour: int, default_timezone: str) -> None:
-        self._start = time(hour=start_hour)
-        self._end = time(hour=end_hour)
-        self._default = default_timezone
-
-    def zone_of(self, recipient: Recipient) -> ZoneInfo:
-        name = recipient.timezone or self._default
-        try:
-            return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
-            # Часовой пояс проверяется при сохранении профиля, но данные
-            # приходят из чужого сервиса: испорченное значение не должно
-            # ронять рассылку.
-            logger.warning('Неизвестный часовой пояс %s, взят %s', name, self._default)
-            return ZoneInfo(self._default)
-
-    def is_quiet(self, moment: datetime, recipient: Recipient) -> bool:
-        """Тихое ли сейчас время у получателя."""
-        local = moment.astimezone(self.zone_of(recipient)).time()
-        if self._start <= self._end:
-            return self._start <= local < self._end
-        # Окно через полночь (21:00–09:00) — самый обычный случай.
-        return local >= self._start or local < self._end
-
-    def next_open(self, moment: datetime, recipient: Recipient) -> datetime:
-        """Ближайший момент, когда писать снова можно."""
-        zone = self.zone_of(recipient)
-        local = moment.astimezone(zone)
-        opening = local.replace(hour=self._end.hour, minute=0, second=0, microsecond=0)
-        if opening <= local:
-            opening += timedelta(days=1)
-        return opening.astimezone(timezone.utc)
 
 
 class AssemblyService:
@@ -89,6 +49,7 @@ class AssemblyService:
         directory: ContactDirectory,
         renderer: TemplateEngine,
         publisher: MessagePublisher,
+        outbox: Outbox,
         quiet_hours: QuietHours,
         base_url: str,
         secret: str,
@@ -99,6 +60,7 @@ class AssemblyService:
         self._directory = directory
         self._renderer = renderer
         self._publisher = publisher
+        self._outbox = outbox
         self._quiet = quiet_hours
         self._base_url = base_url
         # Тот же секрет, которым подписываются токены: им подписывается и
@@ -122,7 +84,7 @@ class AssemblyService:
         recipients = await self._directory.contacts(message.user_ids)
         ready, deferred = self._split_by_quiet_hours(recipients, moment)
         if deferred:
-            await self._defer(message, deferred)
+            await self._defer(message, deferred, moment)
 
         # Ссылка подтверждения — только если шаблон её выводит: токен на
         # каждое письмо подборки засорял бы базу ссылками, по которым никто не
@@ -163,16 +125,36 @@ class AssemblyService:
         ready: list[Recipient] = []
         deferred: list[Recipient] = []
         for recipient in recipients:
-            (deferred if self._quiet.is_quiet(moment, recipient) else ready).append(recipient)
+            (deferred if self._quiet.is_quiet(moment, recipient.timezone) else ready).append(recipient)
         return ready, deferred
 
-    async def _defer(self, message: RenderMessage, recipients: Sequence[Recipient]) -> None:
-        """Возвращает ночных получателей в очередь сборки — они дождутся утра."""
-        payload = message.model_copy(update={'user_ids': [recipient.user_id for recipient in recipients]})
-        await self._publisher.publish(STAGE_RENDER, payload.model_dump(mode='json'), get_request_id())
+    async def _defer(self, message: RenderMessage, recipients: Sequence[Recipient], moment: datetime) -> None:
+        """Откладывает ночных получателей до утра — в базе, а не в очереди.
+
+        Раньше они сразу возвращались в очередь сборки: сборщик тут же забирал
+        их снова, опять ходил за контактами, видел ночь и возвращал обратно —
+        и так по кругу до утра, нагружая базу и сервис авторизации.
+
+        Теперь время отправки считается заранее (`next_open` в часовом поясе
+        зрителя) и записывается вместе с заданием в outbox: ретранслятор
+        вернёт его в очередь, только когда это время наступит. Получатели с
+        одинаковым утром едут одним заданием — часовых поясов десяток, а не
+        тысяча.
+        """
+        mornings: dict[datetime, list[UUID]] = {}
+        for recipient in recipients:
+            mornings.setdefault(self._quiet.next_open(moment, recipient.timezone), []).append(recipient.user_id)
+        for morning, user_ids in mornings.items():
+            payload = message.model_copy(update={'user_ids': user_ids})
+            await self._outbox.put(OutboxDraft(
+                stage=STAGE_RENDER,
+                payload=payload.model_dump(mode='json'),
+                request_id=get_request_id(),
+                available_at=morning,
+            ))
         logger.info(
             'Ночным получателям письмо отложено до утра',
-            extra={'event_id': str(message.event_id), 'deferred': len(recipients)},
+            extra={'event_id': str(message.event_id), 'deferred': len(recipients), 'mornings': len(mornings)},
         )
 
     async def _confirmation_context(self, recipient: Recipient) -> dict[str, Any]:

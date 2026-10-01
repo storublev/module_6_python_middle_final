@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from models.enums import Channel
-from services.assembly import AssemblyService, QuietHours, idempotency_key
+from services.assembly import AssemblyService, idempotency_key
 from services.messages import RenderMessage
+from services.quiet_hours import QuietHours
 from storage.rabbit import STAGE_RENDER, STAGE_SEND
 from tests.unit.fakes import Database, FakeContactDirectory, FakePublisher, recipient, template
 
@@ -63,7 +64,7 @@ async def test_rendered_message_carries_personal_data(
 async def test_night_recipients_are_deferred_not_sent(
     assembly: AssemblyService, db: Database, directory: FakeContactDirectory, publisher: FakePublisher,
 ) -> None:
-    """Ночью письмо не уходит: оно возвращается в очередь сборки и ждёт утра.
+    """Ночью письмо не уходит: оно ждёт утра в базе, а не в очереди сборки.
 
     Ночная отправка — самая обидная ошибка рассылки, о ней прямо предупреждает
     урок «Как испортить жизнь клиенту».
@@ -76,7 +77,10 @@ async def test_night_recipients_are_deferred_not_sent(
 
     assert built == 0
     assert publisher.of(STAGE_SEND) == []
-    assert len(publisher.of(STAGE_RENDER)) == 1
+    # В очередь сборки сразу ничего не возвращается — иначе письмо ходило бы
+    # по кругу до утра.
+    assert publisher.of(STAGE_RENDER) == []
+    assert db.outbox_of(STAGE_RENDER)[0]['user_ids'] == [str(viewer)]
 
 
 async def test_quiet_hours_are_counted_in_viewer_timezone(
@@ -100,7 +104,7 @@ async def test_quiet_hours_are_counted_in_viewer_timezone(
 
     assert built == 1
     assert publisher.of(STAGE_SEND)[0]['user_id'] == str(moscow)
-    assert publisher.of(STAGE_RENDER)[0]['user_ids'] == [str(vladivostok)]
+    assert db.outbox_of(STAGE_RENDER)[0]['user_ids'] == [str(vladivostok)]
 
 
 async def test_unknown_timezone_falls_back_to_default(quiet_hours: QuietHours) -> None:
@@ -108,10 +112,8 @@ async def test_unknown_timezone_falls_back_to_default(quiet_hours: QuietHours) -
 
     Значение приходит из чужого сервиса, и полагаться на его проверки нельзя.
     """
-    broken = recipient(timezone='Europe/Atlantis')
-
-    assert quiet_hours.is_quiet(NIGHT_MSK, broken) is True
-    assert quiet_hours.is_quiet(NOON_MSK, broken) is False
+    assert quiet_hours.is_quiet(NIGHT_MSK, 'Europe/Atlantis') is True
+    assert quiet_hours.is_quiet(NOON_MSK, 'Europe/Atlantis') is False
 
 
 async def test_missing_template_version_stops_batch(
@@ -210,3 +212,54 @@ def test_idempotency_key_differs_for_new_content_version() -> None:
     ninth = render_message([viewer], event_id=event_id, content_id='series-42', content_version=9)
 
     assert idempotency_key(eighth, viewer) != idempotency_key(ninth, viewer)
+
+
+async def test_night_letter_returns_to_work_only_in_the_morning(
+    assembly: AssemblyService, db: Database, directory: FakeContactDirectory,
+) -> None:
+    """Отложенное письмо возвращается в работу в 9:00 по времени зрителя, и не раньше.
+
+    Раньше ночные получатели сразу уходили обратно в очередь сборки: сборщик
+    забирал их снова, ходил за контактами, видел ночь и возвращал — по кругу
+    до утра.
+    """
+    from datetime import timedelta
+
+    from services.relay import OutboxRelay
+    from tests.unit.fakes import FakeOutbox
+
+    db.template_versions[('new_episode', 1)] = template('new_episode')
+    viewer = uuid4()
+    directory.recipients = {viewer: recipient(viewer, timezone='Europe/Moscow')}
+    await assembly.assemble(render_message([viewer]), now=NIGHT_MSK)
+    calls_after_assembly = directory.calls
+    publisher = FakePublisher()
+    relay = OutboxRelay(FakeOutbox(db), publisher, 100, timedelta(seconds=30), timedelta(seconds=60))
+    morning = datetime(2026, 9, 28, 6, 0, tzinfo=timezone.utc)  # 09:00 в Москве
+
+    assert await relay.relay_once(morning - timedelta(minutes=1)) == 0
+    assert await relay.relay_once(morning) == 1
+    assert publisher.of(STAGE_RENDER)[0]['user_ids'] == [str(viewer)]
+    # Пока письмо ждало, за контактами никто не ходил.
+    assert directory.calls == calls_after_assembly
+
+
+async def test_viewers_with_the_same_morning_share_one_task(
+    assembly: AssemblyService, db: Database, directory: FakeContactDirectory,
+) -> None:
+    """Зрители одного часового пояса откладываются одним заданием, разных — разными."""
+    db.template_versions[('new_episode', 1)] = template('new_episode')
+    first, second, far = uuid4(), uuid4(), uuid4()
+    directory.recipients = {
+        first: recipient(first, timezone='Europe/Moscow'),
+        second: recipient(second, timezone='Europe/Moscow'),
+        far: recipient(far, timezone='Asia/Vladivostok'),
+    }
+    # 23:00 в Москве — 06:00 во Владивостоке: ночь у всех, а утро у москвичей
+    # и у дальневосточника наступает в разные моменты.
+    moment = datetime(2026, 9, 27, 20, 0, tzinfo=timezone.utc)
+
+    await assembly.assemble(render_message([first, second, far]), now=moment)
+
+    tasks = sorted(sorted(item['user_ids']) for item in db.outbox_of(STAGE_RENDER))
+    assert tasks == sorted([sorted([str(first), str(second)]), [str(far)]])
