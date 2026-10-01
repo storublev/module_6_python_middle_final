@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # проще, чем свой сервис. 0 снимает ограничение.
     smtp_rate_per_second: float = Field(default=20.0, ge=0)
 
+    # Пределы сборки письма из шаблона: шаблон пишет менеджер, и тяжёлый шаблон
+    # не должен останавливать API и воркер. Время — на одно письмо, память —
+    # на весь процесс сборки (на Linux).
+    render_timeout: float = Field(default=2.0, gt=0)
+    render_memory_limit_mb: int = Field(default=256, ge=0)
+
     # Пачка получателей в одном сообщении очереди. Тысяча — столько же, сколько
     # контактов отдаёт за раз справочник сервиса авторизации.
     batch_size: int = Field(default=1000, ge=1)
@@ -121,6 +127,10 @@ class Settings(BaseSettings):
     sentry_dsn: str = ''
     sentry_environment: str = 'local'
     otlp_endpoint: str = ''
+
+    @property
+    def render_memory_limit(self) -> int:
+        return self.render_memory_limit_mb * 1024 * 1024
 
     @property
     def confirm_redirect(self) -> str:

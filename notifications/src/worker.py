@@ -35,7 +35,8 @@ from services.assembly import AssemblyService, QuietHours
 from services.confirmation import EmailConfirmationService
 from services.messages import PlanMessage, RenderMessage, SendMessage
 from services.planner import PlannerService
-from services.renderer import Renderer
+from services.render_sandbox import IsolatedEngine
+from services.renderer import TemplateEngine
 from services.sender import SenderService
 from services.shortlinks import ShortLinkService
 from storage.auth import AuthContactDirectory
@@ -69,7 +70,10 @@ async def run(role: str) -> None:
     auth_client = httpx.AsyncClient(base_url=settings.auth_url, timeout=settings.auth_timeout)
     channels = build_channels()
 
-    handler = build_handler(role, sessions, publisher, auth_client, channels)
+    # Процесс сборки писем нужен только сборщику: остальным ролям шаблоны
+    # собирать не приходится.
+    renderer = IsolatedEngine(settings.render_timeout, settings.render_memory_limit)
+    handler = build_handler(role, sessions, publisher, auth_client, channels, renderer)
     consumer = RabbitConsumer(channel, role, settings.max_attempts)
 
     stop = asyncio.Event()
@@ -93,6 +97,7 @@ async def run(role: str) -> None:
 
     for delivery_channel in channels.values():
         await delivery_channel.close()
+    await renderer.close()
     await auth_client.aclose()
     await connection.close()
     if postgres.engine is not None:
@@ -137,10 +142,10 @@ def build_handler(
     publisher: RabbitPublisher,
     auth_client: httpx.AsyncClient,
     channels: dict[str, DeliveryChannel],
+    renderer: TemplateEngine,
 ):  # noqa: ANN202 - возвращается замыкание с известной сигнатурой обработчика
     """Собирает обработчик сообщений для выбранной роли (Composition Root воркера)."""
     directory = AuthContactDirectory(auth_client, settings.auth_service_token.get_secret_value())
-    renderer = Renderer()
     quiet_hours = QuietHours(settings.quiet_hours_start, settings.quiet_hours_end, settings.default_timezone)
 
     async def handle_plan(payload: dict[str, Any], request_id: str) -> None:

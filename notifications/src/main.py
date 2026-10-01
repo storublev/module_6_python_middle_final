@@ -32,7 +32,7 @@ from core.middleware import RequestIdMiddleware
 from core.sentry import configure_sentry
 from core.tracing import configure_tracing
 from services.errors import ServiceError
-from services.renderer import Renderer
+from services.render_sandbox import IsolatedEngine
 from storage.base import StorageUnavailableError
 from storage.rabbit import RabbitPublisher, connect
 
@@ -54,12 +54,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         int(settings.retry_delay.total_seconds() * 1000),
     )
     app.state.publisher = RabbitPublisher(channel)
-    app.state.renderer = Renderer()
+    app.state.renderer = IsolatedEngine(settings.render_timeout, settings.render_memory_limit)
     app.state.verifier = get_verifier(settings)
     logger.info('Сервис уведомлений готов принимать события')
     try:
         yield
     finally:
+        await app.state.renderer.close()
         await connection.close()
         if postgres.engine is not None:
             await postgres.engine.dispose()

@@ -114,3 +114,42 @@ def test_preview_renders_on_probe_data(renderer: Renderer) -> None:
 
     assert subject == 'Привет, Томас'
     assert 'Матрица' in body
+
+
+@pytest.mark.parametrize(('source', 'reason'), [
+    ("{{ 'x' * 100000000 }}", 'умножение строки на огромное число'),
+    ('{{ 9 ** 99999999 }}', 'число из ста миллионов цифр'),
+    ('{% for i in range(1000000000) %}{% endfor %}', 'range на миллиард шагов'),
+    ("{{ 'x'|center(100000000) }}", 'фильтр с аргументом-раздувателем'),
+    ('{{ lipsum(100000) }}', 'генератор текста'),
+])
+def test_resource_hungry_constructs_are_refused(renderer: Renderer, source: str, reason: str) -> None:
+    """Конструкции, которые тратят память или время до готового письма, отклоняются сразу.
+
+    Проверка размера по готовому письму их не ловила: память и время уходили
+    раньше, чем было что проверять.
+    """
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(TemplateInvalidError):
+        renderer.validate('Тема', source)
+
+    assert time.monotonic() - started < 1, reason
+
+
+def test_growing_letter_is_stopped_at_the_limit(renderer: Renderer) -> None:
+    """Размер считается по ходу сборки: миллиард символов не собирается целиком.
+
+    Каждый цикл по отдельности разрешён, вместе они дают гигабайт — сборка
+    останавливается, как только письмо перевалило за предел.
+    """
+    import time
+
+    source = "{% for i in range(1000) %}{% for j in range(1000) %}{{ 'x' * 1000 }}{% endfor %}{% endfor %}"
+    started = time.monotonic()
+
+    with pytest.raises(TemplateInvalidError, match='too large'):
+        renderer.validate('Тема', source)
+
+    assert time.monotonic() - started < 1

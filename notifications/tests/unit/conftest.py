@@ -9,7 +9,7 @@ from services.campaigns import CampaignService
 from services.confirmation import EmailConfirmationService
 from services.ingest import IngestService
 from services.planner import PlannerService
-from services.renderer import Renderer
+from services.renderer import InlineEngine, Renderer
 from services.sender import SenderService
 from services.shortlinks import ShortLinkService
 from services.subscriptions import SubscriptionService
@@ -102,6 +102,13 @@ def renderer() -> Renderer:
 
 
 @pytest.fixture
+def engine(renderer: Renderer) -> InlineEngine:
+    # Сервисы получают сборку в том же процессе: изоляцию проверяют отдельные
+    # тесты процесса сборки, а здесь проверяется бизнес-логика.
+    return InlineEngine(renderer)
+
+
+@pytest.fixture
 def quiet_hours() -> QuietHours:
     # Окно через полночь — самый обычный случай и самый неудобный для проверок.
     return QuietHours(start_hour=21, end_hour=9, default_timezone='Europe/Moscow')
@@ -129,13 +136,13 @@ def planner(
 def assembly(
     templates_repo: FakeTemplateRepository,
     directory: FakeContactDirectory,
-    renderer: Renderer,
+    engine: InlineEngine,
     publisher: FakePublisher,
     quiet_hours: QuietHours,
     confirmations: EmailConfirmationService,
 ) -> AssemblyService:
     return AssemblyService(
-        templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL, SECRET_KEY, confirmations,
+        templates_repo, directory, engine, publisher, quiet_hours, BASE_URL, SECRET_KEY, confirmations,
     )
 
 
@@ -163,8 +170,8 @@ def subscriptions(subscriptions_repo: FakeSubscriptionRepository) -> Subscriptio
 
 
 @pytest.fixture
-def template_service(templates_repo: FakeTemplateRepository, renderer: Renderer) -> TemplateService:
-    return TemplateService(templates_repo, renderer)
+def template_service(templates_repo: FakeTemplateRepository, engine: InlineEngine) -> TemplateService:
+    return TemplateService(templates_repo, engine)
 
 
 @pytest.fixture

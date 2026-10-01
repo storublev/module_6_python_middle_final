@@ -27,7 +27,7 @@ from models.notification import Recipient, Template
 from services.confirmation import EmailConfirmationService
 from services.errors import TemplateInvalidError
 from services.messages import RenderMessage, SendMessage
-from services.renderer import Renderer
+from services.renderer import TemplateEngine, letter_data
 from services.subscriptions import unsubscribe_url
 from storage.base import ContactDirectory, MessagePublisher, TemplateRepository
 from storage.rabbit import STAGE_RENDER, STAGE_SEND
@@ -87,7 +87,7 @@ class AssemblyService:
         self,
         templates: TemplateRepository,
         directory: ContactDirectory,
-        renderer: Renderer,
+        renderer: TemplateEngine,
         publisher: MessagePublisher,
         quiet_hours: QuietHours,
         base_url: str,
@@ -128,10 +128,25 @@ class AssemblyService:
         # каждое письмо подборки засорял бы базу ссылками, по которым никто не
         # перейдёт.
         wants_confirmation = self._confirmations is not None and self._renderer.uses(template, CONFIRM_VARIABLE)
+        letters = [
+            letter_data(recipient, await self._context_for(recipient, message, wants_confirmation))
+            for recipient in ready
+        ]
+        try:
+            # Вся пачка собирается одним вызовом: сборка идёт в отдельном
+            # процессе, и переход туда раз на пачку дешевле, чем раз на письмо.
+            rendered = await self._renderer.render_many(template, letters)
+        except TemplateInvalidError as error:
+            # Пачка целиком не уложилась в пределы времени или памяти: шаблон
+            # тяжёлый для этих данных, и повтор ничего не изменит.
+            logger.error(
+                'Пачка не собралась и пропущена: %s', error,
+                extra={'event_id': str(message.event_id), 'template': template.code},
+            )
+            return 0
         built = 0
-        for recipient in ready:
-            extra = await self._confirmation_context(recipient) if wants_confirmation else {}
-            send = self._build(template, recipient, message, extra)
+        for recipient, result in zip(ready, rendered, strict=True):
+            send = self._message_for(template, recipient, message, result)
             if send is None:
                 continue
             await self._publisher.publish(STAGE_SEND, send.model_dump(mode='json'), get_request_id())
@@ -171,10 +186,11 @@ class AssemblyService:
         url = await self._confirmations.link_for(recipient.user_id, recipient.email, self._confirm_redirect_url)
         return {CONFIRM_VARIABLE: url}
 
-    def _build(
-        self, template: Template, recipient: Recipient, message: RenderMessage, extra: dict[str, Any],
-    ) -> SendMessage | None:
-        context = {
+    async def _context_for(
+        self, recipient: Recipient, message: RenderMessage, wants_confirmation: bool,
+    ) -> dict[str, Any]:
+        extra = await self._confirmation_context(recipient) if wants_confirmation else {}
+        return {
             **message.context,
             **extra,
             'site_url': self._base_url,
@@ -183,17 +199,24 @@ class AssemblyService:
             # упирается в проверку параметров.
             'unsubscribe_url': unsubscribe_url(self._base_url, recipient.user_id, self._secret),
         }
-        try:
-            subject, body = self._renderer.render(template, recipient, context)
-        except TemplateInvalidError as error:
+
+    def _message_for(
+        self,
+        template: Template,
+        recipient: Recipient,
+        message: RenderMessage,
+        result: tuple[str, str] | TemplateInvalidError,
+    ) -> SendMessage | None:
+        if isinstance(result, TemplateInvalidError):
             # Шаблон проверяется при сохранении, но данные конкретного письма
             # могли оказаться неожиданными. Одно испорченное письмо не должно
             # ронять всю пачку.
             logger.error(
-                'Письмо не собралось, получатель пропущен: %s', error,
+                'Письмо не собралось, получатель пропущен: %s', result,
                 extra={'user_id': str(recipient.user_id), 'template': template.code},
             )
             return None
+        subject, body = result
         address = recipient.email or ''
         return SendMessage(
             idempotency_key=idempotency_key(message, recipient.user_id),

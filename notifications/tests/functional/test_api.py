@@ -426,3 +426,37 @@ def test_email_confirmation_requires_token(api_url: str) -> None:
     response = requests.get(f'{api_url}/me/email-confirmation', timeout=10)
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_heavy_template_does_not_stop_the_api(api_url: str, service_headers: dict[str, str]) -> None:
+    """Шаблон, занимающий процессор, отклоняется, а API тем временем отвечает другим.
+
+    Раньше шаблон собирался прямо в обработчике запроса: пока шёл его
+    миллиард итераций, процесс API не отвечал никому.
+    """
+    import threading
+    import time
+
+    endless = ('{% for a in range(1000) %}{% for b in range(1000) %}{% for c in range(1000) %}'
+               '{% endfor %}{% endfor %}{% endfor %}')
+    result: dict[str, requests.Response] = {}
+
+    def preview() -> None:
+        result['response'] = requests.post(
+            f'{api_url}/templates/preview',
+            json={'code': 'heavy', 'name': 'Тяжёлый', 'subject': 'Тема', 'body': endless},
+            headers=service_headers, timeout=60,
+        )
+
+    worker = threading.Thread(target=preview)
+    worker.start()
+    time.sleep(0.3)
+    started = time.monotonic()
+    health = requests.get(f'{api_url}/health', timeout=10)
+    health_latency = time.monotonic() - started
+    worker.join()
+
+    assert health.status_code == HTTPStatus.OK
+    assert health_latency < 1
+    assert result['response'].status_code == HTTPStatus.BAD_REQUEST
+    assert result['response'].json()['code'] == 'template_invalid'

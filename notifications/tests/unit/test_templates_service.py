@@ -84,9 +84,9 @@ async def test_delete_of_missing_template_is_rejected(template_service: Template
         await template_service.delete('welcome')
 
 
-def test_preview_does_not_save(template_service: TemplateService) -> None:
+async def test_preview_does_not_save(template_service: TemplateService) -> None:
     """Предпросмотр ничего не сохраняет: посмотреть можно и не сохраняя."""
-    subject, body = template_service.preview(DRAFT)
+    subject, body = await template_service.preview(DRAFT)
 
     assert subject == 'Привет, Томас'
     assert 'Томас Андерсон' in body
