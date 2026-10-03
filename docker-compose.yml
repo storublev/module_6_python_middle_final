@@ -132,6 +132,29 @@ x-ugc-etl-env: &ugc-etl-env
   UGC_ETL_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
   UGC_ETL_LOG_LEVEL: ${UGC_ETL_LOG_LEVEL:-INFO}
 
+# Настройки сервиса бронирования. Секреты общие с сервисом авторизации: ключ
+# подписи — чтобы проверять токены на месте, служебный токен — чтобы ходить в
+# справочник имён и в API уведомлений (ADR-23 в docs/diploma/architecture.md).
+x-booking-env: &booking-env
+  BOOKING_POSTGRES_HOST: booking-postgres
+  BOOKING_POSTGRES_PORT: 5432
+  BOOKING_POSTGRES_DB: ${BOOKING_POSTGRES_DB:-booking}
+  BOOKING_POSTGRES_USER: ${BOOKING_POSTGRES_USER:-booking}
+  BOOKING_POSTGRES_PASSWORD: ${BOOKING_POSTGRES_PASSWORD:?задайте BOOKING_POSTGRES_PASSWORD в .env}
+  BOOKING_CATALOG_URL: http://api:8000
+  BOOKING_AUTH_URL: http://auth:8000
+  BOOKING_NOTIFY_URL: http://notify-api:8000
+  BOOKING_PUBLIC_BASE_URL: ${BOOKING_PUBLIC_BASE_URL:-http://localhost}
+  BOOKING_LOG_LEVEL: ${BOOKING_LOG_LEVEL:-INFO}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  BOOKING_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  # В трассировку попадает каждый десятый запрос: полная трассировка съедает
+  # четверть пропускной способности (docs/diploma/load/).
+  BOOKING_OTLP_SAMPLE_RATIO: ${OTLP_SAMPLE_RATIO:-0.1}
+  BOOKING_SENTRY_DSN: ${SENTRY_DSN:-}
+  BOOKING_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
 services:
   postgres:
     # Та же версия, что у базы сервиса авторизации: одна версия PostgreSQL на
@@ -656,6 +679,101 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ── Бронирование билетов (дипломный проект) ─────────────────────────────
+  # База, одноразовые миграции, API и ретранслятор outbox из одного образа.
+  # Своя база — потому что у брони свой жизненный цикл и своя цена ошибки
+  # (ADR-19, ADR-20 в docs/diploma/architecture.md).
+  booking-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${BOOKING_POSTGRES_DB:-booking}
+      POSTGRES_USER: ${BOOKING_POSTGRES_USER:-booking}
+      POSTGRES_PASSWORD: ${BOOKING_POSTGRES_PASSWORD:?задайте BOOKING_POSTGRES_PASSWORD в .env}
+    volumes:
+      - booking_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  booking-migrations:
+    build: ./booking
+    image: movies-booking
+    environment: *booking-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      booking-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  booking-api:
+    build: ./booking
+    image: movies-booking
+    environment:
+      <<: *booking-env
+      # Четыре процесса: сервис упирается в процессор (сериализация JSON,
+      # pydantic), а не в базу — замер scripts/load_check.py.
+      WEB_CONCURRENCY: ${BOOKING_WORKERS:-4}
+    expose:
+      - 8000
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/booking/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Переносит события о бронях в API уведомлений. Сервис уведомлений лежит —
+  # события ждут в базе бронирования и уходят после его подъёма (НФТ-4).
+  booking-relay:
+    build: ./booking
+    image: movies-booking
+    environment: *booking-env
+    command: ["python", "relay.py"]
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Интерфейс кинотеатра: каталог с обложками, карточка фильма, бронирование.
+  # Ходит во внутренние API напрямую по сети compose, мимо nginx.
+  web:
+    build: ./web
+    image: movies-web
+    environment:
+      WEB_CATALOG_URL: http://api:8000
+      WEB_BOOKING_URL: http://booking-api:8000
+      WEB_AUTH_URL: http://auth:8000
+      WEB_LOG_LEVEL: ${WEB_LOG_LEVEL:-INFO}
+      WEB_COOKIE_SECURE: ${WEB_COOKIE_SECURE:-false}
+      AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+      WEB_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      WEB_OTLP_SAMPLE_RATIO: ${OTLP_SAMPLE_RATIO:-0.1}
+      WEB_SENTRY_DSN: ${SENTRY_DSN:-}
+      WEB_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+      # Четыре процесса: рендер страниц — работа процессора.
+      WEB_CONCURRENCY: ${WEB_WORKERS:-4}
+    expose:
+      - 8000
+    depends_on:
+      api:
+        condition: service_started
+      booking-api:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     env_file: *env-file
@@ -679,6 +797,8 @@ services:
       - ugc-content
       - notify-api
       - notify-ws
+      - booking-api
+      - web
     restart: unless-stopped
 
 volumes:
@@ -697,3 +817,4 @@ volumes:
   admin_static:
   notify_postgres_data:
   rabbitmq_data:
+  booking_postgres_data:

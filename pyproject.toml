@@ -3,7 +3,7 @@ line-length = 120
 target-version = "py312"
 # У сервиса авторизации, админки, обоих ETL, сервисов UGC и скриптов
 # исследования свои конфигурации линтеров.
-extend-exclude = ["auth", "admin_panel", "etl", "ugc", "ugc_content", "ugc_etl", "research"]
+extend-exclude = ["auth", "admin_panel", "etl", "ugc", "ugc_content", "ugc_etl", "research", "booking", "web"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "N", "S", "ASYNC"]
