@@ -81,12 +81,27 @@ init_database() {
     fi
 }
 
+# Колонки каталога сверх дампа и обложки. В отличие от init.sql, выполняется
+# при каждом старте: оба файла идемпотентны, а так новые колонки и обложки
+# доезжают и до базы, созданной до их появления.
+extend_catalog() {
+    echo "📝 Расширение каталога и загрузка обложек..."
+    PGPASSWORD="$DB_PASSWORD" psql -v ON_ERROR_STOP=1 -q -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
+        -f /opt/etl/sql/catalog_extensions.sql || return 1
+    if [ -f /opt/etl/data/posters.csv ]; then
+        PGPASSWORD="$DB_PASSWORD" psql -v ON_ERROR_STOP=1 -q -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
+            -f /opt/etl/sql/load_posters.sql || return 1
+    fi
+    echo "✅ Каталог готов"
+}
+
 # Ждем сервисы
 wait_for_postgres || exit 1
 wait_for_elasticsearch || exit 1
 
 # Инициализируем базу данных
 init_database || exit 1
+extend_catalog || exit 1
 
 echo "========================================="
 echo "✅ Все сервисы готовы, запускаю ETL..."
