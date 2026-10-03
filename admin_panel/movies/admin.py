@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.db.models import QuerySet
 from django.http import HttpRequest
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
 from movies.models import FilmWork, Genre, GenreFilmWork, Person, PersonFilmWork
@@ -39,6 +40,15 @@ class FilmWorkAdmin(admin.ModelAdmin):
     list_filter = ('type', 'genres')
     search_fields = ('title', 'description')
     list_per_page = 25
+    readonly_fields = ('poster_preview',)
+
+    @admin.display(description=_('poster preview'))
+    def poster_preview(self, film_work: FilmWork) -> str:
+        # Превью рядом с полем ссылки: опечатку в адресе видно сразу, а не на
+        # карточке фильма после переиндексации.
+        if not film_work.poster_url:
+            return '—'
+        return format_html('<img src="{}" alt="" style="max-height: 240px">', film_work.poster_url)
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[FilmWork]:
         # Без prefetch жанры каждой строки — отдельный запрос: страница из 25

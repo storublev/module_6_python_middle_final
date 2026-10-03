@@ -79,6 +79,11 @@ class FilmWork(UUIDMixin, TimeStampedMixin):
     creation_date = models.DateField(_('creation date'), blank=True, null=True)
     rating = models.FloatField(_('rating'), blank=True, null=True)
     type = models.CharField(_('type'), max_length=7, choices=FilmWorkTypes.choices, default=FilmWorkTypes.MOVIE)
+    # Обложка — ссылка на картинку у источника, саму картинку каталог не
+    # хранит (ADR-25). Колонки заводит ETL при старте (etl/sql/catalog_extensions.sql),
+    # первые значения он же загружает из posters.csv; здесь редактор их правит.
+    poster_url = models.URLField(_('poster'), max_length=512, blank=True, null=True)
+    imdb_id = models.CharField(_('IMDb id'), max_length=16, blank=True, null=True)
     genres = models.ManyToManyField(Genre, through='GenreFilmWork', verbose_name=_('genres'))
     persons = models.ManyToManyField(Person, through='PersonFilmWork', verbose_name=_('persons'))
 
