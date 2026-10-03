@@ -159,8 +159,17 @@ class PostgresScreeningRepository(PostgresRepository, ScreeningRepository):
             .returning(ScreeningRow)
             .execution_options(**FRESH)
         )
-        async with self._errors():
-            row = await self.session.scalar(query)
+        try:
+            async with self._errors():
+                row = await self.session.scalar(query)
+        except IntegrityError:
+            # Сработал CHECK: условие выше разошлось с ограничением таблицы
+            # (например, после правки кода). Для клиента это то же «мест
+            # нет», а не 500; занятие мест — первая запись транзакции, и
+            # откатывать, кроме неё, нечего.
+            await self.session.rollback()
+            logger.error('CHECK мест сработал в обход условия UPDATE: показ %s', screening_id)
+            return None
         return _screening(row) if row else None
 
     async def release_seats(self, screening_id: UUID, seats: int) -> None:
