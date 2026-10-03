@@ -54,6 +54,8 @@ ALLOWED_VARIABLES = frozenset({
     'first_name', 'last_name', 'full_name', 'email', 'login',
     'site_url', 'unsubscribe_url', 'action_url', 'confirm_url', 'subject',
     'film_title', 'episode', 'count', 'items', 'year', 'month',
+    # Письма о бронях билетов (сервис бронирования).
+    'host_name', 'guest_name', 'starts_at', 'place', 'address', 'seats', 'seats_left', 'change',
 })
 # Данные для пробного рендера при сохранении шаблона.
 PROBE_CONTEXT: dict[str, Any] = {
@@ -64,6 +66,9 @@ PROBE_CONTEXT: dict[str, Any] = {
     'subject': 'Проверка шаблона',
     'film_title': 'Матрица', 'episode': 8, 'count': 3, 'items': ['Матрица', 'Начало'],
     'year': 2026, 'month': 9,
+    'host_name': 'Нео Андерсон', 'guest_name': 'Тринити', 'starts_at': '17.10.2026 19:00 (MSK)',
+    'place': 'Кинотеатр «Октябрь», зал 3', 'address': 'Москва, Новый Арбат, 24', 'seats': 2, 'seats_left': 4,
+    'change': 'created',
 }
 # Предел размера письма. Полтора мегабайта — заведомо больше любого
 # разумного письма.
@@ -305,6 +310,8 @@ PROBE_CONTEXT_DEFAULTS: dict[str, Any] = {
     'first_name': '', 'last_name': '', 'full_name': '', 'email': '', 'login': '',
     'site_url': '', 'unsubscribe_url': '', 'action_url': '', 'confirm_url': '', 'subject': '',
     'film_title': '', 'episode': '', 'count': 0, 'items': [], 'year': '', 'month': '',
+    'host_name': '', 'guest_name': '', 'starts_at': '', 'place': '', 'address': '', 'seats': 0, 'seats_left': 0,
+    'change': '',
 }
 
 
