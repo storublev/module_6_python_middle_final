@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Живая проверка поднятого стека кинотеатра: документация сервисов, полный
 # путь зрителя через сервис пользовательского контента, приём события
-# сервисом сбора действий и путь уведомления до письма в почтовом ящике.
+# сервисом сбора действий, путь уведомления до письма в почтовом ящике и
+# бронирование билетов: показ, бронь последнего места, отказ лишнему, страницы.
 #
 # Зачем скриптом: после `docker compose up -d` хочется одной командой увидеть,
 # что работает не только «контейнер запущен», но и сквозной сценарий —
@@ -27,7 +28,7 @@ code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 json_field() { python3 -c "import sys, json; print(json.load(sys.stdin).get('$1', ''))" 2>/dev/null; }
 
 echo '1. Документация сервисов'
-for path in /api/openapi /auth/api/openapi /ugc/api/openapi /content/api/openapi; do
+for path in /api/openapi /auth/api/openapi /ugc/api/openapi /content/api/openapi /booking/api/openapi; do
     status=$(code "$BASE$path")
     [ "$status" = 200 ] && ok "$path → $status" || bad "$path → $status"
 done
@@ -184,6 +185,40 @@ else
     printf '%s' "$notifications" | grep -q '"total"' \
         && ok 'уведомления видны в личном кабинете' || bad "личный кабинет: $notifications"
 fi
+
+echo '6. Бронирование билетов (диплом)'
+# Фильм — самый рейтинговый полнометражный из каталога: только на такие
+# можно создать показ. Хост — зритель проверки, гость — второй зритель.
+MOVIE=$(curl -s "$BASE/api/v1/films?type=movie&page_size=1" \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin)[0]["uuid"])' 2>/dev/null)
+[ -n "$MOVIE" ] && ok "полнометражный фильм из каталога: $MOVIE" || bad 'каталог не отдал фильм с type=movie'
+STARTS=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) + d.timedelta(days=3)).isoformat())')
+screening=$(curl -s -X POST "$BASE/booking/api/v1/screenings" "${AUTH[@]}" \
+    -d "{\"film_id\": \"$MOVIE\", \"starts_at\": \"$STARTS\", \"place\": \"Зал проверки\", \"address\": \"Арбат, 1\", \"capacity\": 1}")
+SCREENING=$(printf '%s' "$screening" | json_field id)
+[ -n "$SCREENING" ] && ok "показ на одно место создан: $SCREENING" || bad "показ: $screening"
+
+GUEST="guest-$RANDOM@example.com"
+curl -s -o /dev/null -X POST "$BASE/auth/api/v1/signup" -H 'Content-Type: application/json' \
+    -d "{\"login\": \"$GUEST\", \"password\": \"$PASSWORD\"}"
+GUEST_TOKEN=$(curl -s -X POST "$BASE/auth/api/v1/login" -H 'Content-Type: application/json' \
+    -d "{\"login\": \"$GUEST\", \"password\": \"$PASSWORD\"}" | json_field access_token)
+GUEST_AUTH=(-H "Authorization: Bearer $GUEST_TOKEN" -H 'Content-Type: application/json')
+booking=$(curl -s -X POST "$BASE/booking/api/v1/screenings/$SCREENING/bookings" "${GUEST_AUTH[@]}" -d '{"seats": 1}')
+BOOKING=$(printf '%s' "$booking" | json_field id)
+[ -n "$BOOKING" ] && ok 'гость забронировал последнее место' || bad "бронь гостя: $booking"
+# Мест у хоста одно, и оно уже занято: второе место не продаётся.
+overbook=$(curl -s -X PATCH "$BASE/booking/api/v1/bookings/$BOOKING" "${GUEST_AUTH[@]}" -d '{"seats": 2}')
+printf '%s' "$overbook" | grep -q 'not_enough_seats' \
+    && ok 'лишнее место не продаётся (409 not_enough_seats)' || bad "перебронирование: $overbook"
+hosts=$(curl -s "$BASE/booking/api/v1/films/$MOVIE/hosts?page_size=100")
+printf '%s' "$hosts" | grep -q '"host_id"' && ok 'хосты фильма видны' || bad "хосты фильма: $hosts"
+for path in / "/films/$MOVIE" "/screenings/$SCREENING" /afisha; do
+    status=$(code "$BASE$path")
+    [ "$status" = 200 ] && ok "страница $path → $status" || bad "страница $path → $status"
+done
+page=$(curl -s "$BASE/films/$MOVIE")
+printf '%s' "$page" | grep -q 'Купить билет' && ok 'в карточке фильма есть «Купить билет»' || bad 'нет кнопки «Купить билет»'
 
 echo
 [ "$FAILED" = 0 ] && echo 'ИТОГ: стенд работает' || echo 'ИТОГ: есть ошибки'
