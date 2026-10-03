@@ -29,11 +29,23 @@ class FilmPerson(IdModel):
     name: str
 
 
+class FilmType(StrEnum):
+    """Тип фильма в каталоге. Бронировать показ можно только полнометражный."""
+
+    MOVIE = 'movie'
+    TV_SHOW = 'tv_show'
+
+
 class FilmShort(IdModel):
     """Краткая информация о фильме — для списков и поиска."""
 
     title: str
     imdb_rating: float | None = None
+    # Тип и обложка нужны уже в списке: сетка каталога рисует постеры, а
+    # кнопка «Купить билет» есть только у полнометражных фильмов. Документы,
+    # проиндексированные до появления полей, читаются с пустыми значениями.
+    type: str | None = None
+    poster_url: str | None = None
 
 
 class Film(FilmShort):
@@ -45,6 +57,7 @@ class Film(FilmShort):
     # каталог закрылся бы целиком.
     access_level: str = AccessLevel.PUBLIC
     description: str | None = None
+    imdb_id: str | None = None
     genres: list[FilmGenre] = []
     actors: list[FilmPerson] = []
     writers: list[FilmPerson] = []

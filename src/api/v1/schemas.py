@@ -36,12 +36,21 @@ class FilmShortSchema(ResponseSchema):
 
     title: str = Field(description='Название', examples=['Star Wars: Episode IV - A New Hope'])
     imdb_rating: float | None = Field(description='Рейтинг IMDb, если известен', examples=[8.6])
+    type: str | None = Field(
+        default=None, description='Тип: movie — полнометражный фильм, tv_show — сериал', examples=['movie'],
+    )
+    poster_url: str | None = Field(
+        default=None,
+        description='Ссылка на обложку; null — обложки нет, клиент рисует заглушку',
+        examples=['https://m.media-amazon.com/images/M/MV5B...@._V1_QL75_UX400_.jpg'],
+    )
 
 
 class FilmSchema(FilmShortSchema):
     """Полная информация о фильме."""
 
     description: str | None = Field(description='Описание', examples=['The Imperial Forces...'])
+    imdb_id: str | None = Field(default=None, description='Идентификатор на IMDb', examples=['tt0076759'])
     genre: list[GenreSchema] = Field(validation_alias='genres', description='Жанры')
     actors: list[FilmPersonSchema] = Field(description='Актёры')
     writers: list[FilmPersonSchema] = Field(description='Сценаристы')

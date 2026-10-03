@@ -5,7 +5,16 @@ from http import HTTPStatus
 import pytest
 
 from tests.functional.testdata.es_mapping import MOVIES_INDEX
-from tests.functional.testdata.factories import film_full, film_short, make_film, make_films, make_ref, new_id
+from tests.functional.testdata.factories import (
+    MOVIE,
+    TV_SHOW,
+    film_full,
+    film_short,
+    make_film,
+    make_films,
+    make_ref,
+    new_id,
+)
 from tests.functional.testdata.validation import INVALID_PAGINATION, INVALID_UUIDS, VALID_PAGINATION_EDGES
 
 
@@ -28,7 +37,7 @@ async def test_film_details(es_write_data, make_get_request):
 
 
 async def test_film_details_without_optional_fields(es_write_data, make_get_request):
-    film = make_film(imdb_rating=None, description=None)
+    film = make_film(imdb_rating=None, description=None, poster_url=None, imdb_id=None)
     await es_write_data(MOVIES_INDEX, [film])
 
     response = await make_get_request(f'/films/{film["id"]}')
@@ -73,7 +82,7 @@ async def test_film_list_default_page(es_write_data, make_get_request):
 
     assert response.status == HTTPStatus.OK
     assert len(response.body) == 50
-    assert set(response.body[0]) == {'uuid', 'title', 'imdb_rating'}
+    assert set(response.body[0]) == {'uuid', 'title', 'imdb_rating', 'type', 'poster_url'}
 
 
 @pytest.mark.parametrize(
@@ -140,6 +149,19 @@ async def test_film_list_filter_by_genre(es_write_data, make_get_request):
     assert sorted(film['uuid'] for film in response.body) == sorted(film['id'] for film in [*comedies, both])
 
 
+async def test_film_list_filter_by_type(es_write_data, make_get_request):
+    """Фильтр по типу оставляет только полнометражные фильмы — их и можно бронировать."""
+    movies = make_films(3, film_type=MOVIE)
+    shows = make_films(2, film_type=TV_SHOW)
+    await es_write_data(MOVIES_INDEX, [*movies, *shows])
+
+    response = await make_get_request('/films', {'type': 'movie'})
+
+    assert response.status == HTTPStatus.OK
+    assert sorted(film['uuid'] for film in response.body) == sorted(film['id'] for film in movies)
+    assert {film['type'] for film in response.body} == {MOVIE}
+
+
 async def test_film_list_unknown_genre(es_write_data, make_get_request):
     await es_write_data(MOVIES_INDEX, make_films(3, genres=[make_ref('Comedy')]))
 
@@ -179,6 +201,7 @@ async def test_film_list_pagination_edges_are_valid(make_get_request, params):
         pytest.param({'sort': 'title'}, id='sort-unknown-field'),
         pytest.param({'sort': '+imdb_rating'}, id='sort-unknown-direction'),
         pytest.param({'genre': 'comedy'}, id='genre-not-uuid'),
+        pytest.param({'type': 'cartoon'}, id='type-unknown'),
     ],
 )
 async def test_film_list_validation(make_get_request, params):

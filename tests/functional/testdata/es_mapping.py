@@ -61,6 +61,10 @@ MOVIES_MAPPING = {
         # subscription — только с правом films.subscription.
         'creation_date': {'type': 'date'},
         'access_level': {'type': 'keyword'},
+        # Тип и обложка — как в маппинге ETL каталога (etl/core/schemas.py).
+        'type': {'type': 'keyword'},
+        'poster_url': {'type': 'keyword', 'index': False},
+        'imdb_id': {'type': 'keyword'},
     },
 }
 

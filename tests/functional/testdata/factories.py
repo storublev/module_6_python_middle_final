@@ -14,6 +14,9 @@ Doc = dict[str, Any]
 # Метки доступа, которые ETL проставляет фильмам.
 PUBLIC = 'public'
 SUBSCRIPTION = 'subscription'
+# Типы фильмов каталога.
+MOVIE = 'movie'
+TV_SHOW = 'tv_show'
 
 
 def new_id() -> str:
@@ -34,6 +37,9 @@ def make_film(
     writers: Iterable[Doc] = (),
     directors: Iterable[Doc] = (),
     access_level: str = PUBLIC,
+    film_type: str = MOVIE,
+    poster_url: str | None = 'https://m.media-amazon.com/images/M/poster._V1_QL75_UX400_.jpg',
+    imdb_id: str | None = 'tt0076759',
 ) -> Doc:
     actors, writers = list(actors), list(writers)
     return {
@@ -42,6 +48,9 @@ def make_film(
         'imdb_rating': imdb_rating,
         'description': description,
         'access_level': access_level,
+        'type': film_type,
+        'poster_url': poster_url,
+        'imdb_id': imdb_id,
         'genres': list(genres),
         'actors': actors,
         'writers': writers,
@@ -71,7 +80,13 @@ def make_person(full_name: str = 'Ann Smith', films: Iterable[tuple[Doc, Iterabl
 # Ответы API. Поля названы по ТЗ: uuid, genre, full_name.
 
 def film_short(film: Doc) -> Doc:
-    return {'uuid': film['id'], 'title': film['title'], 'imdb_rating': film['imdb_rating']}
+    return {
+        'uuid': film['id'],
+        'title': film['title'],
+        'imdb_rating': film['imdb_rating'],
+        'type': film['type'],
+        'poster_url': film['poster_url'],
+    }
 
 
 def film_full(film: Doc) -> Doc:
@@ -81,6 +96,7 @@ def film_full(film: Doc) -> Doc:
     return {
         **film_short(film),
         'description': film['description'],
+        'imdb_id': film['imdb_id'],
         'genre': [{'uuid': genre['id'], 'name': genre['name']} for genre in film['genres']],
         'actors': people(film['actors']),
         'writers': people(film['writers']),

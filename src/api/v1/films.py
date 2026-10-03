@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from api.dependencies import AccessDep, FilmServiceDep
 from api.v1.params import FilmSort, FilmSortQuery, PaginationDep, SearchQuery
 from api.v1.schemas import FilmSchema, FilmShortSchema, error_response
-from models.film import Film, FilmShort
+from models.film import Film, FilmShort, FilmType
 
 router = APIRouter()
 
@@ -45,8 +45,12 @@ async def film_list(
     film_service: FilmServiceDep,
     sort: FilmSortQuery = FilmSort.imdb_rating_desc,
     genre: Annotated[UUID | None, Query(description='uuid жанра для фильтрации')] = None,
+    film_type: Annotated[
+        FilmType | None,
+        Query(alias='type', description='Тип: movie — полнометражные (их можно бронировать), tv_show — сериалы'),
+    ] = None,
 ) -> list[FilmShort]:
-    return await film_service.get_list(pagination, access, sort=sort, genre_id=genre)
+    return await film_service.get_list(pagination, access, sort=sort, genre_id=genre, film_type=film_type)
 
 
 @router.get(

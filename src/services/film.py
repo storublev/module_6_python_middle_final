@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from models.film import Film, FilmShort
+from models.film import Film, FilmShort, FilmType
 from services.access import Access
 from services.base import BaseService, Pagination, sort_by
 from services.errors import AccessCheckUnavailableError, SubscriptionRequiredError
@@ -8,6 +8,7 @@ from storage.base import FieldIn, RelatedTo, SearchField, TextQuery
 
 PERSON_ROLES = ('actors', 'writers', 'directors')
 ACCESS_LEVEL_FIELD = 'access_level'
+TYPE_FIELD = 'type'
 
 
 class FilmService(BaseService[Film]):
@@ -36,11 +37,15 @@ class FilmService(BaseService[Film]):
         access: Access,
         sort: str,
         genre_id: UUID | None = None,
+        film_type: FilmType | None = None,
     ) -> list[FilmShort]:
-        """Список фильмов с сортировкой и необязательным фильтром по жанру."""
+        """Список фильмов с сортировкой и необязательными фильтрами по жанру и типу."""
         related_to = RelatedTo(str(genre_id), ('genres',)) if genre_id else None
+        filters = self._visible(access)
+        if film_type is not None:
+            filters += (FieldIn(TYPE_FIELD, (film_type.value,)),)
         return await self._search(
-            FilmShort, pagination, related_to=related_to, filters=self._visible(access), sort=sort_by(sort),
+            FilmShort, pagination, related_to=related_to, filters=filters, sort=sort_by(sort),
         )
 
     async def search(self, query: str, pagination: Pagination, access: Access) -> list[FilmShort]:

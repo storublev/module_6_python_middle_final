@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from models.film import AccessLevel
+from models.film import AccessLevel, FilmType
 from services.access import Access
 from services.base import Pagination
 from services.cache import ModelCache
@@ -159,3 +159,22 @@ async def test_different_access_levels_do_not_share_cache():
     await service.get_list(PAGE, SUBSCRIBER, sort='-imdb_rating')
 
     assert storage.requests[0] != storage.requests[1]
+
+
+async def test_list_filtered_by_type_keeps_access_restriction():
+    """Фильтр по типу добавляется к ограничению доступа, а не заменяет его."""
+    service, storage = build_service()
+
+    await service.get_list(PAGE, PUBLIC_ONLY, sort='-imdb_rating', film_type=FilmType.MOVIE)
+
+    filters = {condition.field: tuple(condition.values) for condition in storage.requests[0].filters}
+    assert filters == {'access_level': (AccessLevel.PUBLIC,), 'type': ('movie',)}
+
+
+async def test_list_without_type_filter_returns_all_types():
+    """Без параметра type выдаются и фильмы, и сериалы — поведение списка прежнее."""
+    service, storage = build_service()
+
+    await service.get_list(PAGE, PUBLIC_ONLY, sort='-imdb_rating')
+
+    assert [condition.field for condition in storage.requests[0].filters] == ['access_level']
