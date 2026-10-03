@@ -23,6 +23,7 @@ httpx, aiosmtplib), и блокирующий клиент внутри event lo
 остальное. Протокол и брокер те же самые, меняется только клиент.
 """
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -129,8 +130,12 @@ async def connect(
 class RabbitPublisher(MessagePublisher):
     """Публикация сообщений с подтверждением и записью на диск."""
 
-    def __init__(self, channel: AbstractChannel) -> None:
+    def __init__(self, channel: AbstractChannel, timeout: float) -> None:
         self._channel = channel
+        # Без таймаута публикация при лежащем брокере не падает, а ждёт, пока
+        # устойчивое соединение переподключится, — сколько угодно долго.
+        # Ретранслятор outbox тогда висит вместо того, чтобы отложить задание.
+        self._timeout = timeout
 
     async def publish(self, stage: str, payload: dict[str, Any], request_id: str) -> None:
         message = aio_pika.Message(
@@ -142,12 +147,19 @@ class RabbitPublisher(MessagePublisher):
             headers={REQUEST_ID_HEADER: request_id},
         )
         try:
-            exchange = await self._channel.get_exchange(INTERNAL_EXCHANGE)
-            # publish с подтверждением: не идём дальше, пока брокер не принял
-            # сообщение. Иначе API ответит «принято» на то, чего в очереди нет.
-            await exchange.publish(message, routing_key=stage)
+            # Таймаут — на всю публикацию, а не только на `basic_publish`: свой
+            # таймаут aio-pika начинает отсчитывать уже после того, как
+            # устойчивый канал дождался переподключения, а это ожидание само
+            # по себе не ограничено. Проверено остановкой брокера.
+            await asyncio.wait_for(self._publish(stage, message), timeout=self._timeout)
         except Exception as error:  # noqa: BLE001 - наружу выходит контракт хранилища
-            raise StorageUnavailableError(f'Не удалось опубликовать сообщение: {error}') from error
+            raise StorageUnavailableError(f'Не удалось опубликовать сообщение: {error!r}') from error
+
+    async def _publish(self, stage: str, message: aio_pika.Message) -> None:
+        exchange = await self._channel.get_exchange(INTERNAL_EXCHANGE)
+        # publish с подтверждением: не идём дальше, пока брокер не принял
+        # сообщение. Иначе API ответит «принято» на то, чего в очереди нет.
+        await exchange.publish(message, routing_key=stage)
 
 
 def _attempt_of(message: AbstractIncomingMessage) -> int:

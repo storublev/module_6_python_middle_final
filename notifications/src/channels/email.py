@@ -19,6 +19,7 @@ Exchange-аккаунта — 30 в минуту. Воркер сам себя �
 import asyncio
 import logging
 from email.message import EmailMessage
+from email.utils import parseaddr
 from time import monotonic
 
 import aiosmtplib
@@ -70,17 +71,31 @@ class SmtpConnectionPool:
         self._slots = asyncio.Semaphore(size)
 
     async def acquire(self) -> aiosmtplib.SMTP:
+        """Отдаёт соединение из пула или открывает новое.
+
+        Место в пуле занимается до подключения, а значит, и вернуть его
+        обязан тот, кто занял, если подключиться не удалось. Иначе каждая
+        неудачная попытка навсегда съедает место: при пуле из четырёх
+        соединений четыре сбоя сервера — и все следующие письма ждут
+        освобождения, которого не будет, даже когда сервер уже поднялся.
+        """
         await self._slots.acquire()
         try:
-            client = self._free.get_nowait()
-        except asyncio.QueueEmpty:
-            client = await self._connect()
+            try:
+                client = self._free.get_nowait()
+            except asyncio.QueueEmpty:
+                return await self._connect()
+            if not client.is_connected:
+                # Сервер мог закрыть простаивающее соединение сам — тогда просто
+                # открываем новое вместо того, чтобы отдавать сломанное.
+                client = await self._connect()
             return client
-        if not client.is_connected:
-            # Сервер мог закрыть простаивающее соединение сам — тогда просто
-            # открываем новое вместо того, чтобы отдавать сломанное.
-            client = await self._connect()
-        return client
+        except BaseException:
+            # BaseException, а не Exception: отмена задачи (CancelledError) тоже
+            # должна вернуть место, иначе остановка воркера посреди
+            # подключения оставит пул меньше, чем он был.
+            self._slots.release()
+            raise
 
     def release(self, client: aiosmtplib.SMTP, broken: bool = False) -> None:
         if broken:
@@ -99,8 +114,14 @@ class SmtpConnectionPool:
             await client.connect()
             if self._user:
                 await client.login(self._user, self._password)
-        except (aiosmtplib.SMTPException, OSError) as error:
-            raise ChannelUnavailableError(f'SMTP недоступен: {error}') from error
+        except BaseException as error:
+            # Соединение могло успеть открыться, а вход — нет. Такое соединение
+            # не годится и в пул не попадёт, поэтому закрываем его здесь, а не
+            # оставляем висеть до таймаута сервера.
+            client.close()
+            if isinstance(error, (aiosmtplib.SMTPException, OSError)):
+                raise ChannelUnavailableError(f'SMTP недоступен: {error}') from error
+            raise
         return client
 
     async def close(self) -> None:
@@ -153,11 +174,21 @@ def build_email(sender: str, message: RenderedMessage) -> EmailMessage:
     mail['From'] = sender
     mail['To'] = message.address
     mail['Subject'] = message.subject
+    # Постоянный идентификатор из ключа идемпотентности. Если сервер принял
+    # письмо, а ответ потерялся, повтор уйдёт с тем же Message-ID, и почтовая
+    # служба, склеивающая письма по нему, покажет одно, а не два.
+    mail['Message-ID'] = f'<{message.idempotency_key}@{_domain_of(sender)}>'
     # Текстовая часть — для почтовых клиентов без HTML и для антиспама: письмо
     # из одного HTML чаще считают подозрительным.
     mail.set_content(strip_html(message.body))
     mail.add_alternative(message.body, subtype='html')
     return mail
+
+
+def _domain_of(sender: str) -> str:
+    """Домен адреса отправителя для Message-ID; запасной — если адрес без домена."""
+    _, address = parseaddr(sender)
+    return address.rpartition('@')[2] or 'practix.local'
 
 
 def strip_html(html: str) -> str:

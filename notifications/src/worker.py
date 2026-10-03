@@ -31,15 +31,22 @@ from core.logger import LOGGING
 from core.request_id import set_request_id
 from core.sentry import configure_sentry
 from models.enums import Channel
-from services.assembly import AssemblyService, QuietHours
+from services.assembly import AssemblyService
+from services.confirmation import EmailConfirmationService
 from services.messages import PlanMessage, RenderMessage, SendMessage
 from services.planner import PlannerService
-from services.renderer import Renderer
+from services.quiet_hours import QuietHours
+from services.render_sandbox import IsolatedEngine
+from services.renderer import TemplateEngine
 from services.sender import SenderService
+from services.shortlinks import ShortLinkService
 from storage.auth import AuthContactDirectory
 from storage.postgres import (
     PostgresDeliveryRepository,
+    PostgresEmailConfirmationRepository,
     PostgresNotificationRepository,
+    PostgresOutbox,
+    PostgresShortLinkRepository,
     PostgresSubscriptionRepository,
     PostgresTemplateRepository,
 )
@@ -61,11 +68,14 @@ async def run(role: str) -> None:
         settings.rabbit_prefetch,
         int(settings.retry_delay.total_seconds() * 1000),
     )
-    publisher = RabbitPublisher(channel)
+    publisher = RabbitPublisher(channel, settings.rabbit_publish_timeout)
     auth_client = httpx.AsyncClient(base_url=settings.auth_url, timeout=settings.auth_timeout)
     channels = build_channels()
 
-    handler = build_handler(role, sessions, publisher, auth_client, channels)
+    # Процесс сборки писем нужен только сборщику: остальным ролям шаблоны
+    # собирать не приходится.
+    renderer = IsolatedEngine(settings.render_timeout, settings.render_memory_limit)
+    handler = build_handler(role, sessions, publisher, auth_client, channels, renderer)
     consumer = RabbitConsumer(channel, role, settings.max_attempts)
 
     stop = asyncio.Event()
@@ -89,6 +99,7 @@ async def run(role: str) -> None:
 
     for delivery_channel in channels.values():
         await delivery_channel.close()
+    await renderer.close()
     await auth_client.aclose()
     await connection.close()
     if postgres.engine is not None:
@@ -133,10 +144,10 @@ def build_handler(
     publisher: RabbitPublisher,
     auth_client: httpx.AsyncClient,
     channels: dict[str, DeliveryChannel],
+    renderer: TemplateEngine,
 ):  # noqa: ANN202 - возвращается замыкание с известной сигнатурой обработчика
     """Собирает обработчик сообщений для выбранной роли (Composition Root воркера)."""
     directory = AuthContactDirectory(auth_client, settings.auth_service_token.get_secret_value())
-    renderer = Renderer()
     quiet_hours = QuietHours(settings.quiet_hours_start, settings.quiet_hours_end, settings.default_timezone)
 
     async def handle_plan(payload: dict[str, Any], request_id: str) -> None:
@@ -155,14 +166,23 @@ def build_handler(
     async def handle_render(payload: dict[str, Any], request_id: str) -> None:
         set_request_id(request_id)
         async with sessions() as session:
+            confirmations = EmailConfirmationService(
+                PostgresEmailConfirmationRepository(session),
+                ShortLinkService(PostgresShortLinkRepository(session), settings.public_base_url),
+                settings.public_base_url,
+                settings.confirm_link_ttl,
+            )
             service = AssemblyService(
                 PostgresTemplateRepository(session),
                 directory,
                 renderer,
                 publisher,
+                PostgresOutbox(session),
                 quiet_hours,
                 settings.public_base_url,
                 settings.jwt_secret_key.get_secret_value(),
+                confirmations,
+                settings.confirm_redirect,
             )
             await service.assemble(RenderMessage.model_validate(payload))
 
@@ -173,6 +193,10 @@ def build_handler(
                 PostgresDeliveryRepository(session),
                 PostgresNotificationRepository(session),
                 channels,
+                settings.send_lease,
+                PostgresSubscriptionRepository(session),
+                PostgresOutbox(session),
+                quiet_hours,
             )
             await service.send(SendMessage.model_validate(payload))
 

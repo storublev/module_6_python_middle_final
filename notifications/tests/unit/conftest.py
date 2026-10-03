@@ -1,12 +1,16 @@
 """Сервисы на хранилищах в памяти."""
 
+from datetime import timedelta
+
 import pytest
 
-from services.assembly import AssemblyService, QuietHours
+from services.assembly import AssemblyService
 from services.campaigns import CampaignService
+from services.confirmation import EmailConfirmationService
 from services.ingest import IngestService
 from services.planner import PlannerService
-from services.renderer import Renderer
+from services.quiet_hours import QuietHours
+from services.renderer import InlineEngine, Renderer
 from services.sender import SenderService
 from services.shortlinks import ShortLinkService
 from services.subscriptions import SubscriptionService
@@ -18,8 +22,10 @@ from tests.unit.fakes import (
     FakeChannel,
     FakeContactDirectory,
     FakeDeliveryRepository,
+    FakeEmailConfirmationRepository,
     FakeEventStore,
     FakeNotificationRepository,
+    FakeOutbox,
     FakePublisher,
     FakeShortLinkRepository,
     FakeSubscriptionRepository,
@@ -29,6 +35,8 @@ from tests.unit.fakes import (
 BASE_URL = 'https://practix.local'
 # Маленькая пачка, чтобы упереться в неё на трёх получателях.
 BATCH_SIZE = 2
+CONFIRM_TTL = timedelta(days=3)
+SEND_LEASE = timedelta(minutes=2)
 
 
 @pytest.fixture
@@ -72,6 +80,11 @@ def links_repo(db: Database) -> FakeShortLinkRepository:
 
 
 @pytest.fixture
+def confirmations_repo(db: Database) -> FakeEmailConfirmationRepository:
+    return FakeEmailConfirmationRepository(db)
+
+
+@pytest.fixture
 def directory() -> FakeContactDirectory:
     return FakeContactDirectory()
 
@@ -92,14 +105,21 @@ def renderer() -> Renderer:
 
 
 @pytest.fixture
+def engine(renderer: Renderer) -> InlineEngine:
+    # Сервисы получают сборку в том же процессе: изоляцию проверяют отдельные
+    # тесты процесса сборки, а здесь проверяется бизнес-логика.
+    return InlineEngine(renderer)
+
+
+@pytest.fixture
 def quiet_hours() -> QuietHours:
     # Окно через полночь — самый обычный случай и самый неудобный для проверок.
     return QuietHours(start_hour=21, end_hour=9, default_timezone='Europe/Moscow')
 
 
 @pytest.fixture
-def ingest(events: FakeEventStore, publisher: FakePublisher) -> IngestService:
-    return IngestService(events, publisher)
+def ingest(events: FakeEventStore) -> IngestService:
+    return IngestService(events)
 
 
 @pytest.fixture
@@ -119,29 +139,41 @@ def planner(
 def assembly(
     templates_repo: FakeTemplateRepository,
     directory: FakeContactDirectory,
-    renderer: Renderer,
+    engine: InlineEngine,
     publisher: FakePublisher,
     quiet_hours: QuietHours,
+    confirmations: EmailConfirmationService,
+    db: Database,
 ) -> AssemblyService:
-    return AssemblyService(templates_repo, directory, renderer, publisher, quiet_hours, BASE_URL, SECRET_KEY)
+    return AssemblyService(
+        templates_repo, directory, engine, publisher, FakeOutbox(db), quiet_hours, BASE_URL, SECRET_KEY,
+        confirmations,
+    )
 
 
 @pytest.fixture
 def sender(
     deliveries_repo: FakeDeliveryRepository,
     notifications_repo: FakeNotificationRepository,
+    subscriptions_repo: FakeSubscriptionRepository,
     channel: FakeChannel,
+    db: Database,
 ) -> SenderService:
-    return SenderService(deliveries_repo, notifications_repo, {channel.channel.value: channel})
+    # Тихие часы здесь выключены (окно 0–0): большинство проверок отправителя
+    # о другом, и с настоящим окном они падали бы по ночам. Ночь проверяется
+    # отдельными тестами с фиксированным временем.
+    return SenderService(
+        deliveries_repo, notifications_repo, {channel.channel.value: channel}, SEND_LEASE,
+        subscriptions_repo, FakeOutbox(db), QuietHours(0, 0, 'Europe/Moscow'),
+    )
 
 
 @pytest.fixture
 def campaigns(
     campaigns_repo: FakeCampaignRepository,
     templates_repo: FakeTemplateRepository,
-    publisher: FakePublisher,
 ) -> CampaignService:
-    return CampaignService(campaigns_repo, templates_repo, publisher)
+    return CampaignService(campaigns_repo, templates_repo)
 
 
 @pytest.fixture
@@ -150,12 +182,17 @@ def subscriptions(subscriptions_repo: FakeSubscriptionRepository) -> Subscriptio
 
 
 @pytest.fixture
-def template_service(templates_repo: FakeTemplateRepository, renderer: Renderer) -> TemplateService:
-    return TemplateService(templates_repo, renderer)
+def template_service(templates_repo: FakeTemplateRepository, engine: InlineEngine) -> TemplateService:
+    return TemplateService(templates_repo, engine)
 
 
 @pytest.fixture
 def shortlinks(links_repo: FakeShortLinkRepository) -> ShortLinkService:
-    from datetime import timedelta
+    return ShortLinkService(links_repo, BASE_URL)
 
-    return ShortLinkService(links_repo, BASE_URL, timedelta(days=3))
+
+@pytest.fixture
+def confirmations(
+    confirmations_repo: FakeEmailConfirmationRepository, shortlinks: ShortLinkService,
+) -> EmailConfirmationService:
+    return EmailConfirmationService(confirmations_repo, shortlinks, BASE_URL, CONFIRM_TTL)

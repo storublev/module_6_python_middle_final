@@ -9,7 +9,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,10 +19,12 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.campaign import Campaign, CampaignDraft
-from models.enums import CampaignStatus, Channel, DeliveryStatus
+from models.enums import CampaignStatus, Channel, ClaimState, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    DeliveryClaim,
+    EmailConfirmation,
     NotificationRecord,
     Page,
     RenderedMessage,
@@ -31,12 +33,15 @@ from models.notification import (
     Template,
     TemplateDraft,
 )
+from models.outbox import OutboxDraft, OutboxMessage
 from storage.base import (
     AlreadyExistsError,
     CampaignRepository,
     DeliveryRepository,
+    EmailConfirmationRepository,
     EventStore,
     NotificationRepository,
+    Outbox,
     ShortLinkRepository,
     StorageUnavailableError,
     SubscriptionRepository,
@@ -46,8 +51,11 @@ from storage.orm import (
     CampaignRow,
     CampaignRunRow,
     DeliveryRow,
+    EmailConfirmationRow,
+    EmailConfirmationTokenRow,
     EventRow,
     NotificationRow,
+    OutboxRow,
     ShortLinkRow,
     SubscriptionRow,
     TemplateRow,
@@ -92,8 +100,15 @@ class PostgresRepository:
             logger.debug('Откат транзакции не удался: %s', error)
 
 
+def _outbox_row(publication: OutboxDraft) -> OutboxRow:
+    row = OutboxRow(stage=publication.stage, payload=publication.payload, request_id=publication.request_id)
+    if publication.available_at is not None:
+        row.available_at = publication.available_at
+    return row
+
+
 class PostgresEventStore(PostgresRepository, EventStore):
-    async def remember(self, event: Event) -> bool:
+    async def remember(self, event: Event, publication: OutboxDraft) -> bool:
         # ON CONFLICT DO NOTHING, а не «проверить и вставить»: между проверкой
         # и вставкой успевает пройти соперник, и тогда события задвоятся.
         query = (
@@ -109,8 +124,54 @@ class PostgresEventStore(PostgresRepository, EventStore):
         )
         async with self._errors():
             inserted = await self.session.scalar(query)
+            if inserted is not None:
+                # Задание на публикацию — в той же транзакции: событие без
+                # задания (принято, но в очередь не попало) невозможно.
+                self.session.add(_outbox_row(publication))
             await self.session.commit()
         return inserted is not None
+
+
+class PostgresOutbox(PostgresRepository, Outbox):
+    async def put(self, publication: OutboxDraft) -> None:
+        async with self._errors():
+            self.session.add(_outbox_row(publication))
+            await self.session.commit()
+
+    async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
+        # SKIP LOCKED: два ретранслятора разбирают разные задания, а не ждут
+        # друг друга на одних и тех же строках. Аренда — тот же available_at,
+        # сдвинутый вперёд: отдельная колонка «кто взял» не нужна.
+        due = (
+            select(OutboxRow.id)
+            .where(OutboxRow.available_at <= now)
+            .order_by(OutboxRow.available_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        query = (
+            update(OutboxRow)
+            .where(OutboxRow.id.in_(due.scalar_subquery()))
+            .values(available_at=now + lease, attempts=OutboxRow.attempts + 1)
+            .returning(OutboxRow)
+        )
+        async with self._errors():
+            rows = (await self.session.scalars(query)).all()
+            messages = [OutboxMessage.model_validate(row) for row in rows]
+            await self.session.commit()
+        return messages
+
+    async def done(self, message_id: UUID) -> None:
+        async with self._errors():
+            await self.session.execute(delete(OutboxRow).where(OutboxRow.id == message_id))
+            await self.session.commit()
+
+    async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
+        async with self._errors():
+            await self.session.execute(
+                update(OutboxRow).where(OutboxRow.id == message_id).values(available_at=at, last_error=error),
+            )
+            await self.session.commit()
 
 
 class PostgresTemplateRepository(PostgresRepository, TemplateRepository):
@@ -339,8 +400,9 @@ class PostgresNotificationRepository(PostgresRepository, NotificationRepository)
 
 
 class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
-    async def reserve(self, message: RenderedMessage) -> Delivery | None:
-        query = (
+    async def claim(self, message: RenderedMessage, lease: timedelta, now: datetime) -> DeliveryClaim:
+        locked_until = now + lease
+        create = (
             pg_insert(DeliveryRow)
             .values(
                 idempotency_key=message.idempotency_key,
@@ -349,17 +411,45 @@ class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
                 template_code=message.template_code,
                 subject=message.subject[:255],
                 status=DeliveryStatus.PENDING.value,
+                locked_until=locked_until,
+                attempts=1,
             )
             .on_conflict_do_nothing(index_elements=[DeliveryRow.idempotency_key])
-            .returning(DeliveryRow)
+            .returning(DeliveryRow.id)
+        )
+        # Чужая запись читается с блокировкой строки: из нескольких
+        # отправителей, одновременно увидевших вышедшую аренду, решение примет
+        # один, а остальные дождутся его и увидят уже новую аренду.
+        current = (
+            select(DeliveryRow.status, DeliveryRow.locked_until)
+            .where(DeliveryRow.idempotency_key == message.idempotency_key)
+            .with_for_update()
         )
         async with self._errors():
-            row = await self.session.scalar(query)
+            if await self.session.scalar(create) is not None:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.CLAIMED)
+            row = (await self.session.execute(current)).one()
+            status, held_until = row.status, row.locked_until
+            if status != DeliveryStatus.PENDING.value:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.DONE)
+            if held_until is not None and held_until > now:
+                await self.session.commit()
+                return DeliveryClaim(state=ClaimState.BUSY)
+            await self.session.execute(
+                update(DeliveryRow)
+                .where(DeliveryRow.idempotency_key == message.idempotency_key)
+                .values(locked_until=locked_until, attempts=DeliveryRow.attempts + 1),
+            )
             await self.session.commit()
-        return _delivery(row) if row else None
+        # Аренда была, но вышла без итога: прошлый держатель пропал, и исход
+        # его попытки неизвестен. Пустая аренда — прошлая попытка честно
+        # закончилась временной ошибкой.
+        return DeliveryClaim(state=ClaimState.CLAIMED, recovered=held_until is not None)
 
     async def finish(self, idempotency_key: str, status: DeliveryStatus, error: str | None = None) -> None:
-        values: dict[str, Any] = {'status': status.value, 'error': error}
+        values: dict[str, Any] = {'status': status.value, 'error': error, 'locked_until': None}
         if status is DeliveryStatus.SENT:
             values['sent_at'] = func.now()
         async with self._errors():
@@ -368,15 +458,17 @@ class PostgresDeliveryRepository(PostgresRepository, DeliveryRepository):
             )
             await self.session.commit()
 
-    async def release(self, idempotency_key: str) -> None:
+    async def release(self, idempotency_key: str, error: str) -> None:
         async with self._errors():
             await self.session.execute(
-                delete(DeliveryRow).where(
+                update(DeliveryRow)
+                .where(
                     DeliveryRow.idempotency_key == idempotency_key,
-                    # Снимается только бронь: отправленное письмо из истории
-                    # не исчезает, даже если повтор пришёл после успеха.
+                    # Снимается только незавершённое: отправленное письмо из
+                    # истории не исчезает, даже если повтор пришёл после успеха.
                     DeliveryRow.status == DeliveryStatus.PENDING.value,
-                ),
+                )
+                .values(locked_until=None, error=error),
             )
             await self.session.commit()
 
@@ -454,7 +546,9 @@ class PostgresCampaignRepository(PostgresRepository, CampaignRepository):
             if row.cron or row.scheduled_at is None or row.scheduled_at <= moment
         ]
 
-    async def claim_run(self, campaign_id: UUID, period_key: str, event_id: UUID) -> bool:
+    async def claim_run(
+        self, campaign_id: UUID, period_key: str, event_id: UUID, publication: OutboxDraft, finish: bool,
+    ) -> bool:
         query = (
             pg_insert(CampaignRunRow)
             .values(campaign_id=campaign_id, period_key=period_key, event_id=event_id)
@@ -463,6 +557,17 @@ class PostgresCampaignRepository(PostgresRepository, CampaignRepository):
         )
         async with self._errors():
             claimed = await self.session.scalar(query)
+            if claimed is not None:
+                # Отметка запуска, задание на публикацию и завершение разовой
+                # рассылки — одной транзакцией: «запуск был, а событие не ушло»
+                # больше не случается.
+                self.session.add(_outbox_row(publication))
+                if finish:
+                    await self.session.execute(
+                        update(CampaignRow)
+                        .where(CampaignRow.id == campaign_id)
+                        .values(status=CampaignStatus.DONE.value),
+                    )
             await self.session.commit()
         return claimed is not None
 
@@ -521,6 +626,54 @@ class PostgresShortLinkRepository(PostgresRepository, ShortLinkRepository):
         if link.expires_at is not None and link.expires_at <= at:
             return None
         return link
+
+
+class PostgresEmailConfirmationRepository(PostgresRepository, EmailConfirmationRepository):
+    async def issue(self, token_hash: str, user_id: UUID, email: str, expires_at: datetime) -> None:
+        async with self._errors():
+            self.session.add(
+                EmailConfirmationTokenRow(token_hash=token_hash, user_id=user_id, email=email, expires_at=expires_at),
+            )
+            await self.session.commit()
+
+    async def confirm(self, token_hash: str, at: datetime) -> EmailConfirmation | None:
+        # Токен гасится условным UPDATE: из двух одновременных переходов по
+        # ссылке строку получит только один, второй увидит used_at и уйдёт ни
+        # с чем. Проверка «не погашен ли» отдельным SELECT этого не даёт.
+        spend = (
+            update(EmailConfirmationTokenRow)
+            .where(
+                EmailConfirmationTokenRow.token_hash == token_hash,
+                EmailConfirmationTokenRow.used_at.is_(None),
+                EmailConfirmationTokenRow.expires_at > at,
+            )
+            .values(used_at=at)
+            .returning(EmailConfirmationTokenRow.user_id, EmailConfirmationTokenRow.email)
+        )
+        async with self._errors():
+            spent = (await self.session.execute(spend)).first()
+            if spent is None:
+                await self.session.rollback()
+                return None
+            user_id, email = spent
+            mark = (
+                pg_insert(EmailConfirmationRow)
+                .values(user_id=user_id, email=email, confirmed_at=at)
+                .on_conflict_do_update(
+                    index_elements=[EmailConfirmationRow.user_id],
+                    set_={'email': email, 'confirmed_at': at},
+                )
+            )
+            await self.session.execute(mark)
+            # Одна транзакция на погашение и отметку: сбой между ними не
+            # оставит токен погашенным, а адрес неподтверждённым.
+            await self.session.commit()
+        return EmailConfirmation(user_id=user_id, email=email, confirmed_at=at)
+
+    async def get(self, user_id: UUID) -> EmailConfirmation | None:
+        async with self._errors():
+            row = await self.session.get(EmailConfirmationRow, user_id)
+        return EmailConfirmation.model_validate(row) if row else None
 
 
 def new_id() -> UUID:

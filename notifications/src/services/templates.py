@@ -10,7 +10,7 @@ import logging
 
 from models.notification import Template, TemplateDraft
 from services.errors import TemplateCodeTakenError, TemplateNotFoundError
-from services.renderer import Renderer
+from services.renderer import TemplateEngine
 from storage.base import AlreadyExistsError, TemplateRepository
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TemplateService:
     """Управление шаблонами."""
 
-    def __init__(self, templates: TemplateRepository, renderer: Renderer) -> None:
+    def __init__(self, templates: TemplateRepository, renderer: TemplateEngine) -> None:
         self._templates = templates
         self._renderer = renderer
 
@@ -44,7 +44,7 @@ class TemplateService:
             TemplateInvalidError: шаблон не прошёл проверку.
             TemplateCodeTakenError: код занят.
         """
-        self._renderer.validate(draft.subject, draft.body)
+        await self._renderer.validate(draft.subject, draft.body)
         try:
             created = await self._templates.create(draft)
         except AlreadyExistsError as error:
@@ -59,7 +59,7 @@ class TemplateService:
             TemplateInvalidError: шаблон не прошёл проверку.
             TemplateNotFoundError: шаблона нет.
         """
-        self._renderer.validate(draft.subject, draft.body)
+        await self._renderer.validate(draft.subject, draft.body)
         updated = await self._templates.update(code, draft)
         if updated is None:
             raise TemplateNotFoundError
@@ -76,7 +76,7 @@ class TemplateService:
             raise TemplateNotFoundError
         logger.info('Шаблон удалён', extra={'template': code})
 
-    def preview(self, draft: TemplateDraft) -> tuple[str, str]:
+    async def preview(self, draft: TemplateDraft) -> tuple[str, str]:
         """Показывает, как письмо выглядит на тестовых данных.
 
         Нужно менеджеру: «проверить на себе» до того, как письмо уйдёт
@@ -86,5 +86,4 @@ class TemplateService:
         Raises:
             TemplateInvalidError: шаблон не прошёл проверку.
         """
-        self._renderer.validate(draft.subject, draft.body)
-        return self._renderer.render_probe(draft.subject, draft.body)
+        return await self._renderer.preview(draft.subject, draft.body)

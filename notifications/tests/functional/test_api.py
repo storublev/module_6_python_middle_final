@@ -396,3 +396,67 @@ def test_link_creation_requires_service_token(api_url: str) -> None:
     )
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_confirmation_by_user_id_alone_is_impossible(api_url: str, viewer: Viewer) -> None:
+    """Зная только идентификатор зрителя, адрес не подтвердить.
+
+    Ровно это и позволял прежний эндпоинт: `?user_id=…&redirectUrl=…`.
+    """
+    by_id = requests.get(
+        f'{api_url}/confirm-email',
+        params={'user_id': viewer.user_id, 'redirectUrl': 'https://example.com/'},
+        allow_redirects=False, timeout=10,
+    )
+    forged = requests.get(
+        f'{api_url}/confirm-email',
+        params={'token': viewer.user_id, 'redirectUrl': 'https://example.com/'},
+        allow_redirects=False, timeout=10,
+    )
+
+    assert by_id.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert forged.status_code == HTTPStatus.NOT_FOUND
+    assert forged.json()['code'] == 'confirmation_link_invalid'
+    status = requests.get(f'{api_url}/me/email-confirmation', headers=viewer.auth_headers, timeout=10)
+    assert status.json() == {'email': None, 'confirmed_at': None}
+
+
+def test_email_confirmation_requires_token(api_url: str) -> None:
+    """Статус подтверждения виден только самому зрителю."""
+    response = requests.get(f'{api_url}/me/email-confirmation', timeout=10)
+
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_heavy_template_does_not_stop_the_api(api_url: str, service_headers: dict[str, str]) -> None:
+    """Шаблон, занимающий процессор, отклоняется, а API тем временем отвечает другим.
+
+    Раньше шаблон собирался прямо в обработчике запроса: пока шёл его
+    миллиард итераций, процесс API не отвечал никому.
+    """
+    import threading
+    import time
+
+    endless = ('{% for a in range(1000) %}{% for b in range(1000) %}{% for c in range(1000) %}'
+               '{% endfor %}{% endfor %}{% endfor %}')
+    result: dict[str, requests.Response] = {}
+
+    def preview() -> None:
+        result['response'] = requests.post(
+            f'{api_url}/templates/preview',
+            json={'code': 'heavy', 'name': 'Тяжёлый', 'subject': 'Тема', 'body': endless},
+            headers=service_headers, timeout=60,
+        )
+
+    worker = threading.Thread(target=preview)
+    worker.start()
+    time.sleep(0.3)
+    started = time.monotonic()
+    health = requests.get(f'{api_url}/health', timeout=10)
+    health_latency = time.monotonic() - started
+    worker.join()
+
+    assert health.status_code == HTTPStatus.OK
+    assert health_latency < 1
+    assert result['response'].status_code == HTTPStatus.BAD_REQUEST
+    assert result['response'].json()['code'] == 'template_invalid'

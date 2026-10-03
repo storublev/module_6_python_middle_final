@@ -7,7 +7,7 @@ import pytest
 
 from models.enums import Channel
 from services.errors import LinkNotFoundError, TokenInvalidError
-from services.shortlinks import CONFIRM_PURPOSE, ShortLinkService
+from services.shortlinks import ShortLinkService
 from services.subscriptions import SubscriptionService
 from tests.unit.fakes import Database
 
@@ -89,31 +89,6 @@ async def test_wrong_signature_cannot_unsubscribe_others(subscriptions: Subscrip
     assert all(item.enabled for item in saved.items)
 
 
-async def test_confirmation_link_carries_user_and_redirect(shortlinks: ShortLinkService, db: Database) -> None:
-    """Ссылка подтверждения несёт идентификатор зрителя и адрес возврата.
-
-    Оба перечисляет задание урока «Короткие ссылки»: по идентификатору
-    считаются визиты, по `redirectUrl` — куда вести после подтверждения.
-    """
-    viewer = uuid4()
-
-    url = await shortlinks.confirmation_link(viewer, redirect_url='https://practix.local/')
-
-    key = url.rsplit('/', 1)[-1]
-    link = db.links[key]
-    assert str(viewer) in link.target_url
-    assert 'redirectUrl' in link.target_url
-    assert link.purpose == CONFIRM_PURPOSE
-
-
-async def test_confirmation_link_expires(shortlinks: ShortLinkService, db: Database) -> None:
-    """У ссылки подтверждения есть срок жизни."""
-    url = await shortlinks.confirmation_link(uuid4(), redirect_url='https://practix.local/')
-
-    key = url.rsplit('/', 1)[-1]
-    assert db.links[key].expires_at is not None
-
-
 async def test_expired_link_is_not_found(shortlinks: ShortLinkService) -> None:
     """Просроченная ссылка отдаёт 404, а не ведёт по старому адресу.
 
@@ -149,13 +124,3 @@ async def test_link_without_ttl_lives_forever(shortlinks: ShortLinkService) -> N
     resolved = await shortlinks.resolve(link.key, now=datetime.now(timezone.utc) + timedelta(days=365))
 
     assert resolved.target_url == 'https://practix.local/'
-
-
-async def test_email_confirmation_is_recorded(subscriptions: SubscriptionService) -> None:
-    """Переход по ссылке подтверждения отмечает адрес подтверждённым."""
-    viewer = uuid4()
-
-    await subscriptions.confirm_email(viewer)
-
-    saved = await subscriptions.list_for_user(viewer)
-    assert any(item.template_code == 'email_confirmed' and item.enabled for item in saved.items)

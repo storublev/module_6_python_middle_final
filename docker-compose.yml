@@ -561,11 +561,11 @@ services:
       WEB_CONCURRENCY: ${NOTIFY_WORKERS:-2}
     expose:
       - 8000
+    # RabbitMQ API не нужен: события ставятся в очередь через outbox в базе,
+    # и API принимает их, даже когда брокер лежит.
     depends_on:
       notify-migrations:
         condition: service_completed_successfully
-      rabbitmq:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/notify/api/v1/health')"]
       interval: 5s
@@ -583,6 +583,8 @@ services:
     depends_on:
       notify-api:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   notify-render:
@@ -595,6 +597,8 @@ services:
     depends_on:
       notify-api:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: unless-stopped
 
   notify-sender:
@@ -606,6 +610,22 @@ services:
     command: ["python", "worker.py"]
     depends_on:
       notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Ретранслятор outbox: переносит задания из базы в RabbitMQ. Экземпляров
+  # может быть несколько — задания разбираются через SKIP LOCKED.
+  notify-relay:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "relay.py"]
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
 

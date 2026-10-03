@@ -13,7 +13,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -22,6 +22,8 @@ from models.enums import Channel, DeliveryStatus
 from models.event import Event
 from models.notification import (
     Delivery,
+    DeliveryClaim,
+    EmailConfirmation,
     NotificationRecord,
     Page,
     Recipient,
@@ -31,6 +33,7 @@ from models.notification import (
     Template,
     TemplateDraft,
 )
+from models.outbox import OutboxDraft, OutboxMessage
 
 
 class StorageUnavailableError(Exception):
@@ -42,17 +45,44 @@ class AlreadyExistsError(Exception):
 
 
 class EventStore(ABC):
-    """Принятые события. Нужен только ради идемпотентности приёма."""
+    """Принятые события. Нужен ради идемпотентности приёма."""
 
     @abstractmethod
-    async def remember(self, event: Event) -> bool:
-        """Запоминает событие; False — такое `event_id` уже принимали.
+    async def remember(self, event: Event, publication: OutboxDraft) -> bool:
+        """Запоминает событие вместе с заданием на публикацию; False — такое `event_id` уже принимали.
 
-        Повтор запроса после потерянного ответа не должен рождать второе
-        уведомление (ФТ-2), поэтому решение принимается по уникальному ключу
-        в базе, а не проверкой «нет ли такого» перед вставкой: между проверкой
-        и вставкой успевает пройти соперник.
+        Событие и задание записываются одной транзакцией: событие, принятое,
+        но не попавшее в очередь, невозможно — как и обратное. Повтор запроса
+        после потерянного ответа не должен рождать второе уведомление (ФТ-2),
+        поэтому решение принимается по уникальному ключу в базе, а не
+        проверкой «нет ли такого» перед вставкой: между проверкой и вставкой
+        успевает пройти соперник.
         """
+
+
+class Outbox(ABC):
+    """Задания на публикацию в брокер, ожидающие отправки."""
+
+    @abstractmethod
+    async def put(self, publication: OutboxDraft) -> None:
+        """Кладёт задание отдельно от других данных: например, отложенное до утра."""
+
+    @abstractmethod
+    async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
+        """Забирает задания, которым пора, и откладывает их на срок аренды.
+
+        Пока аренда идёт, другие ретрансляторы этих заданий не видят. Не
+        удалённое за срок аренды задание вернётся само: так переживается
+        падение ретранслятора посреди публикации.
+        """
+
+    @abstractmethod
+    async def done(self, message_id: UUID) -> None:
+        """Удаляет опубликованное задание."""
+
+    @abstractmethod
+    async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
+        """Откладывает задание до следующей попытки и запоминает причину."""
 
 
 class TemplateRepository(ABC):
@@ -148,25 +178,31 @@ class DeliveryRepository(ABC):
     """История отправок и ключи идемпотентности."""
 
     @abstractmethod
-    async def reserve(self, message: RenderedMessage) -> Delivery | None:
-        """Занимает ключ идемпотентности до отправки.
+    async def claim(self, message: RenderedMessage, lease: timedelta, now: datetime) -> DeliveryClaim:
+        """Забирает письмо на отправку под аренду.
 
-        None означает, что ключ уже занят: письмо отправлено или отправляется
-        прямо сейчас, и второй раз его слать не нужно. Это и есть защита от
-        дублей поверх гарантии at-least-once (ADR-11).
+        * записи нет — заводится в `PENDING` с арендой: письмо наше;
+        * запись в `PENDING`, аренды нет или она вышла — аренда переходит к
+          нам. Забирает её ровно один отправитель: проверка и захват — одна
+          операция;
+        * аренда ещё идёт — письмо отправляет кто-то другой (`BUSY`);
+        * письмо в окончательном состоянии — отправлять нечего (`DONE`).
+
+        Аренда закрывает дыру прежней брони: отправитель, упавший между
+        бронью и отправкой, оставлял запись, которую любой повтор принимал за
+        «уже отправлено», и письмо не уходило никогда.
         """
 
     @abstractmethod
     async def finish(self, idempotency_key: str, status: DeliveryStatus, error: str | None = None) -> None:
-        """Проставляет итог отправки."""
+        """Проставляет окончательный итог и снимает аренду."""
 
     @abstractmethod
-    async def release(self, idempotency_key: str) -> None:
-        """Снимает бронь, чтобы сообщение можно было повторить.
+    async def release(self, idempotency_key: str, error: str) -> None:
+        """Снимает аренду, оставляя письмо в `PENDING`: следующий повтор заберёт его сразу.
 
         Нужен, когда отправка не состоялась по причине, которая пройдёт сама
-        (почтовый сервер не ответил): без этого повтор упёрся бы в свой же
-        ключ и письмо не ушло бы никогда.
+        (почтовый сервер не ответил). Запись остаётся в истории с причиной.
         """
 
     @abstractmethod
@@ -198,8 +234,15 @@ class CampaignRepository(ABC):
         """Рассылки, которым пора: наступило время разовой или срок повторяемой."""
 
     @abstractmethod
-    async def claim_run(self, campaign_id: UUID, period_key: str, event_id: UUID) -> bool:
-        """Отмечает запуск рассылки за период; False — его уже отмечали.
+    async def claim_run(
+        self, campaign_id: UUID, period_key: str, event_id: UUID, publication: OutboxDraft, finish: bool,
+    ) -> bool:
+        """Отмечает запуск рассылки за период и ставит его событие в очередь; False — запуск уже был.
+
+        Отметка, задание на публикацию и, для разовой рассылки, перевод её в
+        «завершена» (`finish`) — одна транзакция. Иначе сбой брокера после
+        отметки оставлял запуск «состоявшимся», хотя ни одного письма не ушло,
+        и повторить его было нельзя.
 
         Уникальный ключ `(campaign_id, period_key)` — защита от повторов после
         простоя генератора (НФТ-5).
@@ -222,6 +265,32 @@ class ShortLinkRepository(ABC):
     @abstractmethod
     async def resolve(self, key: str, at: datetime) -> ShortLink | None:
         """Отдаёт ссылку и считает переход; None — ключа нет или срок вышел."""
+
+
+class EmailConfirmationRepository(ABC):
+    """Токены подтверждения почты и подтверждённые адреса."""
+
+    @abstractmethod
+    async def issue(self, token_hash: str, user_id: UUID, email: str, expires_at: datetime) -> None:
+        """Запоминает выданный токен.
+
+        Хранится хеш, а не сам токен: утечка таблицы не должна давать
+        готовые ссылки подтверждения.
+        """
+
+    @abstractmethod
+    async def confirm(self, token_hash: str, at: datetime) -> EmailConfirmation | None:
+        """Гасит токен и отмечает адрес подтверждённым — одной операцией.
+
+        None — токена нет, срок вышел или его уже использовали. Погашение и
+        отметка неразделимы: иначе два одновременных перехода по ссылке
+        прошли бы оба, а сбой между шагами оставил бы токен погашенным, а адрес
+        неподтверждённым.
+        """
+
+    @abstractmethod
+    async def get(self, user_id: UUID) -> EmailConfirmation | None:
+        """Подтверждённый адрес зрителя или None."""
 
 
 class ContactDirectory(ABC):

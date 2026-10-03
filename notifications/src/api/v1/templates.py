@@ -65,7 +65,7 @@ async def create_template(
 async def preview_template(
     body: TemplateDraftSchema, templates: TemplateServiceDep, _: ServiceToken = None,
 ) -> TemplatePreviewSchema:
-    subject, rendered = templates.preview(TemplateDraft.model_validate(body.model_dump()))
+    subject, rendered = await templates.preview(TemplateDraft.model_validate(body.model_dump()))
     return TemplatePreviewSchema(subject=subject, body=rendered)
 
 

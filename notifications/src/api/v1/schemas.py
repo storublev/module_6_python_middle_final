@@ -155,6 +155,13 @@ class PreferencesSchema(Schema):
     )
 
 
+class EmailConfirmationSchema(Schema):
+    """Подтверждённый адрес почты."""
+
+    email: str | None = Field(description='Подтверждённый адрес', examples=['neo@example.com'])
+    confirmed_at: datetime | None = Field(description='Когда подтверждён')
+
+
 class SubscriptionUpdateSchema(BaseModel):
     """Включение или выключение типа уведомлений."""
 

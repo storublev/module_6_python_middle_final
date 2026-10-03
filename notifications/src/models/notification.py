@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.enums import Channel, DeliveryStatus
+from models.enums import Channel, ClaimState, DeliveryStatus
 
 # Дженерик через TypeVar, а не синтаксисом PEP 695: `class Page[T]` требует
 # Python 3.12, а CI по заданию гоняет код и на 3.10.
@@ -102,6 +102,18 @@ class Delivery(BaseModel):
     sent_at: datetime | None
 
 
+class DeliveryClaim(BaseModel):
+    """Итог попытки забрать письмо на отправку."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: ClaimState
+    # Письмо забрано у отправителя, чья аренда вышла без итога. Такой
+    # отправитель мог успеть отдать письмо почтовому серверу и упасть до
+    # записи: исход прошлой попытки неизвестен.
+    recovered: bool = False
+
+
 class Recipient(BaseModel):
     """Получатель, как его видит сборщик письма.
 
@@ -161,6 +173,24 @@ class ShortLink(BaseModel):
     # Служебная пометка: по ней переход подтверждает адрес почты.
     purpose: str | None
     created_at: datetime
+
+
+class EmailConfirmation(BaseModel):
+    """Подтверждённый адрес почты зрителя.
+
+    Хранится отдельно от подписок: подтверждение говорит, что ящик
+    принадлежит зрителю, а не что он согласен на рассылки. Смешай их — и
+    переход по ссылке включал бы письма тому, кто от них отказался.
+
+    Адрес записывается вместе с отметкой: если зритель потом сменит почту,
+    подтверждение старого адреса к новому не относится.
+    """
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    user_id: UUID
+    email: str
+    confirmed_at: datetime
 
 
 class TemplateDraft(BaseModel):
