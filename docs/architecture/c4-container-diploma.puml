@@ -1,0 +1,65 @@
+@startuml c4-container-diploma
+' Схема системы после дипломного проекта «Бронирование билетов». Сервисы UGC
+' и рассылок показаны свёрнуто: диплом их не меняет, подробная схема —
+' c4-container-sprint10.puml. Зелёное — новое, оранжевое — изменённое.
+!include <C4/C4_Container>
+
+title Онлайн-кинотеатр — диплом (C4, уровень 2): бронирование билетов
+
+AddElementTag("new", $bgColor="#1f7a3d", $fontColor="#ffffff", $borderColor="#0f4423", $legendText="Новый элемент")
+AddElementTag("changed", $bgColor="#b35c00", $fontColor="#ffffff", $borderColor="#7a3f00", $legendText="Изменённый элемент")
+AddRelTag("new", $textColor="#1f7a3d", $lineColor="#1f7a3d", $legendText="Новое взаимодействие")
+
+Person(guest, "Гость", "Выбирает фильм, хоста, дату и время, бронирует места, оценивает хоста")
+Person(host, "Хост", "Предлагает фильм, место и время, ведёт своё расписание, оценивает гостей", $tags="new")
+Person(staff, "Редактор каталога", "Ведёт фильмы и их обложки")
+
+System_Ext(imdb, "Поиск IMDb", "Источник ссылок на обложки; вызывается разово скриптом подготовки данных")
+System_Ext(smtp, "Почтовый сервер", "На стенде — Mailpit")
+
+System_Boundary(cinema, "Онлайн-кинотеатр") {
+    Container(nginx, "Шлюз", "nginx 1.27", "Добавлены / → интерфейс и /booking/ → сервис бронирования", $tags="changed")
+
+    Container(web, "Интерфейс", "Python 3.12, FastAPI, Jinja2", "Каталог с обложками, карточка фильма, выбор хоста и даты, бронь, кабинеты хоста и гостя. Токены — в HttpOnly cookie", $tags="new")
+
+    Container(booking, "API бронирования", "Python 3.12, FastAPI, SQLAlchemy 2", "Показы, брони без перебронирования, оценки хостов и гостей", $tags="new")
+    Container(relay, "Ретранслятор outbox", "Python 3.12", "Переносит события о бронях в API уведомлений с постоянным event_id", $tags="new")
+    ContainerDb(booking_pg, "База бронирования", "PostgreSQL 16", "screenings, bookings, ratings, user_ratings, outbox", $tags="new")
+
+    Container(api, "Async API", "Python 3.12, FastAPI", "Фильмы теперь с типом и обложкой", $tags="changed")
+    ContainerDb(es, "Поисковый индекс", "Elasticsearch 8", "movies, genres, persons")
+    Container(etl, "ETL каталога", "Python", "Несёт type и poster_url в индекс, загружает обложки из posters.csv", $tags="changed")
+    ContainerDb(movies_pg, "База каталога", "PostgreSQL 16", "content.film_work + poster_url, imdb_id", $tags="changed")
+    Container(admin, "Админка", "Django 5.2", "Поле обложки у фильма", $tags="changed")
+
+    Container(auth, "Сервис авторизации", "Python 3.12, FastAPI", "Вход, профиль; справочник контактов по X-Service-Token")
+    Container(notify, "Сервис уведомлений", "FastAPI, RabbitMQ, воркеры", "Новые шаблоны писем о бронях", $tags="changed")
+}
+
+Rel(guest, nginx, "Страницы", "HTTPS")
+Rel(host, nginx, "Страницы", "HTTPS")
+Rel(staff, nginx, "/admin/", "HTTPS")
+
+Rel(nginx, web, "/", "HTTP", $tags="new")
+Rel(nginx, booking, "/booking/ — публичный API", "HTTP", $tags="new")
+Rel(nginx, admin, "/admin/", "HTTP")
+
+Rel(web, api, "Фильмы, жанры, персоны", "HTTP/JSON", $tags="new")
+Rel(web, booking, "Показы, брони, оценки — токеном зрителя", "HTTP/JSON", $tags="new")
+Rel(web, auth, "Регистрация, вход, обновление токена, профиль", "HTTP/JSON", $tags="new")
+
+Rel(booking, booking_pg, "Транзакция: счётчик мест + бронь + outbox", "SQL", $tags="new")
+Rel(booking, api, "Фильм существует и полнометражный", "HTTP/JSON", $tags="new")
+Rel(booking, auth, "Имена хоста и гостя", "HTTP/JSON", $tags="new")
+Rel(relay, booking_pg, "Забирает события SKIP LOCKED", "SQL", $tags="new")
+Rel(relay, notify, "POST /events: booking-reporting.v1.*", "HTTP/JSON", $tags="new")
+
+Rel(api, es, "Поиск и чтение")
+Rel(etl, movies_pg, "Изменения по журналу аудита")
+Rel(etl, es, "Документы фильмов")
+Rel(admin, movies_pg, "Каталог")
+Rel(imdb, etl, "posters.csv готовит скрипт fetch_posters.py", "HTTPS, разово")
+Rel(notify, smtp, "Письма", "SMTP")
+
+SHOW_LEGEND()
+@enduml

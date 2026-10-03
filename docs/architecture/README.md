@@ -14,6 +14,8 @@
 | TO BE — после десятого спринта: сервис уведомлений | [c4-container-sprint10.puml](c4-container-sprint10.puml) | [c4-container-sprint10.png](c4-container-sprint10.png) |
 | Путь события (дополнительная) | [event-flow.puml](event-flow.puml) | [event-flow.png](event-flow.png) |
 | Путь уведомления по трём сценариям (дополнительная) | [notification-flow.puml](notification-flow.puml) | [notification-flow.png](notification-flow.png) |
+| Диплом — бронирование билетов | [c4-container-diploma.puml](c4-container-diploma.puml) | [c4-container-diploma.png](c4-container-diploma.png) |
+| Путь брони (диплом) | [booking-flow.puml](booking-flow.puml) | [booking-flow.png](booking-flow.png) |
 
 Картинки пересобираются из исходников: `make -C docs/architecture` (нужен
 Docker, образ `plantuml/plantuml`).
@@ -21,6 +23,9 @@ Docker, образ `plantuml/plantuml`).
 Проект сервиса уведомлений десятого спринта — отдельным документом:
 [notifications.md](notifications.md): гибридная подготовка данных по трём
 сценариям, компоненты, очереди и ADR-9…ADR-14.
+
+Дипломный проект «Бронирование билетов» — [../diploma/](../diploma/):
+требования, архитектура с ADR-19…ADR-26, план и исследование.
 
 ## AS IS: что есть сейчас
 
