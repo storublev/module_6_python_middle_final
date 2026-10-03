@@ -10,6 +10,7 @@ import pytest
 from access import PUBLIC, SUBSCRIPTION, access_level, subscription_threshold
 from core.schemas import MOVIES_MAPPING
 from models.dataclasses import Movie
+from pipelines import movie_document
 
 TODAY = date(2026, 9, 15)
 
@@ -46,3 +47,25 @@ def test_movie_without_date_is_public():
     document = Movie(id="1", title="Old").to_es_document()
 
     assert (document["creation_date"], document["access_level"]) == (None, PUBLIC)
+
+
+def test_movie_document_carries_type_and_poster():
+    """Тип фильма и обложка из каталога доезжают до документа индекса и описаны в маппинге."""
+    row = {
+        "id": "1", "title": "Star Wars", "type": "movie", "imdb_id": "tt0076759",
+        "poster_url": "https://m.media-amazon.com/images/M/poster._V1_QL75_UX400_.jpg",
+        "genres": [], "persons": [],
+    }
+
+    document = movie_document(row)
+
+    assert (document["type"], document["imdb_id"]) == ("movie", "tt0076759")
+    assert document["poster_url"].endswith("UX400_.jpg")
+    assert {"type", "poster_url", "imdb_id"} <= set(MOVIES_MAPPING["properties"])
+
+
+def test_movie_without_poster_is_indexed_with_empty_link():
+    """Фильм без найденной обложки индексируется с пустой ссылкой: заглушку рисует интерфейс."""
+    document = movie_document({"id": "1", "title": "Unknown", "type": "tv_show", "genres": [], "persons": []})
+
+    assert (document["type"], document["poster_url"], document["imdb_id"]) == ("tv_show", None, None)

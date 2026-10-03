@@ -38,6 +38,9 @@ class Movie:
     directors: list[Person] = field(default_factory=list)
     writers: list[Person] = field(default_factory=list)
     modified: Optional[str] = None
+    type: Optional[str] = None
+    poster_url: Optional[str] = None
+    imdb_id: Optional[str] = None
 
     def to_es_document(self) -> dict:
         """Преобразует фильм в документ для Elasticsearch."""
@@ -63,6 +66,9 @@ class Movie:
             "writers_names": [p.name for p in self.writers],
             "creation_date": self.creation_date.isoformat() if self.creation_date else None,
             "access_level": access_level(self.creation_date),
+            "type": self.type,
+            "poster_url": self.poster_url,
+            "imdb_id": self.imdb_id,
         }
 
 

@@ -18,6 +18,9 @@ SELECT fw.id,
        fw.description,
        fw.modified,
        fw.creation_date,
+       fw.type,
+       fw.poster_url,
+       fw.imdb_id,
        COALESCE(
            json_agg(
                DISTINCT jsonb_build_object('id', g.id, 'name', g.name)
@@ -40,7 +43,8 @@ LEFT JOIN content.genre            g    ON g.id = gfw.genre_id
 LEFT JOIN content.person_film_work pfw  ON pfw.film_work_id = fw.id
 LEFT JOIN content.person           p    ON p.id = pfw.person_id
 WHERE fw.id = ANY(%(ids)s::uuid[])
-GROUP BY fw.id, fw.rating, fw.title, fw.description, fw.modified, fw.creation_date
+GROUP BY fw.id, fw.rating, fw.title, fw.description, fw.modified, fw.creation_date,
+         fw.type, fw.poster_url, fw.imdb_id
 """
 
 # Жанры по списку ID — только те, что есть хотя бы в одном фильме
@@ -120,6 +124,9 @@ ordered_movies AS (
            fw.description,
            fw.modified,
            fw.creation_date,
+           fw.type,
+           fw.poster_url,
+           fw.imdb_id,
            ROW_NUMBER() OVER (ORDER BY fw.modified, fw.id) AS row_num
     FROM content.film_work fw
     WHERE fw.id IN (SELECT id FROM recently_modified)
@@ -130,6 +137,9 @@ SELECT om.id,
        om.description,
        om.modified,
        om.creation_date,
+       om.type,
+       om.poster_url,
+       om.imdb_id,
        COALESCE(
            json_agg(
                DISTINCT jsonb_build_object('id', g.id, 'name', g.name)
@@ -152,7 +162,8 @@ LEFT JOIN content.genre            g    ON g.id = gfw.genre_id
 LEFT JOIN content.person_film_work pfw  ON pfw.film_work_id = om.id
 LEFT JOIN content.person           p    ON p.id = pfw.person_id
 WHERE om.row_num > {offset} AND om.row_num <= {offset} + {limit}
-GROUP BY om.id, om.imdb_rating, om.title, om.description, om.modified, om.creation_date
+GROUP BY om.id, om.imdb_rating, om.title, om.description, om.modified, om.creation_date,
+         om.type, om.poster_url, om.imdb_id
 ORDER BY om.modified, om.id
 """
 

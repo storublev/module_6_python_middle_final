@@ -69,6 +69,11 @@ MOVIES_MAPPING = {
         # Дата выхода и метка доступа: public — всем, subscription — по подписке.
         "creation_date": {"type": "date"},
         "access_level": {"type": "keyword"},
+        # Тип (movie, tv_show): бронировать показ можно только полнометражный
+        # фильм. Обложка — ссылка, по ней не ищут, поэтому не индексируется.
+        "type": {"type": "keyword"},
+        "poster_url": {"type": "keyword", "index": False},
+        "imdb_id": {"type": "keyword"},
     },
 }
 
