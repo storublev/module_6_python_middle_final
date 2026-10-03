@@ -134,6 +134,15 @@ class BookingService:
             await self._outbox.add(self._letters.booking_cancelled(freed, cancelled))
         return cancelled
 
+    async def mine(self, guest_id: UUID, screening_id: UUID) -> Booking:
+        """Активная бронь зрителя на показ — страница показа решает, что ему предложить."""
+        if await self._screenings.get(screening_id) is None:
+            raise ScreeningNotFoundError
+        booking = await self._bookings.active_of(screening_id, guest_id)
+        if booking is None:
+            raise BookingNotFoundError
+        return booking
+
     async def guests(self, host_id: UUID, screening_id: UUID) -> list[GuestEntry]:
         """Гости показа — только его хосту: это персональные данные."""
         screening = await self._screenings.get(screening_id)

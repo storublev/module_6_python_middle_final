@@ -25,6 +25,7 @@ from models.domain import Booking, GuestEntry, Page, Rating, Screening, Screenin
 from services.errors import (
     AlreadyBookedError,
     AlreadyRatedError,
+    BookingNotFoundError,
     CapacityBelowBookedError,
     CapacityOutOfRangeError,
     FilmNotBookableError,
@@ -138,6 +139,17 @@ async def cancel_screening(screening_id: UUID, user: CurrentUser, service: Scree
 )
 async def screening_guests(screening_id: UUID, user: CurrentUser, service: BookingServiceDep) -> list[GuestEntry]:
     return await service.guests(user.user_id, screening_id)
+
+
+@router.get(
+    '/{screening_id}/bookings/mine',
+    response_model=BookingSchema,
+    summary='Моя бронь на показе',
+    description='Активная бронь зрителя на этот показ; 404 `booking_not_found` — брони нет.',
+    responses=error_responses(*TOKEN_ERRORS, ScreeningNotFoundError, BookingNotFoundError),
+)
+async def my_booking(screening_id: UUID, user: CurrentUser, service: BookingServiceDep) -> Booking:
+    return await service.mine(user.user_id, screening_id)
 
 
 @router.post(

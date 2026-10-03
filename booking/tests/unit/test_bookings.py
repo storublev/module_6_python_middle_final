@@ -279,3 +279,15 @@ async def test_my_bookings_split_by_period(world: World):
 
     assert [view.screening.id for view in upcoming.items] == [later.id]
     assert [view.screening.id for view in past.items] == [soon.id]
+
+
+async def test_my_booking_on_screening(world: World):
+    """Страница показа узнаёт активную бронь зрителя; нет брони — booking_not_found, нет показа — 404 показа."""
+    screening = await world.screening()
+    booking = await world.bookings.book(GUEST, screening.id, 2)
+
+    assert (await world.bookings.mine(GUEST, screening.id)).id == booking.id
+    with pytest.raises(BookingNotFoundError):
+        await world.bookings.mine(OTHER_GUEST, screening.id)
+    with pytest.raises(ScreeningNotFoundError):
+        await world.bookings.mine(GUEST, uuid4())
