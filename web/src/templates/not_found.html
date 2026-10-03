@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}Не найдено{% endblock %}
+{% block content %}
+  <section class="state"><h1>{{ what or 'Страница' }} не найден{{ 'а' if what in ('Страница', 'Персона') else '' }}</h1>
+  <p><a class="btn btn--ghost" href="/">К фильмам</a></p></section>
+{% endblock %}

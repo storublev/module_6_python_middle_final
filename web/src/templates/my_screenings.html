@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import screening_row %}
+{% block title %}Моё расписание{% endblock %}
+{% block content %}
+  <h1>Моё расписание</h1>
+  <p class="muted">Показы, где вы — хост. Новый показ создаётся из карточки фильма: «Организовать показ».</p>
+  {% include 'tabs.html' %}
+  {% for s in page['items'] %}{{ screening_row(s, show_host=false) }}{% else %}
+    <p class="empty">{{ 'Вы ещё не устраивали показов. Откройте любой фильм и станьте хостом.' if period == 'upcoming' else 'Прошедших показов нет.' }}</p>
+  {% endfor %}
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import poster %}
+{% block title %}Мои брони{% endblock %}
+{% block content %}
+  <h1>Мои брони</h1>
+  {% include 'tabs.html' %}
+  {% for view in page['items'] %}
+    {% set s = view.screening %}{% set b = view.booking %}
+    <article class="screening-row">
+      <a href="/films/{{ s.film_id }}">{{ poster(s.film_title, s.film_poster, 'poster--thumb') }}</a>
+      <div class="screening-row__body">
+        <a class="screening-row__film" href="/films/{{ s.film_id }}">{{ s.film_title }}</a>
+        <div class="screening-row__when">{{ s.starts_at | when }}</div>
+        <div class="muted">{{ s.place }} · {{ s.address }}</div>
+        <div class="muted">Хост: <a href="/hosts/{{ s.host_id }}">{{ s.host_name }}</a></div>
+      </div>
+      <div class="screening-row__side">
+        {% if b.status == 'cancelled' %}<span class="badge badge--bad">Бронь отменена</span>
+        {% elif s.status == 'cancelled' %}<span class="badge badge--bad">Показ отменён</span>
+        {% else %}<span class="seats">{{ b.seats | seats }}</span>{% endif %}
+        <a class="btn btn--ghost" href="/screenings/{{ s.id }}">{{ 'Оценить хоста' if period == 'past' and b.status == 'active' and s.status == 'scheduled' else 'Подробнее' }}</a>
+      </div>
+    </article>
+  {% else %}
+    <p class="empty">{{ 'Броней пока нет. Выберите фильм в каталоге — у многих есть хосты.' if period == 'upcoming' else 'Здесь появятся показы, на которых вы были.' }}</p>
+  {% endfor %}
+{% endblock %}

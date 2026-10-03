@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import film_tile %}
+{% block title %}{{ person.full_name }}{% endblock %}
+{% block content %}
+  <h1>{{ person.full_name }}</h1>
+  <p class="muted">{{ films | length }} в каталоге</p>
+  <div class="grid">{% for film in films %}{{ film_tile(film) }}{% endfor %}</div>
+{% endblock %}
