@@ -29,13 +29,13 @@ filebeat.inputs:
       - add_docker_metadata:
           host: unix:///var/run/docker.sock
       # Логи инфраструктуры — СУБД, брокера, самого ELK — в общий индекс не
-      # берём. Читать их некому, а объёмом они забивают индекс: одна MongoDB
-      # за несколько минут пишет больше строк, чем все сервисы вместе (каждое
-      # открытие и закрытие соединения — запись уровня INFO).
+      # берём. Читать их некому, а объёмом они забивают индекс: СУБД и брокер
+      # пишут запись на каждое открытие и закрытие соединения, и за несколько
+      # минут набирают больше строк, чем все сервисы вместе.
       - drop_event:
           when:
             regexp:
-              container.name: '(mongo|postgres|redis|kafka|clickhouse|elasticsearch|kibana|logstash|filebeat|jaeger|sentry)'
+              container.name: '(postgres|redis|rabbitmq|mailpit|elasticsearch|kibana|logstash|filebeat|jaeger|sentry)'
       # stdout сервисов — тоже JSON (core/logger.py), поэтому раскладываем его
       # по полям: иначе в Kibana была бы одна строка вместо level и request_id.
       - decode_json_fields:

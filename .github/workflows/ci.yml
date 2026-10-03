@@ -31,7 +31,7 @@ jobs:
         # Конфигурации линтеров лежат по одной на часть репозитория: у каждого
         # сервиса свои pyproject.toml и setup.cfg, и запускать линтер из корня
         # нельзя — он возьмёт чужие настройки.
-        part: [".", "auth", "admin_panel", "etl", "ugc", "ugc_etl", "ugc_content", "notifications", "research", "booking", "web"]
+        part: [".", "auth", "admin_panel", "etl", "notifications", "booking", "web"]
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +77,7 @@ jobs:
         # ошибки — сами линтеры гоняются задачей lint выше и валят сборку там.
         # Здесь собирается читаемый HTML, по которому видно всю картину сразу.
         run: |
-          for part in . auth admin_panel etl ugc ugc_etl ugc_content notifications research booking web; do
+          for part in . auth admin_panel etl notifications booking web; do
             (cd "$part" && flake8 . --format=html --htmldir="$GITHUB_WORKSPACE/lint-report/$part") || true
           done
 
@@ -110,7 +110,7 @@ jobs:
         # mypy не знает ни про модели, ни про менеджеры и выдаёт ошибки на
         # ровном месте. Это отдельная задача, а не повод ослабить проверку
         # остальным.
-        part: [".", "auth", "ugc", "ugc_etl", "ugc_content", "notifications", "booking", "web"]
+        part: [".", "auth", "notifications", "booking", "web"]
     steps:
       - uses: actions/checkout@v4
 
@@ -146,7 +146,7 @@ jobs:
         # поддерживается. Смысл требования — «проверьте на нескольких
         # версиях» — выполняется.
         python-version: ["3.10", "3.11", "3.12"]
-        part: ["ugc_content", "notifications"]
+        part: ["notifications"]
     steps:
       - uses: actions/checkout@v4
 
@@ -182,9 +182,9 @@ jobs:
       matrix:
         # Эти части написаны под 3.12 и используют её возможности
         # (дженерики в синтаксисе PEP 695, StrEnum, datetime.UTC), поэтому у
-        # них одна версия. Матрица версий — у сервиса контента выше: он
+        # них одна версия. Матрица версий — у сервиса уведомлений выше: он
         # написан совместимым с 3.10 намеренно.
-        part: [".", "auth", "ugc", "ugc_etl", "admin_panel", "notifications", "booking", "web"]
+        part: [".", "auth", "admin_panel", "notifications", "booking", "web"]
     steps:
       - uses: actions/checkout@v4
 

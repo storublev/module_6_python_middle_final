@@ -167,7 +167,7 @@ S(Viewing History) = UsersCount × MoviesCount = 5 000 000 × 50 000 = 2,5 × 10
 
 ## Что проверяет исследование
 
-Требования превращаются в замеры так ([ugc_content/research/](../ugc_content/research/README.md)):
+Требования превращаются в замеры так ([ugc_content/research/](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc_content/research/README.md)):
 
 | Требование | Как меряется |
 |---|---|

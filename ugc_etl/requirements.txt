@@ -1,7 +1,0 @@
-clickhouse-connect==1.8.0
-kafka-python==3.0.11
-lz4==4.4.5
-psutil==7.2.2
-pydantic-settings==2.15.0
-pydantic==2.13.5
-sentry-sdk==2.70.0

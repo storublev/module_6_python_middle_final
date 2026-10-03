@@ -54,8 +54,9 @@ docker compose -f booking/tests/functional/docker-compose.yml up --build \
 
 ## Кинотеатр, на котором построен диплом
 
-
-Четыре сервиса онлайн-кинотеатра за общим nginx:
+Сервисы онлайн-кинотеатра за общим nginx (сервисы UGC — сбор действий,
+лайки и рецензии — для диплома не нужны и из этого репозитория убраны; они
+живут в репозитории модуля 4):
 
 * **Async API** — точка входа для клиентов каталога: отдаёт фильмы, жанры и
   персоны из Elasticsearch и кеширует ответы в Redis;
@@ -68,11 +69,11 @@ docker compose -f booking/tests/functional/docker-compose.yml up --build \
   через которую редакторы ведут фильмы, жанры и персоны. Сотрудники входят в
   неё учётной записью кинотеатра: вход проверяет сервис авторизации, отдельного
   пароля у админки нет;
-* **сервис сбора пользовательских действий** ([ugc/](ugc/README.md)) —
-  принимает клики, просмотры страниц и события плеера и складывает их в Kafka,
-  откуда [ETL](ugc_etl/README.md) непрерывно переносит их в ClickHouse для
-  аналитиков. Требования — [docs/requirements.md](docs/requirements.md),
-  схемы AS IS и TO BE — [docs/architecture/](docs/architecture/README.md).
+* **сервис уведомлений** ([notifications/](notifications/README.md)) — письма
+  и мгновенные уведомления: API принимает события, воркеры на RabbitMQ
+  собирают и отправляют письма; проект — [docs/architecture/notifications.md](docs/architecture/notifications.md);
+* **сервис бронирования** ([booking/](booking/README.md)) и **интерфейс**
+  ([web/](web/README.md)) — дипломный проект, описан выше.
 
 Роли ограничивают доступ к категориям фильмов: фильмы, вышедшие менее трёх лет
 назад, ETL помечает `access_level=subscription`, и Async API отдаёт их только
@@ -91,8 +92,10 @@ docker compose -f booking/tests/functional/docker-compose.yml up --build \
                        │                                                │
                        ├─ /admin/ ─► django-admin ─┬─► postgres (каталог фильмов)
                        │                           └─► auth   (вход сотрудника)
-                       │
-                       └─ /ugc/   ─► ugc ──► kafka ──► ugc-etl ──► clickhouse ──► аналитик
+                       ├─ /notify/ ─► notify-api ──► rabbitmq ──► воркеры ──► почта
+                       ├─ /booking/ ─► booking-api ─┬─► booking-postgres
+                       │                            └─► outbox ─► booking-relay ─► notify-api
+                       └─ /       ─► web ──► api, booking-api, auth (страницы интерфейса)
 ```
 
 У каждого сервиса свои хранилища; общие у них только nginx и сервис
@@ -122,11 +125,10 @@ ETL каталога ([etl/](etl/README.md)) перенесён сюда из р
 | `auth-migrations` | Одноразовый контейнер с миграциями Alembic |
 | `django-admin` | Админка каталога: Django + gunicorn |
 | `django-admin-migrations` | Одноразовый контейнер: миграции админки и сборка статики в общий том |
-| `ugc` | Сервис сбора пользовательских действий: Flask + gunicorn с воркерами gevent |
-| `kafka` | Брокер событий в режиме KRaft, топик `ugc.events` |
-| `kafka-init` | Одноразовый контейнер: заводит топик с нужным числом партиций |
-| `ugc-etl` | Непрерывный перенос событий из Kafka в ClickHouse с повторами, прерывателем и наблюдением за памятью |
-| `clickhouse` | Аналитическое хранилище событий: сырые события и витрина по фильмам |
+| `notify-*`, `rabbitmq`, `mailpit` | Сервис уведомлений: API, ретранслятор outbox, воркеры, websocket-шлюз, брокер и приёмник почты стенда |
+| `booking-api`, `booking-relay` | Сервис бронирования и ретранслятор его событий в уведомления |
+| `booking-postgres`, `booking-migrations` | База бронирования и одноразовые миграции |
+| `web` | Интерфейс кинотеатра: страницы на FastAPI + Jinja2 |
 | `jaeger` | Сбор спанов трассировки и дерево запроса по ним; интерфейс — http://localhost:16686 |
 
 ## Что можно посмотреть в браузере
@@ -135,10 +137,12 @@ ETL каталога ([etl/](etl/README.md)) перенесён сюда из р
 
 | Адрес | Что там |
 |---|---|
-| http://localhost/content/api/openapi | **Лайки, рецензии, закладки** — Swagger с кнопкой Authorize: вставьте туда access-токен и пробуйте ручки прямо из браузера |
+| http://localhost/ | **Интерфейс**: каталог, карточка фильма, бронирование |
+| http://localhost/booking/api/openapi | **Бронирование** — Swagger с кнопкой Authorize: вставьте туда access-токен и пробуйте ручки прямо из браузера |
 | http://localhost/api/openapi | Каталог фильмов, жанров и персон |
 | http://localhost/auth/api/openapi | Регистрация, вход, роли и права; здесь же берётся токен (`POST /auth/api/v1/login` → `access_token`) |
-| http://localhost/ugc/api/openapi | Приём пользовательских событий |
+| http://localhost/notify/api/openapi | Сервис уведомлений |
+| http://localhost:8025 | **Mailpit**: письма, которые ушли бы зрителям |
 | http://localhost/admin/ | Админка каталога (вход сотрудника — через сервис авторизации) |
 | http://localhost:5601 | **Kibana**: логи всех сервисов и nginx. Discover → представления «app-*» и «nginx-*» |
 | http://localhost:9001 | **GlitchTip**: неотловленные исключения со стектрейсом |
@@ -148,10 +152,11 @@ ETL каталога ([etl/](etl/README.md)) перенесён сюда из р
 
 1. в Swagger сервиса авторизации завести пользователя (`POST /auth/api/v1/signup`)
    и войти (`POST /auth/api/v1/login`) — скопировать `access_token`;
-2. открыть Swagger сервиса контента, нажать **Authorize**, вставить токен;
-3. поставить фильму оценку (`PUT /films/{film_id}/rating`), затем прочитать
-   агрегат (`GET /films/{film_id}/rating`) — он обновится сразу;
-4. написать рецензию, проголосовать за неё, добавить фильм в закладки;
+2. открыть Swagger сервиса бронирования, нажать **Authorize**, вставить токен;
+3. создать показ (`POST /screenings`) на полнометражный фильм из каталога и
+   найти его в списке хостов фильма (`GET /films/{film_id}/hosts`);
+4. вторым зрителем забронировать места (`POST /screenings/{id}/bookings`) и
+   убедиться, что больше мест, чем есть, не продаётся;
 5. найти свои запросы в Kibana по `request_id` из заголовка ответа
    `X-Request-Id` и то же самое дерево — в Jaeger.
 
@@ -159,10 +164,9 @@ ETL каталога ([etl/](etl/README.md)) перенесён сюда из р
 
 ## Запуск
 
-Нужны Docker и Docker Compose v2, а рядом с этим репозиторием — клон ETL:
+Нужны Docker и Docker Compose v2; всё остальное — в этом репозитории:
 
 ```bash
-git clone git@github.com:storublev/new_admin_panel_sprint_3.git ../new_admin_panel_sprint_3
 cp .env.example .env
 ```
 
@@ -184,19 +188,12 @@ docker compose exec auth python cli.py createsuperuser --login admin
 
 * Документация Async API: http://localhost/api/openapi
 * Документация сервиса авторизации: http://localhost/auth/api/openapi
-* Документация сервиса сбора событий: http://localhost/ugc/api/openapi
+* Документация сервиса бронирования: http://localhost/booking/api/openapi
+* Интерфейс: http://localhost/
 * Админка каталога: http://localhost/admin/
 * Трассировка (Jaeger): http://localhost:16686
 * Спецификации: http://localhost/api/openapi.json, http://localhost/auth/api/openapi.json,
-  http://localhost/ugc/api/openapi.json
-
-События, принятые сервисом сбора, доезжают до ClickHouse за несколько секунд;
-посмотреть, что доехало:
-
-```bash
-docker compose exec clickhouse clickhouse-client --query \
-    "SELECT event_type, count() FROM ugc.events GROUP BY event_type"
-```
+  http://localhost/booking/api/openapi.json
 
 В документации для клиентов описаны пагинация, ошибки (404, 422, 503 с моделью
 `ErrorSchema`), назначение каждого эндпоинта и тега, поля ответов с примерами.
@@ -456,7 +453,8 @@ Redis на другой кеш не меняет поведения API при �
 
 Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/README.md](auth/README.md#переменные-окружения),
 админки (с префиксом `DJANGO_`) — в [admin_panel/README.md](admin_panel/README.md#переменные-окружения),
-сервиса сбора событий (с префиксом `UGC_`) — в [ugc/README.md](ugc/README.md#переменные-окружения).
+бронирования (с префиксом `BOOKING_`) — в [booking/README.md](booking/README.md#настройки),
+интерфейса (`WEB_`) — в [web/README.md](web/README.md#настройки).
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
@@ -481,10 +479,6 @@ Redis на другой кеш не меняет поведения API при �
 | `JAEGER_UI_PORT` | `16686` | Порт интерфейса Jaeger на хосте |
 | `REQUIRE_REQUEST_ID` | `true` | Отклонять запросы без `X-Request-Id` (его ставит nginx) |
 | `ADMIN_WORKERS` | `2` | Количество процессов gunicorn у админки |
-| `UGC_KAFKA_TOPIC` | `ugc.events` | Топик, в который уходят пользовательские события |
-| `UGC_KAFKA_PARTITIONS` | `12` | Сколько партиций заводится у топика событий |
-| `UGC_WORKERS` | `2` | Количество процессов gunicorn у сервиса сбора событий |
-| `KAFKA_CLUSTER_ID` | `MkU3OEVBNTcwNTJENDM2Qk` | Идентификатор кластера Kafka; у поднятого кластера не меняется |
 
 ## Участники
 
@@ -513,6 +507,10 @@ Redis на другой кеш не меняет поведения API при �
   заводит ETL при старте; Async API отдаёт `type` и `poster_url`, фильтр
   `?type=movie`; админка показывает превью обложки.
 * **Уведомления:** миграция `0006` — четыре шаблона писем о бронях и показах.
+* **UGC убран из репозитория и стека** (сбор действий, ETL событий, сервис
+  контента, исследование хранилищ, Kafka, ClickHouse, MongoDB): диплому он не
+  нужен, а стек стал легче на семь контейнеров. История — в git и в репозитории
+  модуля 4.
 * **Стек:** `booking-postgres`, `booking-migrations`, `booking-api`,
   `booking-relay`, `web`; nginx: `/` → интерфейс, `/booking/` → API с пределом
   частоты на запись. Трассировка интерфейса и бронирования — выборочная (10 %)
@@ -520,8 +518,8 @@ Redis на другой кеш не меняет поведения API при �
 * **Проверки:** unit — бронирование 95, интерфейс 44, ETL 17, Async API 56,
   админка 84, уведомления 138 (один пропускается на macOS); функциональные — бронирование 29 (в том числе
   30 одновременных броней на 5 мест), Async API 189, уведомления 45; `check_stack.sh` с разделом
-  бронирования; предел 300 мс соблюдён при 10 зрителях (~150 запросов/с) на
-  ноутбуке со всем стеком — `docs/diploma/load/`.
+  бронирования; предел 300 мс соблюдён при 10 зрителях (~280 запросов/с, p95
+  страниц до 119 мс) на ноутбуке со всем стеком — `docs/diploma/load/`.
 
 ### Спринт 10 — исправления по ревью
 
@@ -609,16 +607,16 @@ Redis на другой кеш не меняет поведения API при �
 
 ### Спринт 9 — пользовательский контент, CI и наблюдаемость
 
-* **Сервис пользовательского контента** ([ugc_content/](ugc_content/README.md)) —
+* **Сервис пользовательского контента** ([ugc_content/](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc_content/README.md)) —
   лайки (оценка 0–10), рецензии с голосами за полезность и закладки. Отдельный
   сервис со своим хранилищем: у сервиса сбора событий профиль «принять и
   забыть», а здесь чтение за 200 мс и CRUD. FastAPI + Beanie поверх MongoDB.
 * **Агрегат по фильму хранится готовым, а не считается на лету.** Это главный
-  вывод [исследования](ugc_content/research/README.md): на 10 млн оценок
+  вывод [исследования](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc_content/research/README.md): на 10 млн оценок
   подсчёт «сколько лайков у фильма» у популярного фильма занимает **секунды**
   (MongoDB p95 — 3,3 с, PostgreSQL — 9,1 с), а чтение готового счётчика —
   доли миллисекунды. Счётчик двигается на каждую оценку операцией `$inc`.
-* **Исследование хранилищ** ([ugc_content/research/](ugc_content/research/README.md)):
+* **Исследование хранилищ** ([ugc_content/research/](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc_content/research/README.md)):
   10 000 000 оценок, 2 000 000 закладок и 20 000 рецензий в MongoDB и
   PostgreSQL на равных условиях, замеры чтения, свежести и чтения под
   нагрузкой. Выбор MongoDB обоснован не скоростью (PostgreSQL быстрее), а
@@ -660,7 +658,7 @@ Redis на другой кеш не меняет поведения API при �
   ([docs/requirements.md](docs/requirements.md)); нарисованы схемы AS IS и
   TO BE в нотации C4 уровня 2 и записаны ADR
   ([docs/architecture/](docs/architecture/README.md)).
-* **Сервис сбора событий** ([ugc/](ugc/README.md)) — Flask с воркерами gevent.
+* **Сервис сбора событий** ([ugc/](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc/README.md)) — Flask с воркерами gevent.
   Принимает пачки кликов, просмотров страниц, смен качества, досмотров и
   применений фильтров поиска; каждое событие проверяется отдельно, испорченное
   не отменяет остальные. Отвечает 202: события записаны в брокер, но в
@@ -673,7 +671,7 @@ Redis на другой кеш не меняет поведения API при �
   не нужен.
 * **Маршрут `/ugc/` в nginx** со своим пределом частоты запросов по адресу:
   поток событий на порядок плотнее каталожного.
-* **ETL событий** ([ugc_etl/](ugc_etl/README.md)) — непрерывно переносит
+* **ETL событий** ([ugc_etl/](https://github.com/storublev/module_4_python_middle_dev/blob/main/ugc_etl/README.md)) — непрерывно переносит
   события из Kafka в ClickHouse пачками. Смещения подтверждаются только после
   успешной вставки, поэтому падение приводит к повтору пачки, а не к её потере;
   повторы схлопывает `ReplacingMergeTree`. Недоступность хранилища переживается
@@ -683,7 +681,7 @@ Redis на другой кеш не меняет поведения API при �
 * **Схема аналитического хранилища**: сырые события с TTL в три года и витрина
   `film_daily`, которую наполняет материализованное представление, — по ней
   считаются самые просматриваемые и недосмотренные фильмы.
-* **Исследование хранилищ** ([research/](research/README.md)): 10 000 000
+* **Исследование хранилищ** ([research/](https://github.com/storublev/module_4_python_middle_dev/blob/main/research/README.md)): 10 000 000
   сгенерированных событий, замеры вставки, чтения и чтения под нагрузкой.
   ClickHouse принимает 243 700 строк/с, хранит событие в 31 байте и отвечает
   на аналитические запросы за сотые доли секунды. Vertica замерить не вышло —
