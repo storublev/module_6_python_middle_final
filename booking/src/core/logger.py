@@ -83,6 +83,11 @@ LOGGING = {
         # дублировать их значит удваивать объём индекса в Elasticsearch.
         'uvicorn.access': {'handlers': [], 'propagate': False},
         'uvicorn.error': {'level': settings.log_level},
+        # httpx пишет INFO на каждый исходящий запрос — а их несколько на
+        # каждую страницу. Под нагрузкой это заметная доля процессора и
+        # дубль спанов трассировки; ошибки соседей пишет наш код сам.
+        'httpx': {'level': 'WARNING'},
+        'httpcore': {'level': 'WARNING'},
     },
     'root': {
         'level': settings.log_level,

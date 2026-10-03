@@ -82,7 +82,7 @@ class SessionMiddleware(BaseHTTPMiddleware):
         self._auth = auth
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path.startswith('/static/'):
+        if request.url.path.startswith('/assets/'):
             return await call_next(request)
         if request.method in UNSAFE_METHODS and not same_origin(request):
             # SameSite=Lax уже не пустит cookie с чужого сайта, проверка

@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 configure_sentry(settings.sentry_dsn, settings.project_name, settings.sentry_environment)
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
+# Не /static: этот адрес в nginx уже отдаёт статику админки.
+STATIC_PATH = '/assets'
 HEALTH_PATH = '/health'
 
 
@@ -80,13 +82,15 @@ def create_app(backends: Backends, owned: list[httpx.AsyncClient] | None = None)
     application.state.booking = backends.booking
     application.state.auth = backends.auth
     configure_tracing(
-        application, service_name=settings.project_name, endpoint=settings.otlp_endpoint, excluded_urls='/static',
+        application, service_name=settings.project_name, endpoint=settings.otlp_endpoint,
+        excluded_urls=f'{STATIC_PATH},{HEALTH_PATH}',
+        sample_ratio=settings.otlp_sample_ratio,
     )
     application.add_middleware(SessionMiddleware, auth=backends.auth)
     application.add_middleware(
         RequestIdMiddleware, required=settings.require_request_id, exempt_paths=frozenset({HEALTH_PATH}),
     )
-    application.mount('/static', StaticFiles(directory=STATIC_DIR), name='static')
+    application.mount(STATIC_PATH, StaticFiles(directory=STATIC_DIR), name='static')
     application.include_router(catalog.router)
     application.include_router(screenings.router)
     application.include_router(account.router)

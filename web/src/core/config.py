@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     sentry_dsn: str = ''
     sentry_environment: str = 'local'
     otlp_endpoint: str = ''
+    # Доля запросов в трассировке: каждый спан стоит процессора (см. core/tracing.py).
+    otlp_sample_ratio: float = Field(default=1.0, ge=0, le=1)
 
 
 settings = Settings()  # type: ignore[call-arg]

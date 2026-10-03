@@ -110,7 +110,8 @@ configure_tracing(
     app,
     service_name=settings.project_name,
     endpoint=settings.otlp_endpoint,
-    excluded_urls=','.join(DOCS_PATHS),
+    excluded_urls=','.join(EXEMPT_PATHS),
+    sample_ratio=settings.otlp_sample_ratio,
 )
 app.add_middleware(RequestIdMiddleware, required=settings.require_request_id, exempt_paths=EXEMPT_PATHS)
 
