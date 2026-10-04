@@ -81,17 +81,13 @@ init_database() {
     fi
 }
 
-# Колонки каталога сверх дампа и обложки. В отличие от init.sql, выполняется
-# при каждом старте: оба файла идемпотентны, а так новые колонки и обложки
-# доезжают и до базы, созданной до их появления.
+# Колонки и таблицы каталога сверх дампа (обложки, Кинопоиск). В отличие от
+# init.sql, выполняется при каждом старте: файл идемпотентен, а так изменения
+# схемы доезжают и до базы, созданной раньше них.
 extend_catalog() {
-    echo "📝 Расширение каталога и загрузка обложек..."
+    echo "📝 Расширение каталога..."
     PGPASSWORD="$DB_PASSWORD" psql -v ON_ERROR_STOP=1 -q -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
         -f /opt/etl/sql/catalog_extensions.sql || return 1
-    if [ -f /opt/etl/data/posters.csv ]; then
-        PGPASSWORD="$DB_PASSWORD" psql -v ON_ERROR_STOP=1 -q -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
-            -f /opt/etl/sql/load_posters.sql || return 1
-    fi
     echo "✅ Каталог готов"
 }
 

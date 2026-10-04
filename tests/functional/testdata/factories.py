@@ -38,7 +38,7 @@ def make_film(
     directors: Iterable[Doc] = (),
     access_level: str = PUBLIC,
     film_type: str = MOVIE,
-    poster_url: str | None = 'https://m.media-amazon.com/images/M/poster._V1_QL75_UX400_.jpg',
+    poster_url: str | None = '/posters/3d825f60-9fff-4dfe-b294-1a45fa1e115d.jpg?v=1760000000',
     imdb_id: str | None = 'tt0076759',
     title_ru: str | None = 'Звезда',
     description_ru: str | None = 'Новый мир',

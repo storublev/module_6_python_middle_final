@@ -19,10 +19,12 @@ SELECT fw.id,
        fw.modified,
        fw.creation_date,
        fw.type,
-       -- Загруженная в базу картинка важнее внешней ссылки: её отдаёт сам
-       -- кинотеатр (scripts/fetch_poster_images.py).
-       CASE WHEN fp.film_id IS NOT NULL THEN '/posters/' || fw.id || '.jpg'
-            ELSE fw.poster_url END AS poster_url,
+       -- Обложка — картинка из базы каталога, её отдаёт сам кинотеатр.
+       -- Версия в адресе — время загрузки: новая картинка получает новый
+       -- адрес, и ни nginx, ни браузер не покажут старую из кеша.
+       CASE WHEN fp.film_id IS NOT NULL
+            THEN '/posters/' || fw.id || '.jpg?v=' || extract(epoch FROM fp.fetched_at)::bigint
+       END AS poster_url,
        fw.imdb_id,
        kp.kinopoisk_id,
        kp.title_ru,
@@ -54,7 +56,7 @@ LEFT JOIN content.film_kinopoisk   kp   ON kp.film_id = fw.id AND kp.found
 LEFT JOIN content.film_poster      fp   ON fp.film_id = fw.id
 WHERE fw.id = ANY(%(ids)s::uuid[])
 GROUP BY fw.id, fw.rating, fw.title, fw.description, fw.modified, fw.creation_date,
-         fw.type, fw.poster_url, fw.imdb_id, fp.film_id, kp.kinopoisk_id, kp.title_ru,
+         fw.type, fw.imdb_id, fp.film_id, fp.fetched_at, kp.kinopoisk_id, kp.title_ru,
          kp.description_ru, kp.rating, kp.year
 """
 
@@ -136,7 +138,6 @@ ordered_movies AS (
            fw.modified,
            fw.creation_date,
            fw.type,
-           fw.poster_url,
            fw.imdb_id,
            ROW_NUMBER() OVER (ORDER BY fw.modified, fw.id) AS row_num
     FROM content.film_work fw
@@ -149,7 +150,6 @@ SELECT om.id,
        om.modified,
        om.creation_date,
        om.type,
-       om.poster_url,
        om.imdb_id,
        COALESCE(
            json_agg(
@@ -174,7 +174,7 @@ LEFT JOIN content.person_film_work pfw  ON pfw.film_work_id = om.id
 LEFT JOIN content.person           p    ON p.id = pfw.person_id
 WHERE om.row_num > {offset} AND om.row_num <= {offset} + {limit}
 GROUP BY om.id, om.imdb_rating, om.title, om.description, om.modified, om.creation_date,
-         om.type, om.poster_url, om.imdb_id
+         om.type, om.imdb_id
 ORDER BY om.modified, om.id
 """
 

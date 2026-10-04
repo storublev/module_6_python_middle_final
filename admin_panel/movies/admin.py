@@ -1,15 +1,31 @@
+from django import forms
 from django.contrib import admin
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
-from movies.models import FilmKinopoisk, FilmPoster, FilmWork, Genre, GenreFilmWork, Person, PersonFilmWork
+from movies.models import FilmKinopoisk, FilmWork, Genre, GenreFilmWork, Person, PersonFilmWork
+from movies.posters import delete_poster, poster_version, read_upload, save_poster
 
 
-def poster_loaded(film_id: object) -> bool:
-    """Есть ли у фильма картинка в базе — тогда превью показывает её, а не внешнюю ссылку."""
-    return FilmPoster.objects.filter(film_work_id=film_id).exists()
+class FilmWorkForm(forms.ModelForm):
+    """Карточка фильма с загрузкой обложки: файл сразу ложится в базу каталога."""
+
+    poster_file = forms.FileField(
+        label=_('poster'), required=False,
+        help_text='JPEG, PNG, WebP или GIF до 2 МБ. Заменяет текущую обложку.',
+        widget=forms.ClearableFileInput(attrs={'accept': 'image/jpeg,image/png,image/webp,image/gif'}),
+    )
+    remove_poster = forms.BooleanField(label='Удалить обложку', required=False)
+
+    class Meta:
+        model = FilmWork
+        fields = '__all__'
+
+    def clean_poster_file(self) -> tuple[bytes, str] | None:
+        upload = self.cleaned_data.get('poster_file')
+        return read_upload(upload) if upload else None
 
 
 @admin.register(Genre)
@@ -45,7 +61,7 @@ class FilmKinopoiskInline(admin.StackedInline):
     extra = 0
     can_delete = False
     fields = ('found', 'kinopoisk_id', 'title_ru', 'description_ru', 'year', 'rating', 'rating_votes',
-              'poster_url', 'fetched_at')
+              'fetched_at')
     readonly_fields = fields
 
     def has_add_permission(self, request: HttpRequest, obj: object = None) -> bool:
@@ -54,6 +70,7 @@ class FilmKinopoiskInline(admin.StackedInline):
 
 @admin.register(FilmWork)
 class FilmWorkAdmin(admin.ModelAdmin):
+    form = FilmWorkForm
     inlines = (GenreFilmWorkInline, PersonFilmWorkInline, FilmKinopoiskInline)
     list_display = ('title', 'type', 'creation_date', 'rating', 'display_genres', 'modified')
     list_filter = ('type', 'genres')
@@ -63,22 +80,23 @@ class FilmWorkAdmin(admin.ModelAdmin):
 
     @admin.display(description=_('poster preview'))
     def poster_preview(self, film_work: FilmWork) -> str:
-        # Превью рядом с полем ссылки: опечатку в адресе видно сразу, а не на
-        # карточке фильма после переиндексации.
-        if poster_loaded(film_work.pk):
-            # Загруженная в базу картинка — та, что видят зрители.
-            return format_html('<img src="/posters/{}.jpg" alt="" style="max-height: 240px">', film_work.pk)
-        if not film_work.poster_url:
+        # Та самая картинка, что видят зрители: из базы каталога.
+        version = poster_version(film_work.pk) if film_work.pk else None
+        if version is None:
             return '—'
-        return format_html('<img src="{}" alt="" style="max-height: 240px">', film_work.poster_url)
+        return format_html(
+            '<img src="/posters/{}.jpg?v={}" alt="" style="max-height: 240px">', film_work.pk, version,
+        )
 
-    def save_model(self, request: HttpRequest, obj: FilmWork, form: object, change: bool) -> None:
-        # Редактор сменил ссылку на обложку — загруженная картинка устарела.
-        # Она удаляется, зрители видят новую ссылку сразу, а следующий запуск
-        # scripts/fetch_poster_images.py загрузит новую картинку в базу.
-        if change and 'poster_url' in getattr(form, 'changed_data', ()):
-            FilmPoster.objects.filter(film_work_id=obj.pk).delete()
+    def save_model(self, request: HttpRequest, obj: FilmWork, form: forms.ModelForm, change: bool) -> None:
+        # Сохранение фильма двигает modified, и ETL по журналу аудита сам
+        # переиндексирует документ — с новой обложкой или без неё.
         super().save_model(request, obj, form, change)
+        image = form.cleaned_data.get('poster_file')
+        if image:
+            save_poster(obj.pk, *image)
+        elif form.cleaned_data.get('remove_poster'):
+            delete_poster(obj.pk)
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[FilmWork]:
         # Без prefetch жанры каждой строки — отдельный запрос: страница из 25

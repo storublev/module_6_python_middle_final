@@ -70,6 +70,7 @@ def test_kinopoisk_match_needs_exact_title_and_kind():
     assert kp_match("Star Trek", "movie", [film]) is None
     row = record("f1", film)
     assert (row["found"], row["year"], row["rating"], row["genres"]) == (True, 1977, 8.1, ["фантастика"])
+    assert "poster_url" not in row and "kp_small" not in row["raw"]
     assert record("f2", None)["found"] is False
 
 

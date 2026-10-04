@@ -79,10 +79,9 @@ class FilmWork(UUIDMixin, TimeStampedMixin):
     creation_date = models.DateField(_('creation date'), blank=True, null=True)
     rating = models.FloatField(_('rating'), blank=True, null=True)
     type = models.CharField(_('type'), max_length=7, choices=FilmWorkTypes.choices, default=FilmWorkTypes.MOVIE)
-    # Обложка — ссылка на картинку у источника, саму картинку каталог не
-    # хранит (ADR-25). Колонки заводит ETL при старте (etl/sql/catalog_extensions.sql),
-    # первые значения он же загружает из posters.csv; здесь редактор их правит.
-    poster_url = models.URLField(_('poster'), max_length=512, blank=True, null=True)
+    # Обложка — картинка в content.film_poster (модель FilmPoster ниже), ссылок
+    # на сторонние ресурсы каталог не хранит (ADR-25). Идентификатор IMDb — ключ
+    # сопоставления, не ссылка.
     imdb_id = models.CharField(_('IMDb id'), max_length=16, blank=True, null=True)
     genres = models.ManyToManyField(Genre, through='GenreFilmWork', verbose_name=_('genres'))
     persons = models.ManyToManyField(Person, through='PersonFilmWork', verbose_name=_('persons'))
@@ -142,7 +141,6 @@ class FilmKinopoisk(models.Model):
     year = models.SmallIntegerField(_('year'), null=True)
     rating = models.FloatField(_('Kinopoisk rating'), null=True)
     rating_votes = models.IntegerField(_('votes'), null=True)
-    poster_url = models.TextField(_('Kinopoisk poster'), null=True)
     fetched_at = models.DateTimeField(_('fetched at'))
 
     class Meta:
@@ -153,15 +151,13 @@ class FilmKinopoisk(models.Model):
 
 
 class FilmPoster(models.Model):
-    """Картинка обложки в базе: её отдаёт /posters/<id>.jpg (scripts/fetch_poster_images.py)."""
+    """Картинка обложки в базе: её отдаёт /posters/<id>.jpg, загружает редактор или скрипты ETL."""
 
     film_work = models.OneToOneField(
         FilmWork, on_delete=models.CASCADE, primary_key=True, db_column='film_id', related_name='poster',
     )
     content = models.BinaryField()
     content_type = models.CharField(max_length=64)
-    source = models.CharField(max_length=16)
-    source_url = models.TextField()
     fetched_at = models.DateTimeField()
 
     class Meta:

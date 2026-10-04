@@ -1,30 +1,24 @@
-"""Подбирает обложки фильмам каталога через поиск IMDb и пишет их в CSV.
+"""Подбирает обложки фильмам каталога через поиск IMDb и кладёт картинки в базу.
 
-Зачем отдельным скриптом, а не шагом ETL. Источник внешний и медленный (тысяча
-запросов — несколько минут), а стенд должен подниматься без интернета.
-Поэтому скрипт запускается разово, результат — `data/posters.csv` — лежит в
-репозитории, а ETL при старте только загружает его в каталог (ADR-25).
-
-Что хранится. Только ссылка на картинку и идентификатор IMDb: сами картинки
-принадлежат правообладателям, и в репозиторий их не кладём.
+Картинка скачивается сразу в `content.film_poster` (scripts/poster_store.py);
+адрес, по которому её нашли, не сохраняется (ADR-25). Фильмы, у которых
+обложка уже есть (загружена редактором или с Кинопоиска), не трогаются.
+Скрипт запускается разово — стенд поднимается из дампа базы уже с обложками.
 
 Как ищется. В дампе нет идентификаторов IMDb, поэтому поиск — по названию
 через сервис подсказок, которым пользуется строка поиска самого IMDb. Берётся
 только **точное** совпадение нормализованного названия: похожий фильм с чужой
 обложкой хуже, чем заглушка. По той же причине пропускаются названия, под
 которыми в каталоге несколько фильмов: года в каталоге нет, и различить их
-нельзя. Среди точных совпадений предпочитается тот же
-тип (фильм или сериал), затем — тот, у которого есть обложка; порядок внутри —
-как отдаёт IMDb, по популярности.
+нельзя. Идентификатор IMDb найденного фильма записывается в `imdb_id`.
 
 Запуск (нужен доступ к базе каталога, переменные DB_* — как у ETL):
 
-    python scripts/fetch_posters.py --output data/posters.csv
-    python scripts/fetch_posters.py --limit 20 --output /tmp/sample.csv
+    python scripts/fetch_posters.py
+    python scripts/fetch_posters.py --limit 20
 """
 
 import argparse
-import csv
 import json
 import logging
 import re
@@ -41,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 SUGGEST_URL = "https://v2.sg.media-imdb.com/suggestion/{first}/{query}.json"
 # Сервис подсказок отвечает и без особых заголовков, но вежливо представиться.
-USER_AGENT = "practix-posters/1.0 (+https://github.com/storublev/module_6_python_middle_final)"
+from scripts.poster_store import USER_AGENT, store_poster  # noqa: E402
 TIMEOUT = 15
 # Пауза между запросами: источник чужой, и долбить его без паузы невежливо.
 PAUSE = 0.25
@@ -58,7 +52,13 @@ KINDS = {
 # оригинала.
 SIZE_SUFFIX = "._V1_QL75_UX400_.jpg"
 
-FILMS_QUERY = "SELECT id, title, type FROM content.film_work ORDER BY title, id"
+FILMS_QUERY = """
+SELECT fw.id, fw.title, fw.type, fp.film_id IS NOT NULL AS has_poster
+FROM content.film_work fw
+LEFT JOIN content.film_poster fp ON fp.film_id = fw.id
+ORDER BY fw.title, fw.id
+"""
+SET_IMDB_ID = "UPDATE content.film_work SET imdb_id = %(imdb_id)s WHERE id = %(film_id)s AND imdb_id IS NULL"
 
 logger = logging.getLogger("fetch_posters")
 
@@ -137,47 +137,41 @@ def suggest(title: str) -> list[dict]:
     return []
 
 
-def load_films(limit: Optional[int]) -> list[dict]:
-    """Фильмы каталога: id, название и тип."""
-    from db.postgres import get_pg_connection
-
-    conn = get_pg_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(FILMS_QUERY + (" LIMIT %s" if limit else ""), (limit,) if limit else None)
-            return [dict(row) for row in cursor.fetchall()]
-    finally:
-        conn.close()
+def load_films(conn, limit: Optional[int]) -> list[dict]:  # noqa: ANN001 — соединение psycopg2
+    """Фильмы каталога: id, название, тип и есть ли уже обложка."""
+    with conn.cursor() as cursor:
+        cursor.execute(FILMS_QUERY + (" LIMIT %s" if limit else ""), (limit,) if limit else None)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output", type=Path, default=Path("data/posters.csv"), help="куда записать CSV")
     parser.add_argument("--limit", type=int, default=None, help="взять только первые N фильмов")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    films = load_films(args.limit)
-    ambiguous = ambiguous_titles(films)
-    rows = []
-    for number, film in enumerate(films, start=1):
-        if normalize(film["title"]) in ambiguous:
-            continue
-        match = best_match(film["title"], film["type"], suggest(film["title"]))
-        image = ((match or {}).get("i") or {}).get("imageUrl")
-        if match and image:
-            rows.append({"film_id": str(film["id"]), "imdb_id": match["id"], "poster_url": resized(image)})
-        if number % 50 == 0:
-            logger.info("Обработано %d из %d, обложек найдено %d", number, len(films), len(rows))
-        time.sleep(PAUSE)
+    from db.postgres import get_pg_connection
 
-    rows.sort(key=lambda row: row["film_id"])
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["film_id", "imdb_id", "poster_url"])
-        writer.writeheader()
-        writer.writerows(rows)
-    logger.info("Готово: обложки у %d фильмов из %d → %s", len(rows), len(films), args.output)
+    conn = get_pg_connection()
+    try:
+        films = load_films(conn, args.limit)
+        ambiguous = ambiguous_titles(films)
+        queue = [f for f in films if not f["has_poster"] and normalize(f["title"]) not in ambiguous]
+        stored = 0
+        for number, film in enumerate(queue, start=1):
+            match = best_match(film["title"], film["type"], suggest(film["title"]))
+            image = ((match or {}).get("i") or {}).get("imageUrl")
+            if match and image:
+                with conn.cursor() as cursor:
+                    cursor.execute(SET_IMDB_ID, {"imdb_id": match["id"], "film_id": str(film["id"])})
+                conn.commit()
+                stored += store_poster(conn, str(film["id"]), resized(image), replace=False)
+            if number % 50 == 0:
+                logger.info("Обработано %d из %d, обложек загружено %d", number, len(queue), stored)
+            time.sleep(PAUSE)
+    finally:
+        conn.close()
+    logger.info("Готово: загружено обложек %d из %d фильмов без обложки", stored, len(queue))
     return 0
 
 

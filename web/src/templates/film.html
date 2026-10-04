@@ -24,8 +24,6 @@
           <span class="rating-kp" title="Рейтинг Кинопоиска">КП {{ '%.1f' | format(film.kinopoisk_rating) }}</span>
         {% endif %}
         <span class="badge">{{ 'Фильм' if film.type == 'movie' else 'Сериал' if film.type == 'tv_show' else 'Видео' }}</span>
-        {% if film.imdb_id %}<a class="muted" href="https://www.imdb.com/title/{{ film.imdb_id }}/" rel="noopener noreferrer" target="_blank">IMDb ↗</a>{% endif %}
-        {% if film.kinopoisk_id %}<a class="muted" href="https://www.kinopoisk.ru/film/{{ film.kinopoisk_id }}/" rel="noopener noreferrer" target="_blank">Кинопоиск ↗</a>{% endif %}
       </div>
       {% if film.genre %}
         <div class="chips">{% for g in film.genre %}<a class="chip" href="/?genre={{ g.uuid }}">{{ g.name }}</a>{% endfor %}</div>

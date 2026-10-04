@@ -54,7 +54,7 @@ def test_film_card_like_imdb(stand: Stand):
     assert 'poster--large' in text and '8.6' in text
     assert f'/persons/{FILM["directors"][0]["uuid"]}' in text
     assert f'/?genre={FILM["genre"][0]["uuid"]}' in text
-    assert 'https://www.imdb.com/title/tt0076759/' in text
+    assert 'imdb.com' not in text and 'kinopoisk.ru' not in text
     assert 'Купить билет' in text
 
 
@@ -148,13 +148,12 @@ def test_health_needs_no_request_id(stand: Stand):
 
 
 def test_film_card_in_russian_from_kinopoisk(stand: Stand):
-    """Карточка по-русски: название и описание Кинопоиска, оригинал с годом, рейтинг КП и ссылка."""
+    """Карточка по-русски: название и описание Кинопоиска, оригинал с годом и рейтинг КП — без ссылок наружу."""
     text = stand.client.get(f'/films/{FILM_ID}').text
 
     assert '<h1 class="film-hero__title">Звёздные войны</h1>' in text
     assert 'Star Wars · 1977' in text and 'КП 8.1' in text
     assert 'Давным-давно в далёкой галактике' in text and 'Описание на английском' in text
-    assert 'https://www.kinopoisk.ru/film/333/' in text
 
 
 def test_catalog_tile_shows_russian_and_original_title(stand: Stand):

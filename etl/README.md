@@ -47,24 +47,23 @@
 
 ## Обложки и данные Кинопоиска (дипломный проект)
 
-Каталог дополняется тремя скриптами; все пишут в базу каталога (схема
-`content`, таблицы заводит `sql/catalog_extensions.sql` при старте ETL), а ETL
-переносит результат в индекс `movies`. Решение — ADR-25 в
+Обложки и данные Кинопоиска лежат в базе каталога (схема `content`, таблицы
+заводит `sql/catalog_extensions.sql` при старте ETL), а ETL переносит их в
+индекс `movies`. Ссылок на сторонние ресурсы база не хранит: картинка
+скачивается сразу в `film_poster` (`scripts/poster_store.py`). Обложку
+вручную редактор загружает файлом в карточке фильма в админке. Решение — ADR-25 в
 [docs/diploma/architecture.md](../docs/diploma/architecture.md).
 
 | Шаг | Скрипт | Что делает | Куда пишет |
 |---|---|---|---|
-| 1 | `scripts/fetch_posters.py` | Ищет обложки по названию через поиск IMDb | `data/posters.csv` → `film_work.poster_url`, `imdb_id` (ETL загружает при старте) |
-| 2 | `scripts/fetch_kinopoisk.py` | Ищет фильм на Кинопоиске: русское название и описание, год, рейтинг, обложка | `film_kinopoisk` |
-| 3 | `scripts/fetch_poster_images.py` | Скачивает картинки обложек: Кинопоиск, иначе ссылка каталога | `film_poster` |
+| 1 | `scripts/fetch_kinopoisk.py` | Ищет фильм на Кинопоиске: русское название и описание, год, рейтинг; обложку скачивает в базу (заменяет прежнюю) | `film_kinopoisk`, `film_poster` |
+| 2 | `scripts/fetch_posters.py` | Фильмам без обложки ищет её по названию через поиск IMDb и скачивает в базу | `film_poster`, `film_work.imdb_id` |
 
 Запуск — в контейнере ETL, там есть доступ к базе:
 
 ```bash
-docker compose exec etl python scripts/fetch_posters.py --output data/posters.csv   # разово
-docker compose cp etl:/opt/etl/data/posters.csv etl/data/posters.csv                # и в git
 docker compose exec -e KINOPOISK_API_KEY=... etl python scripts/fetch_kinopoisk.py  # 500 запросов в сутки
-docker compose exec etl python scripts/fetch_poster_images.py
+docker compose exec etl python scripts/fetch_posters.py
 ```
 
 `fetch_kinopoisk.py` идёт по важности (сначала фильмы без обложки, затем без

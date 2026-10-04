@@ -21,7 +21,9 @@
 или на Кинопоиске несколько записей одного типа, пропускаются — чужое описание
 хуже никакого.
 
-Сами картинки обложек загружает следующий шаг — `fetch_poster_images.py`.
+Обложка Кинопоиска скачивается сразу в `content.film_poster`
+(scripts/poster_store.py) и заменяет обложку IMDb: у Кинопоиска — русские
+издания. Адресов картинок база не хранит — ни в колонках, ни в `raw` (ADR-25).
 
     KINOPOISK_API_KEY=... python scripts/fetch_kinopoisk.py
     KINOPOISK_API_KEY=... python scripts/fetch_kinopoisk.py --limit 20
@@ -42,6 +44,7 @@ from typing import Any, Iterable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.fetch_posters import ambiguous_titles, normalize  # noqa: E402
+from scripts.poster_store import store_poster  # noqa: E402
 
 SEARCH_URL = "https://kinopoiskapiunofficial.tech/api/v2.1/films/search-by-keyword?{query}"
 TIMEOUT = 15
@@ -66,20 +69,22 @@ ALL_TITLES_QUERY = "SELECT title FROM content.film_work"
 UPSERT = """
 INSERT INTO content.film_kinopoisk (
     film_id, found, kinopoisk_id, title_ru, description_ru, year, rating, rating_votes, length,
-    countries, genres, poster_url, raw, fetched_at
+    countries, genres, raw, fetched_at
 ) VALUES (
     %(film_id)s, %(found)s, %(kinopoisk_id)s, %(title_ru)s, %(description_ru)s, %(year)s, %(rating)s,
-    %(rating_votes)s, %(length)s, %(countries)s, %(genres)s, %(poster_url)s, %(raw)s, now()
+    %(rating_votes)s, %(length)s, %(countries)s, %(genres)s, %(raw)s, now()
 )
 ON CONFLICT (film_id) DO UPDATE SET
     found = EXCLUDED.found, kinopoisk_id = EXCLUDED.kinopoisk_id, title_ru = EXCLUDED.title_ru,
     description_ru = EXCLUDED.description_ru, year = EXCLUDED.year, rating = EXCLUDED.rating,
     rating_votes = EXCLUDED.rating_votes, length = EXCLUDED.length, countries = EXCLUDED.countries,
-    genres = EXCLUDED.genres, poster_url = EXCLUDED.poster_url, raw = EXCLUDED.raw, fetched_at = now()
+    genres = EXCLUDED.genres, raw = EXCLUDED.raw, fetched_at = now()
 """
 # Изменение строки фильма попадает в журнал аудита — так ETL узнаёт, что
 # документ фильма надо переиндексировать с русским названием и описанием.
 TOUCH_FILM = "UPDATE content.film_work SET modified = now() WHERE id = %(film_id)s"
+
+URL_KEYS = frozenset({"posterUrl", "posterUrlPreview"})
 
 logger = logging.getLogger("fetch_kinopoisk")
 
@@ -117,7 +122,10 @@ def number(value: Any, kind: type) -> Any:
 
 
 def poster(item: dict) -> Optional[str]:
-    """Обложка из записи Кинопоиска. Его заглушка «нет постера» — не обложка."""
+    """Адрес обложки для скачивания (уменьшенная копия — её хватает карточке).
+
+    Заглушка Кинопоиска «нет постера» — не обложка.
+    """
     url = item.get("posterUrlPreview") or item.get("posterUrl") or ""
     return None if not url or "no-poster" in url else url
 
@@ -127,7 +135,7 @@ def record(film_id: str, match: Optional[dict]) -> dict:
     if match is None:
         empty = dict.fromkeys(
             ("kinopoisk_id", "title_ru", "description_ru", "year", "rating", "rating_votes", "length",
-             "countries", "genres", "poster_url", "raw"),
+             "countries", "genres", "raw"),
         )
         return {"film_id": film_id, "found": False, **empty}
     return {
@@ -142,8 +150,8 @@ def record(film_id: str, match: Optional[dict]) -> dict:
         "length": match.get("filmLength") or None,
         "countries": [c["country"] for c in match.get("countries") or [] if c.get("country")],
         "genres": [g["genre"] for g in match.get("genres") or [] if g.get("genre")],
-        "poster_url": poster(match),
-        "raw": json.dumps(match, ensure_ascii=False),
+        # Ответ API — без адресов картинок: база не хранит ссылок на сторонние ресурсы.
+        "raw": json.dumps({k: v for k, v in match.items() if k not in URL_KEYS}, ensure_ascii=False),
     }
 
 
@@ -212,6 +220,9 @@ def main() -> int:
             # Фиксация после каждого фильма: прерванный запуск не теряет
             # сделанного, а запросы из суточного лимита не тратятся повторно.
             conn.commit()
+            url = poster(match) if match else None
+            if url:
+                store_poster(conn, str(film["id"]), url, replace=True)
             if requests % 50 == 0:
                 logger.info("Запросов: %d, найдено: %d", requests, found)
             time.sleep(PAUSE)

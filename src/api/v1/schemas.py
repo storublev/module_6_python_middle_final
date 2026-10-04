@@ -41,8 +41,8 @@ class FilmShortSchema(ResponseSchema):
     )
     poster_url: str | None = Field(
         default=None,
-        description='Обложка: путь к картинке из базы каталога или внешняя ссылка; null — клиент рисует заглушку',
-        examples=['/posters/3d825f60-9fff-4dfe-b294-1a45fa1e115d.jpg'],
+        description='Обложка: путь к картинке из базы каталога; null — обложки нет, клиент рисует заглушку',
+        examples=['/posters/3d825f60-9fff-4dfe-b294-1a45fa1e115d.jpg?v=1760000000'],
     )
     title_ru: str | None = Field(default=None, description='Русское название с Кинопоиска', examples=['Звёздные войны'])
 
