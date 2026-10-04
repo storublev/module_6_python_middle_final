@@ -54,3 +54,27 @@ def test_ambiguous_titles_are_skipped():
     films = [{"title": "My Lucky Star"}, {"title": "my lucky star!"}, {"title": "Star Wars"}]
 
     assert ambiguous_titles(films) == {"my lucky star"}
+
+
+def test_kinopoisk_match_needs_exact_title_and_kind():
+    """Кинопоиск: совпадение по английскому или оригинальному названию и типу; два одинаковых — пропуск."""
+    from scripts.fetch_kinopoisk import best_match as kp_match, record
+
+    film = {"filmId": 333, "nameEn": "Star Wars", "type": "FILM", "nameRu": "Звёздные войны",
+            "year": "1977", "rating": "8.1", "posterUrlPreview": "https://k/kp_small/333.jpg",
+            "genres": [{"genre": "фантастика"}], "countries": [{"country": "США"}]}
+    series = {**film, "filmId": 1, "type": "TV_SERIES"}
+
+    assert kp_match("Star Wars", "movie", [series, film])["filmId"] == 333
+    assert kp_match("Star Wars", "movie", [film, {**film, "filmId": 2}]) is None
+    assert kp_match("Star Trek", "movie", [film]) is None
+    row = record("f1", film)
+    assert (row["found"], row["year"], row["rating"], row["genres"]) == (True, 1977, 8.1, ["фантастика"])
+    assert record("f2", None)["found"] is False
+
+
+def test_kinopoisk_placeholder_is_not_a_poster():
+    """Заглушка Кинопоиска «нет постера» обложкой не считается."""
+    from scripts.fetch_kinopoisk import poster
+
+    assert poster({"posterUrlPreview": "https://k/images/posters/kp/no-poster.png"}) is None

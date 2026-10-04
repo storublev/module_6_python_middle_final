@@ -41,6 +41,11 @@ class Movie:
     type: Optional[str] = None
     poster_url: Optional[str] = None
     imdb_id: Optional[str] = None
+    kinopoisk_id: Optional[int] = None
+    title_ru: Optional[str] = None
+    description_ru: Optional[str] = None
+    kinopoisk_rating: Optional[float] = None
+    year: Optional[int] = None
 
     def to_es_document(self) -> dict:
         """Преобразует фильм в документ для Elasticsearch."""
@@ -69,6 +74,11 @@ class Movie:
             "type": self.type,
             "poster_url": self.poster_url,
             "imdb_id": self.imdb_id,
+            "kinopoisk_id": str(self.kinopoisk_id) if self.kinopoisk_id else None,
+            "title_ru": self.title_ru,
+            "description_ru": self.description_ru,
+            "kinopoisk_rating": self.kinopoisk_rating,
+            "year": self.year,
         }
 
 

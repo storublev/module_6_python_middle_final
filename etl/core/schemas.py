@@ -74,6 +74,13 @@ MOVIES_MAPPING = {
         "type": {"type": "keyword"},
         "poster_url": {"type": "keyword", "index": False},
         "imdb_id": {"type": "keyword"},
+        # Данные Кинопоиска: русское название и описание ищутся тем же
+        # анализатором, что и английские, — поиск по-русски тоже работает.
+        "kinopoisk_id": {"type": "keyword"},
+        "title_ru": {"type": "text", "analyzer": "ru_en"},
+        "description_ru": {"type": "text", "analyzer": "ru_en"},
+        "kinopoisk_rating": {"type": "float"},
+        "year": {"type": "short"},
     },
 }
 

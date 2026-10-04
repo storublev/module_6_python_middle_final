@@ -69,3 +69,19 @@ def test_movie_without_poster_is_indexed_with_empty_link():
     document = movie_document({"id": "1", "title": "Unknown", "type": "tv_show", "genres": [], "persons": []})
 
     assert (document["type"], document["poster_url"], document["imdb_id"]) == ("tv_show", None, None)
+
+
+def test_movie_document_carries_kinopoisk_data():
+    """Русское название и описание, рейтинг и год Кинопоиска доезжают до индекса и описаны в маппинге."""
+    row = {
+        "id": "1", "title": "Star Wars", "type": "movie", "poster_url": "/posters/1.jpg",
+        "kinopoisk_id": 333, "title_ru": "Звёздные войны", "description_ru": "Татуин. Планета-пустыня.",
+        "kinopoisk_rating": 8.1, "year": 1977, "genres": [], "persons": [],
+    }
+
+    document = movie_document(row)
+
+    assert (document["kinopoisk_id"], document["title_ru"], document["year"]) == ("333", "Звёздные войны", 1977)
+    assert document["poster_url"] == "/posters/1.jpg"
+    fields = {"kinopoisk_id", "title_ru", "description_ru", "kinopoisk_rating", "year"}
+    assert fields <= set(MOVIES_MAPPING["properties"])

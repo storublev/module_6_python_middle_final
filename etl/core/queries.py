@@ -19,8 +19,16 @@ SELECT fw.id,
        fw.modified,
        fw.creation_date,
        fw.type,
-       fw.poster_url,
+       -- Загруженная в базу картинка важнее внешней ссылки: её отдаёт сам
+       -- кинотеатр (scripts/fetch_poster_images.py).
+       CASE WHEN fp.film_id IS NOT NULL THEN '/posters/' || fw.id || '.jpg'
+            ELSE fw.poster_url END AS poster_url,
        fw.imdb_id,
+       kp.kinopoisk_id,
+       kp.title_ru,
+       kp.description_ru,
+       kp.rating AS kinopoisk_rating,
+       kp.year,
        COALESCE(
            json_agg(
                DISTINCT jsonb_build_object('id', g.id, 'name', g.name)
@@ -42,9 +50,12 @@ LEFT JOIN content.genre_film_work  gfw  ON gfw.film_work_id = fw.id
 LEFT JOIN content.genre            g    ON g.id = gfw.genre_id
 LEFT JOIN content.person_film_work pfw  ON pfw.film_work_id = fw.id
 LEFT JOIN content.person           p    ON p.id = pfw.person_id
+LEFT JOIN content.film_kinopoisk   kp   ON kp.film_id = fw.id AND kp.found
+LEFT JOIN content.film_poster      fp   ON fp.film_id = fw.id
 WHERE fw.id = ANY(%(ids)s::uuid[])
 GROUP BY fw.id, fw.rating, fw.title, fw.description, fw.modified, fw.creation_date,
-         fw.type, fw.poster_url, fw.imdb_id
+         fw.type, fw.poster_url, fw.imdb_id, fp.film_id, kp.kinopoisk_id, kp.title_ru,
+         kp.description_ru, kp.rating, kp.year
 """
 
 # Жанры по списку ID — только те, что есть хотя бы в одном фильме

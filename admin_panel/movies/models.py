@@ -127,3 +127,43 @@ class PersonFilmWork(UUIDMixin):
         db_table = 'person_film_work'
         verbose_name = _('film person')
         verbose_name_plural = _('film persons')
+
+
+class FilmKinopoisk(models.Model):
+    """Данные Кинопоиска о фильме: таблицу заводит и наполняет ETL (scripts/fetch_kinopoisk.py)."""
+
+    film_work = models.OneToOneField(
+        FilmWork, on_delete=models.CASCADE, primary_key=True, db_column='film_id', related_name='kinopoisk',
+    )
+    found = models.BooleanField(_('found on Kinopoisk'))
+    kinopoisk_id = models.IntegerField(_('Kinopoisk id'), null=True)
+    title_ru = models.TextField(_('Russian title'), null=True)
+    description_ru = models.TextField(_('Russian description'), null=True)
+    year = models.SmallIntegerField(_('year'), null=True)
+    rating = models.FloatField(_('Kinopoisk rating'), null=True)
+    rating_votes = models.IntegerField(_('votes'), null=True)
+    poster_url = models.TextField(_('Kinopoisk poster'), null=True)
+    fetched_at = models.DateTimeField(_('fetched at'))
+
+    class Meta:
+        managed = False
+        db_table = 'film_kinopoisk'
+        verbose_name = _('Kinopoisk data')
+        verbose_name_plural = _('Kinopoisk data')
+
+
+class FilmPoster(models.Model):
+    """Картинка обложки в базе: её отдаёт /posters/<id>.jpg (scripts/fetch_poster_images.py)."""
+
+    film_work = models.OneToOneField(
+        FilmWork, on_delete=models.CASCADE, primary_key=True, db_column='film_id', related_name='poster',
+    )
+    content = models.BinaryField()
+    content_type = models.CharField(max_length=64)
+    source = models.CharField(max_length=16)
+    source_url = models.TextField()
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'film_poster'

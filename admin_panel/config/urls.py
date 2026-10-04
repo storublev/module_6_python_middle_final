@@ -11,6 +11,8 @@
 from django.contrib import admin
 from django.urls import include, path
 
+from movies.views import poster
+
 admin.site.site_header = 'Онлайн-кинотеатр'
 admin.site.site_title = 'Онлайн-кинотеатр'
 admin.site.index_title = 'Управление каталогом'
@@ -20,4 +22,6 @@ urlpatterns = [
     # /admin/mailings/ и отдал бы 404 вместо страницы менеджера.
     path('admin/mailings/', include('campaigns.urls')),
     path('admin/', admin.site.urls),
+    # Обложки из базы каталога — для страниц кинотеатра, без входа.
+    path('posters/<uuid:film_id>.jpg', poster, name='poster'),
 ]
