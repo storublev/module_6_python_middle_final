@@ -19,6 +19,7 @@ ETL пишет этот адрес в индекс вместо внешней �
 import argparse
 import logging
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -60,16 +61,27 @@ def download_url(url: str) -> str:
     return url.replace("/images/posters/kp/", "/images/posters/kp_small/")
 
 
-def download(url: str) -> Optional[tuple[bytes, str]]:
-    """Байты картинки и её тип или None, если по адресу не картинка."""
+def download(url: str, retries: int = 3) -> Optional[tuple[bytes, str]]:
+    """Байты картинки и её тип или None, если по адресу не картинка.
+
+    Обрыв соединения повторяется с паузой: CDN и API Кинопоиска иногда рвут
+    TLS посреди серии запросов, а через пару секунд отвечают снова.
+    """
     request = urllib.request.Request(download_url(url), headers={"User-Agent": USER_AGENT})  # noqa: S310
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310 — адрес из каталога
-            content_type = response.headers.get_content_type()
-            body = response.read(MAX_SIZE + 1)
-    except (urllib.error.URLError, TimeoutError) as error:
-        logger.warning("%s: %s", url, error)
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310 — адрес из каталога
+                content_type = response.headers.get_content_type()
+                body = response.read(MAX_SIZE + 1)
+            break
+        except urllib.error.HTTPError as error:
+            logger.warning("%s: HTTP %s", url, error.code)
+            return None
+        except (urllib.error.URLError, TimeoutError) as error:
+            if attempt == retries:
+                logger.warning("%s: %s", url, error)
+                return None
+            time.sleep(2 ** attempt)
     if not content_type.startswith("image/") or not body or len(body) > MAX_SIZE:
         logger.warning("%s: не картинка (%s, %d байт)", url, content_type, len(body))
         return None

@@ -147,18 +147,30 @@ def record(film_id: str, match: Optional[dict]) -> dict:
     }
 
 
-def search(title: str, api_key: str) -> list[dict]:
+def search(title: str, api_key: str, retries: int = 3) -> list[dict]:
+    """Поиск по названию с повтором при обрыве соединения.
+
+    Сервер Кинопоиска иногда рвёт TLS-соединение посреди серии запросов
+    (`UNEXPECTED_EOF`); через пару секунд он снова отвечает. Отказ по лимиту и
+    ответ 4xx не повторяются — они не пройдут и со второй попытки.
+    """
     url = SEARCH_URL.format(query=urllib.parse.urlencode({"keyword": title, "page": 1}))
     request = urllib.request.Request(url, headers={"X-API-KEY": api_key, "Accept": "application/json"})  # noqa: S310
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310 — адрес задан константой
-            return json.load(response).get("films", [])
-    except urllib.error.HTTPError as error:
-        if error.code in (402, 429):
-            raise QuotaExceeded(f"HTTP {error.code}") from error
-        if error.code == 404:
-            return []
-        raise
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310 — адрес задан константой
+                return json.load(response).get("films", [])
+        except urllib.error.HTTPError as error:
+            if error.code in (402, 429):
+                raise QuotaExceeded(f"HTTP {error.code}") from error
+            if error.code == 404:
+                return []
+            raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == retries:
+                raise
+            time.sleep(2 ** attempt)
+    return []
 
 
 def main() -> int:
