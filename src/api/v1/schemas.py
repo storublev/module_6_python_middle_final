@@ -41,9 +41,10 @@ class FilmShortSchema(ResponseSchema):
     )
     poster_url: str | None = Field(
         default=None,
-        description='Ссылка на обложку; null — обложки нет, клиент рисует заглушку',
-        examples=['https://m.media-amazon.com/images/M/MV5B...@._V1_QL75_UX400_.jpg'],
+        description='Обложка: путь к картинке из базы каталога или внешняя ссылка; null — клиент рисует заглушку',
+        examples=['/posters/3d825f60-9fff-4dfe-b294-1a45fa1e115d.jpg'],
     )
+    title_ru: str | None = Field(default=None, description='Русское название с Кинопоиска', examples=['Звёздные войны'])
 
 
 class FilmSchema(FilmShortSchema):
@@ -51,6 +52,12 @@ class FilmSchema(FilmShortSchema):
 
     description: str | None = Field(description='Описание', examples=['The Imperial Forces...'])
     imdb_id: str | None = Field(default=None, description='Идентификатор на IMDb', examples=['tt0076759'])
+    kinopoisk_id: str | None = Field(default=None, description='Идентификатор на Кинопоиске', examples=['333'])
+    description_ru: str | None = Field(
+        default=None, description='Описание с Кинопоиска', examples=['Татуин. Планета-пустыня…'],
+    )
+    kinopoisk_rating: float | None = Field(default=None, description='Рейтинг Кинопоиска', examples=[8.1])
+    year: int | None = Field(default=None, description='Год выхода по Кинопоиску', examples=[1977])
     genre: list[GenreSchema] = Field(validation_alias='genres', description='Жанры')
     actors: list[FilmPersonSchema] = Field(description='Актёры')
     writers: list[FilmPersonSchema] = Field(description='Сценаристы')

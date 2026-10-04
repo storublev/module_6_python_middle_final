@@ -40,6 +40,8 @@ def make_film(
     film_type: str = MOVIE,
     poster_url: str | None = 'https://m.media-amazon.com/images/M/poster._V1_QL75_UX400_.jpg',
     imdb_id: str | None = 'tt0076759',
+    title_ru: str | None = 'Звезда',
+    description_ru: str | None = 'Новый мир',
 ) -> Doc:
     actors, writers = list(actors), list(writers)
     return {
@@ -51,6 +53,11 @@ def make_film(
         'type': film_type,
         'poster_url': poster_url,
         'imdb_id': imdb_id,
+        'kinopoisk_id': '333' if title_ru else None,
+        'title_ru': title_ru,
+        'description_ru': description_ru,
+        'kinopoisk_rating': 8.1 if title_ru else None,
+        'year': 1977 if title_ru else None,
         'genres': list(genres),
         'actors': actors,
         'writers': writers,
@@ -86,6 +93,7 @@ def film_short(film: Doc) -> Doc:
         'imdb_rating': film['imdb_rating'],
         'type': film['type'],
         'poster_url': film['poster_url'],
+        'title_ru': film['title_ru'],
     }
 
 
@@ -97,6 +105,10 @@ def film_full(film: Doc) -> Doc:
         **film_short(film),
         'description': film['description'],
         'imdb_id': film['imdb_id'],
+        'kinopoisk_id': film['kinopoisk_id'],
+        'description_ru': film['description_ru'],
+        'kinopoisk_rating': film['kinopoisk_rating'],
+        'year': film['year'],
         'genre': [{'uuid': genre['id'], 'name': genre['name']} for genre in film['genres']],
         'actors': people(film['actors']),
         'writers': people(film['writers']),

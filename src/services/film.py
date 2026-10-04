@@ -50,7 +50,12 @@ class FilmService(BaseService[Film]):
 
     async def search(self, query: str, pagination: Pagination, access: Access) -> list[FilmShort]:
         """Полнотекстовый поиск по названию и описанию, сортировка по релевантности."""
-        text = TextQuery(query, (SearchField('title', weight=3), SearchField('description')))
+        # Русские название и описание с Кинопоиска ищутся наравне с
+        # английскими: зритель набирает «звёздные войны», а не «star wars».
+        text = TextQuery(query, (
+            SearchField('title', weight=3), SearchField('title_ru', weight=3),
+            SearchField('description'), SearchField('description_ru'),
+        ))
         return await self._search(FilmShort, pagination, text=text, filters=self._visible(access))
 
     async def get_by_person(

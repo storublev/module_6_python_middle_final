@@ -37,7 +37,8 @@ async def test_film_details(es_write_data, make_get_request):
 
 
 async def test_film_details_without_optional_fields(es_write_data, make_get_request):
-    film = make_film(imdb_rating=None, description=None, poster_url=None, imdb_id=None)
+    film = make_film(imdb_rating=None, description=None, poster_url=None, imdb_id=None, title_ru=None,
+                     description_ru=None)
     await es_write_data(MOVIES_INDEX, [film])
 
     response = await make_get_request(f'/films/{film["id"]}')
@@ -82,7 +83,7 @@ async def test_film_list_default_page(es_write_data, make_get_request):
 
     assert response.status == HTTPStatus.OK
     assert len(response.body) == 50
-    assert set(response.body[0]) == {'uuid', 'title', 'imdb_rating', 'type', 'poster_url'}
+    assert set(response.body[0]) == {'uuid', 'title', 'imdb_rating', 'type', 'poster_url', 'title_ru'}
 
 
 @pytest.mark.parametrize(

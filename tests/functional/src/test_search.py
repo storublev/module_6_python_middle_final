@@ -195,3 +195,16 @@ async def test_person_search_cached(es_write_data, es_delete_data, flush_cache, 
     await flush_cache()
     after_flush = await make_get_request('/persons/search', {'query': 'smith'})
     assert after_flush.body == []
+
+
+async def test_film_search_in_russian(es_write_data, make_get_request):
+    """Поиск по-русски находит фильм по русскому названию с Кинопоиска."""
+    wanted = make_film(title='Star Wars', title_ru='Звёздные войны', description_ru='Татуин. Планета-пустыня.')
+    other = make_film(title='Casablanca', title_ru='Касабланка', description_ru='Марокко')
+    await es_write_data(MOVIES_INDEX, [wanted, other])
+
+    by_title = await make_get_request('/films/search', {'query': 'звёздные войны'})
+    by_plot = await make_get_request('/films/search', {'query': 'планета пустыня'})
+
+    assert [film['uuid'] for film in by_title.body] == [wanted['id']]
+    assert [film['uuid'] for film in by_plot.body] == [wanted['id']]

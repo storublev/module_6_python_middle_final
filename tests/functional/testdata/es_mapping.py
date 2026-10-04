@@ -65,6 +65,11 @@ MOVIES_MAPPING = {
         'type': {'type': 'keyword'},
         'poster_url': {'type': 'keyword', 'index': False},
         'imdb_id': {'type': 'keyword'},
+        'kinopoisk_id': {'type': 'keyword'},
+        'title_ru': {'type': 'text', 'analyzer': 'ru_en'},
+        'description_ru': {'type': 'text', 'analyzer': 'ru_en'},
+        'kinopoisk_rating': {'type': 'float'},
+        'year': {'type': 'short'},
     },
 }
 

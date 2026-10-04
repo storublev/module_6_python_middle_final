@@ -46,6 +46,8 @@ class FilmShort(IdModel):
     # проиндексированные до появления полей, читаются с пустыми значениями.
     type: str | None = None
     poster_url: str | None = None
+    # Русское название с Кинопоиска — под английским в сетке каталога.
+    title_ru: str | None = None
 
 
 class Film(FilmShort):
@@ -58,6 +60,11 @@ class Film(FilmShort):
     access_level: str = AccessLevel.PUBLIC
     description: str | None = None
     imdb_id: str | None = None
+    # Данные Кинопоиска (etl/scripts/fetch_kinopoisk.py): есть не у всех фильмов.
+    kinopoisk_id: str | None = None
+    description_ru: str | None = None
+    kinopoisk_rating: float | None = None
+    year: int | None = None
     genres: list[FilmGenre] = []
     actors: list[FilmPerson] = []
     writers: list[FilmPerson] = []
