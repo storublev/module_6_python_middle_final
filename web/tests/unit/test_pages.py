@@ -75,7 +75,8 @@ def test_selected_host_shows_dates_and_booking_form(stand: Stand):
     request = stand.booking.last('GET', '/booking/api/v1/screenings')
     assert (request.url.params['film_id'], request.url.params['host_id']) == (FILM_ID, HOST_ID)
     assert f'action="/screenings/{SCREENING_ID}/book"' in text
-    assert 'сб, 17 окт, 19:00' in text  # 16:00 UTC — это 19:00 по Москве
+    assert 'сб, 17 окт, 19:00' in text
+    assert 'class="btn " href="/films/' in text and '✓ Выбран' in text  # 16:00 UTC — это 19:00 по Москве
 
 
 def test_anonymous_is_asked_to_log_in_to_book(stand: Stand):

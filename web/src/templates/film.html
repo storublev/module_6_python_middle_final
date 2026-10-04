@@ -59,8 +59,10 @@
               <div class="host-card__rating">{{ h.rating | rating }}</div>
               <div class="muted">Ближайший показ: {{ h.next_starts_at | when }}</div>
               <div class="muted">{{ h.screenings | shows }} · свободно {{ h.seats_left | seats }}</div>
-              <a class="btn btn--ghost" href="/films/{{ film.uuid }}?host={{ h.host_id }}#tickets">
-                {% if selected and selected.host_id == h.host_id %}Выбран{% else %}Выбрать{% endif %}
+              {% set chosen = selected and selected.host_id == h.host_id %}
+              <a class="btn {{ '' if chosen else 'btn--ghost' }}" href="/films/{{ film.uuid }}?host={{ h.host_id }}#tickets"
+                 {% if chosen %}aria-current="true"{% endif %}>
+                {% if chosen %}✓ Выбран{% else %}Выбрать{% endif %}
               </a>
             </article>
           {% endfor %}
