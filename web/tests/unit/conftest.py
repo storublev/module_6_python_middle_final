@@ -31,12 +31,15 @@ HEADERS = {'X-Request-Id': 'req-test'}
 
 FILM = {
     'uuid': FILM_ID, 'title': 'Star Wars', 'imdb_rating': 8.6, 'type': 'movie', 'imdb_id': 'tt0076759',
-    'poster_url': 'https://m.media-amazon.com/images/M/sw._V1_QL75_UX400_.jpg', 'description': 'A long time ago',
+    'poster_url': '/posters/3d825f60-9fff-4dfe-b294-1a45fa1e115d.jpg', 'description': 'A long time ago',
+    'title_ru': 'Звёздные войны', 'description_ru': 'Давным-давно в далёкой галактике', 'kinopoisk_id': '333',
+    'kinopoisk_rating': 8.1, 'year': 1977,
     'genre': [{'uuid': str(uuid4()), 'name': 'Sci-Fi'}],
     'actors': [{'uuid': str(uuid4()), 'full_name': 'Mark Hamill'}],
     'writers': [], 'directors': [{'uuid': str(uuid4()), 'full_name': 'George Lucas'}],
 }
-SERIES = {**FILM, 'uuid': SERIES_ID, 'title': 'Star Trek', 'type': 'tv_show', 'poster_url': None}
+SERIES = {**FILM, 'uuid': SERIES_ID, 'title': 'Star Trek', 'type': 'tv_show', 'poster_url': None, 'title_ru': None,
+          'description_ru': None, 'kinopoisk_id': None, 'kinopoisk_rating': None}
 SCREENING = {
     'id': SCREENING_ID, 'host_id': HOST_ID, 'host_name': 'Нео', 'film_id': FILM_ID, 'film_title': 'Star Wars',
     'film_poster': FILM['poster_url'], 'starts_at': '2099-10-17T16:00:00Z', 'place': 'Зал 3',

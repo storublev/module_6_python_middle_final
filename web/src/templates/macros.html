@@ -16,7 +16,8 @@
         {% if film.imdb_rating is not none %}<span class="star">★ {{ '%.1f' | format(film.imdb_rating) }}</span>{% endif %}
         {% if film.type == 'tv_show' %}<span class="badge">Сериал</span>{% endif %}
       </div>
-      <div class="tile__title">{{ film.title }}</div>
+      <div class="tile__title">{{ film.title_ru or film.title }}</div>
+      {% if film.title_ru %}<div class="tile__original">{{ film.title }}</div>{% endif %}
     </div>
   </a>
 {% endmacro %}

@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 {% from 'macros.html' import poster, seats_select %}
-{% block title %}{{ film.title }}{% endblock %}
+{% block title %}{{ film.title_ru or film.title }}{% endblock %}
 {% macro people(title, list) %}
   {% if list %}
     <div class="credits__row">
@@ -13,18 +13,27 @@
   <section class="film-hero">
     <div class="film-hero__poster">{{ poster(film.title, film.poster_url, 'poster--large') }}</div>
     <div class="film-hero__info">
-      <h1 class="film-hero__title">{{ film.title }}</h1>
+      <h1 class="film-hero__title">{{ film.title_ru or film.title }}</h1>
+      {% if film.title_ru %}<div class="film-hero__original">{{ film.title }}{% if film.year %} · {{ film.year }}{% endif %}</div>
+      {% elif film.year %}<div class="film-hero__original">{{ film.year }}</div>{% endif %}
       <div class="film-hero__meta">
         {% if film.imdb_rating is not none %}
-          <span class="rating-big"><span class="star">★</span> {{ '%.1f' | format(film.imdb_rating) }}<span class="muted">/10</span></span>
+          <span class="rating-big" title="Рейтинг IMDb"><span class="star">★</span> {{ '%.1f' | format(film.imdb_rating) }}<span class="muted">/10</span></span>
+        {% endif %}
+        {% if film.kinopoisk_rating %}
+          <span class="rating-kp" title="Рейтинг Кинопоиска">КП {{ '%.1f' | format(film.kinopoisk_rating) }}</span>
         {% endif %}
         <span class="badge">{{ 'Фильм' if film.type == 'movie' else 'Сериал' if film.type == 'tv_show' else 'Видео' }}</span>
         {% if film.imdb_id %}<a class="muted" href="https://www.imdb.com/title/{{ film.imdb_id }}/" rel="noopener noreferrer" target="_blank">IMDb ↗</a>{% endif %}
+        {% if film.kinopoisk_id %}<a class="muted" href="https://www.kinopoisk.ru/film/{{ film.kinopoisk_id }}/" rel="noopener noreferrer" target="_blank">Кинопоиск ↗</a>{% endif %}
       </div>
       {% if film.genre %}
         <div class="chips">{% for g in film.genre %}<a class="chip" href="/?genre={{ g.uuid }}">{{ g.name }}</a>{% endfor %}</div>
       {% endif %}
-      {% if film.description %}<p class="film-hero__plot">{{ film.description }}</p>{% endif %}
+      {% if film.description_ru %}
+        <p class="film-hero__plot">{{ film.description_ru }}</p>
+        {% if film.description %}<details class="original-plot"><summary>Описание на английском</summary><p>{{ film.description }}</p></details>{% endif %}
+      {% elif film.description %}<p class="film-hero__plot">{{ film.description }}</p>{% endif %}
       <div class="credits">
         {{ people('Режиссёр', film.directors) }}
         {{ people('Сценарий', film.writers) }}

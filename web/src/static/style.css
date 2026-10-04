@@ -70,6 +70,7 @@ h2 { margin-top: 2.2rem; }
 .tile__body { padding: .6rem .7rem .8rem; }
 .tile__meta { display: flex; gap: .5rem; align-items: center; font-size: .9rem; min-height: 1.4rem; }
 .tile__title { font-weight: 600; margin-top: .2rem; }
+.tile__original { color: var(--muted); font-size: .85rem; }
 .star { color: var(--accent); }
 .badge { display: inline-block; border: 1px solid var(--line); border-radius: 4px; padding: 0 .4rem; font-size: .8rem; color: var(--muted); }
 .badge--bad { color: var(--bad); border-color: var(--bad); }
@@ -93,6 +94,10 @@ h2 { margin-top: 2.2rem; }
 .film-hero__title a { color: var(--text); }
 .film-hero__meta { display: flex; gap: 1rem; align-items: center; margin-bottom: .5rem; }
 .rating-big { font-size: 1.4rem; font-weight: 700; }
+.rating-kp { font-weight: 700; color: #ff6600; border: 1px solid #ff6600; border-radius: 4px; padding: 0 .4rem; }
+.film-hero__original { color: var(--muted); font-size: 1.1rem; margin: -.3rem 0 .6rem; }
+.original-plot { color: var(--muted); max-width: 70ch; margin-bottom: 1rem; }
+.original-plot summary { cursor: pointer; }
 .film-hero__plot { font-size: 1.05rem; max-width: 70ch; }
 .credits { border-top: 1px solid var(--line); margin: 1rem 0; }
 .credits__row { display: flex; gap: 1rem; padding: .6rem 0; border-bottom: 1px solid var(--line); }
