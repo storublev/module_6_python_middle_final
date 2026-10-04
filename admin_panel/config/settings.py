@@ -101,7 +101,8 @@ ALLOWED_HOSTS = settings.allowed_hosts
 CSRF_TRUSTED_ORIGINS = settings.csrf_trusted_origins
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    # Штатная админка со своим сайтом: раздел «Рассылки» в каталоге (config/admin.py).
+    'config.apps.CinemaAdminConfig',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
