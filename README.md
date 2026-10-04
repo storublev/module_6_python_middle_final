@@ -34,6 +34,10 @@ docker compose up -d --build  # весь стек; обложки ETL загру
 python3 scripts/seed_demo.py  # хосты, показы и брони для демонстрации
 ```
 
+* **Данные Кинопоиска** (нужен ключ kinopoiskapiunofficial.tech, 500 запросов в
+  сутки — повторять по дням) и **картинки обложек в базу**:
+  `docker compose exec -e KINOPOISK_API_KEY=... etl python scripts/fetch_kinopoisk.py`,
+  затем `docker compose exec etl python scripts/fetch_poster_images.py`.
 * **Интерфейс:** http://localhost/ — вход для демонстрации `demo-neo` (хост) или
   `demo-guest-1` (гость), пароль `demo-password-2026`; можно и зарегистрироваться.
 * API бронирования: http://localhost/booking/api/openapi
@@ -506,6 +510,13 @@ Redis на другой кеш не меняет поведения API при �
   `etl/data/posters.csv` — 729 фильмов из 999; колонки `poster_url`, `imdb_id`
   заводит ETL при старте; Async API отдаёт `type` и `poster_url`, фильтр
   `?type=movie`; админка показывает превью обложки.
+* **Кинопоиск и картинки в базе каталога:** `etl/scripts/fetch_kinopoisk.py`
+  пишет в `content.film_kinopoisk` русское название и описание, год, рейтинг и
+  полный ответ API; `etl/scripts/fetch_poster_images.py` кладёт сами картинки
+  в `content.film_poster`. Картинки отдаёт админка по `/posters/<id>.jpg`,
+  nginx кеширует. Async API отдаёт `title_ru`, `description_ru`,
+  `kinopoisk_rating`, `year` и ищет по-русски; интерфейс показывает карточку
+  по-русски с английским описанием под спойлером.
 * **Уведомления:** миграция `0006` — четыре шаблона писем о бронях и показах.
 * **UGC убран из репозитория и стека** (сбор действий, ETL событий, сервис
   контента, исследование хранилищ, Kafka, ClickHouse, MongoDB): диплому он не

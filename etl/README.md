@@ -44,3 +44,31 @@
 - Поле `title` содержит внутри себя ещё одно поле — `title.raw`. Оно нужно, чтобы у Elasticsearch была возможность делать сортировку, так как он не умеет сортировать данные по типу `text`.
 
 Возможны и другие оптимизации, но для текущей задачи этих настроек будет достаточно.
+
+## Обложки и данные Кинопоиска (дипломный проект)
+
+Каталог дополняется тремя скриптами; все пишут в базу каталога (схема
+`content`, таблицы заводит `sql/catalog_extensions.sql` при старте ETL), а ETL
+переносит результат в индекс `movies`. Решение — ADR-25 в
+[docs/diploma/architecture.md](../docs/diploma/architecture.md).
+
+| Шаг | Скрипт | Что делает | Куда пишет |
+|---|---|---|---|
+| 1 | `scripts/fetch_posters.py` | Ищет обложки по названию через поиск IMDb | `data/posters.csv` → `film_work.poster_url`, `imdb_id` (ETL загружает при старте) |
+| 2 | `scripts/fetch_kinopoisk.py` | Ищет фильм на Кинопоиске: русское название и описание, год, рейтинг, обложка | `film_kinopoisk` |
+| 3 | `scripts/fetch_poster_images.py` | Скачивает картинки обложек: Кинопоиск, иначе ссылка каталога | `film_poster` |
+
+Запуск — в контейнере ETL, там есть доступ к базе:
+
+```bash
+docker compose exec etl python scripts/fetch_posters.py --output data/posters.csv   # разово
+docker compose cp etl:/opt/etl/data/posters.csv etl/data/posters.csv                # и в git
+docker compose exec -e KINOPOISK_API_KEY=... etl python scripts/fetch_kinopoisk.py  # 500 запросов в сутки
+docker compose exec etl python scripts/fetch_poster_images.py
+```
+
+`fetch_kinopoisk.py` идёт по важности (сначала фильмы без обложки, затем без
+описания, затем по рейтингу), помнит обработанные фильмы и останавливается на
+исчерпанном лимите — повторный запуск на следующий день продолжает с места
+остановки. Ключ берётся на kinopoiskapiunofficial.tech и в репозиторий не
+попадает.
