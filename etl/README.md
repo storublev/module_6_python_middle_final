@@ -72,3 +72,19 @@ docker compose exec etl python scripts/fetch_poster_images.py
 исчерпанном лимите — повторный запуск на следующий день продолжает с места
 остановки. Ключ берётся на kinopoiskapiunofficial.tech и в репозиторий не
 попадает.
+
+### Дамп базы каталога
+
+Всё перечисленное уже лежит в `etl/dump.sql.gz` — дампе схемы `content`
+(фильмы, жанры, персоны, `film_kinopoisk`, `film_poster`; журнал аудита и
+состояние ETL — без строк, чтобы новый стенд загрузил индекс с нуля). Его
+разворачивает контейнер `postgres` при первом старте с пустым томом; тип
+`public.film_type` заводит `sql/initdb/00_types.sql` до дампа.
+
+Обновить дамп после новых данных:
+
+```bash
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --schema=content \
+    --exclude-table-data=content.audit_log --exclude-table-data=content.etl_state --no-owner --no-privileges' \
+    | gzip -9 > etl/dump.sql.gz
+```

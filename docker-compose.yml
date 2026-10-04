@@ -121,8 +121,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Дамп и ETL живут в своём репозитории, здесь на них только ссылка.
-      - ./etl/dump.sql:/docker-entrypoint-initdb.d/dump.sql:ro
+      # Дамп каталога: фильмы, жанры, персоны, данные Кинопоиска и картинки
+      # обложек (схема content). Разворачивается только в пустой том, по
+      # алфавиту: сначала тип фильма из схемы public, затем сам дамп.
+      - ./etl/sql/initdb/00_types.sql:/docker-entrypoint-initdb.d/00_types.sql:ro
+      - ./etl/dump.sql.gz:/docker-entrypoint-initdb.d/10_dump.sql.gz:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
