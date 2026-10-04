@@ -1,0 +1,118 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import poster, seats_select %}
+{% block title %}{{ film.title_ru or film.title }}{% endblock %}
+{% macro people(title, list) %}
+  {% if list %}
+    <div class="credits__row">
+      <span class="credits__label">{{ title }}</span>
+      <span>{% for p in list %}<a href="/persons/{{ p.uuid }}">{{ p.full_name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</span>
+    </div>
+  {% endif %}
+{% endmacro %}
+{% block content %}
+  <section class="film-hero">
+    <div class="film-hero__poster">{{ poster(film.title, film.poster_url, 'poster--large') }}</div>
+    <div class="film-hero__info">
+      <h1 class="film-hero__title">{{ film.title_ru or film.title }}</h1>
+      {% if film.title_ru %}<div class="film-hero__original">{{ film.title }}{% if film.year %} · {{ film.year }}{% endif %}</div>
+      {% elif film.year %}<div class="film-hero__original">{{ film.year }}</div>{% endif %}
+      <div class="film-hero__meta">
+        {% if film.imdb_rating is not none %}
+          <span class="rating-big" title="Рейтинг IMDb"><span class="star">★</span> {{ '%.1f' | format(film.imdb_rating) }}<span class="muted">/10</span></span>
+        {% endif %}
+        {% if film.kinopoisk_rating %}
+          <span class="rating-kp" title="Рейтинг Кинопоиска">КП {{ '%.1f' | format(film.kinopoisk_rating) }}</span>
+        {% endif %}
+        <span class="badge">{{ 'Фильм' if film.type == 'movie' else 'Сериал' if film.type == 'tv_show' else 'Видео' }}</span>
+      </div>
+      {% if film.genre %}
+        <div class="chips">{% for g in film.genre %}<a class="chip" href="/?genre={{ g.uuid }}">{{ g.name }}</a>{% endfor %}</div>
+      {% endif %}
+      {% if film.description_ru %}
+        <p class="film-hero__plot">{{ film.description_ru }}</p>
+        {% if film.description %}<details class="original-plot"><summary>Описание на английском</summary><p>{{ film.description }}</p></details>{% endif %}
+      {% elif film.description %}<p class="film-hero__plot">{{ film.description }}</p>{% endif %}
+      <div class="credits">
+        {{ people('Режиссёр', film.directors) }}
+        {{ people('Сценарий', film.writers) }}
+        {{ people('В ролях', film.actors) }}
+      </div>
+      {% if bookable %}<a class="btn" href="#tickets" aria-controls="tickets">🎟 Купить билет</a>{% endif %}
+    </div>
+  </section>
+
+  {# Блок брони скрыт, пока зритель не нажал «Купить билет» (CSS :target).
+     Открыт сразу, если выбор уже идёт: выбран хост, пришла ошибка брони, а
+     у сериала — чтобы было видно, почему билетов нет. #}
+  <section class="tickets {{ 'tickets--open' if tickets_open else '' }}" id="tickets">
+    <h2>Билеты на совместный просмотр</h2>
+    {% if not bookable %}
+      <p class="muted">Билеты продаются только на полнометражные фильмы, а это сериал — его смотрят дома.</p>
+    {% elif hosts is none %}
+      <p class="muted">Бронирование временно недоступно. Загляните через минуту.</p>
+    {% else %}
+      <h3 class="step"><span class="step__n">1</span> Выберите хоста</h3>
+      {% if hosts['items'] %}
+        <div class="hosts">
+          {% for h in hosts['items'] %}
+            <article class="host-card {% if selected and selected.host_id == h.host_id %}host-card--on{% endif %}">
+              <div class="host-card__name"><a href="/hosts/{{ h.host_id }}">{{ h.host_name }}</a></div>
+              <div class="host-card__rating">{{ h.rating | rating }}</div>
+              <div class="muted">Ближайший показ: {{ h.next_starts_at | when }}</div>
+              <div class="muted">{{ h.screenings | shows }} · свободно {{ h.seats_left | seats }}</div>
+              {% set chosen = selected and selected.host_id == h.host_id %}
+              <a class="btn {{ '' if chosen else 'btn--ghost' }}" href="/films/{{ film.uuid }}?host={{ h.host_id }}#tickets"
+                 {% if chosen %}aria-current="true"{% endif %}>
+                {% if chosen %}✓ Выбран{% else %}Выбрать{% endif %}
+              </a>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">Пока этот фильм никто не показывает. Станьте первым хостом!</p>
+      {% endif %}
+
+      {% if selected %}
+        <h3 class="step"><span class="step__n">2</span> Выберите дату и время у хоста {{ selected.host_name }}</h3>
+        {% if dates is none %}
+          <p class="muted">Расписание хоста временно недоступно.</p>
+        {% else %}
+          <div class="dates">
+            {% for s in dates['items'] %}
+              <article class="date-row">
+                <div>
+                  <div class="date-row__when">{{ s.starts_at | when }}</div>
+                  <div class="muted">{{ s.place }} · {{ s.address }}</div>
+                  {% if s.description %}<div class="muted small">{{ s.description }}</div>{% endif %}
+                </div>
+                <div class="date-row__book">
+                  {% if s.seats_left == 0 %}
+                    <span class="badge">Мест нет</span>
+                  {% elif viewer and viewer.user_id|string == s.host_id %}
+                    <a class="btn btn--ghost" href="/screenings/{{ s.id }}">Это ваш показ</a>
+                  {% elif viewer %}
+                    <form action="/screenings/{{ s.id }}/book" method="post" class="inline-form">
+                      <input type="hidden" name="back_to" value="/films/{{ film.uuid }}?host={{ selected.host_id }}">
+                      <span class="step__n step__n--small">3</span>
+                      {{ seats_select('seats', [s.seats_left, 10] | min) }}
+                      <button class="btn" type="submit">Забронировать</button>
+                    </form>
+                    <div class="muted small">свободно {{ s.seats_left | seats }} из {{ s.capacity }}</div>
+                  {% else %}
+                    <a class="btn" href="/login?next=/films/{{ film.uuid }}%3Fhost%3D{{ selected.host_id }}">Войти и забронировать</a>
+                  {% endif %}
+                </div>
+              </article>
+            {% else %}
+              <p class="muted">У этого хоста больше нет будущих показов фильма.</p>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endif %}
+      <p class="tickets__host">
+        Хотите собрать свою компанию?
+        <a class="btn btn--ghost" href="/screenings/new?film_id={{ film.uuid }}">Организовать показ</a>
+      </p>
+    {% endif %}
+  </section>
+{% endblock %}

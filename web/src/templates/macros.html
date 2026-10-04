@@ -1,0 +1,53 @@
+{% macro poster(title, url, size='') %}
+  {% if url %}
+    <img class="poster {{ size }}" src="{{ url }}" alt="Обложка «{{ title }}»" loading="lazy" referrerpolicy="no-referrer">
+  {% else %}
+    <div class="poster poster--empty {{ size }}" style="--hue: {{ title | hue }}" role="img" aria-label="Обложки нет">
+      <span>{{ title }}</span>
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% macro film_tile(film) %}
+  <a class="tile" href="/films/{{ film.uuid }}">
+    {{ poster(film.title, film.poster_url) }}
+    <div class="tile__body">
+      <div class="tile__meta">
+        {% if film.imdb_rating is not none %}<span class="star">★ {{ '%.1f' | format(film.imdb_rating) }}</span>{% endif %}
+        {% if film.type == 'tv_show' %}<span class="badge">Сериал</span>{% endif %}
+      </div>
+      <div class="tile__title">{{ film.title_ru or film.title }}</div>
+      {% if film.title_ru %}<div class="tile__original">{{ film.title }}</div>{% endif %}
+    </div>
+  </a>
+{% endmacro %}
+
+{% macro screening_row(s, show_film=true, show_host=true) %}
+  <article class="screening-row">
+    {% if show_film %}<a href="/films/{{ s.film_id }}">{{ poster(s.film_title, s.film_poster, 'poster--thumb') }}</a>{% endif %}
+    <div class="screening-row__body">
+      {% if show_film %}<a class="screening-row__film" href="/films/{{ s.film_id }}">{{ s.film_title }}</a>{% endif %}
+      <div class="screening-row__when">{{ s.starts_at | when }}</div>
+      <div class="muted">{{ s.place }} · {{ s.address }}</div>
+      {% if show_host %}<div class="muted">Хост: <a href="/hosts/{{ s.host_id }}">{{ s.host_name }}</a></div>{% endif %}
+    </div>
+    <div class="screening-row__side">
+      {% if s.status == 'cancelled' %}
+        <span class="badge badge--bad">Отменён</span>
+      {% elif s.seats_left > 0 %}
+        <span class="seats">свободно {{ s.seats_left | seats }}</span>
+      {% else %}
+        <span class="badge">Мест нет</span>
+      {% endif %}
+      <a class="btn btn--ghost" href="/screenings/{{ s.id }}">Подробнее</a>
+    </div>
+  </article>
+{% endmacro %}
+
+{% macro seats_select(name, max_seats, selected=1) %}
+  <select name="{{ name }}" aria-label="Сколько мест">
+    {% for n in range(1, max_seats + 1) %}
+      <option value="{{ n }}" {% if n == selected %}selected{% endif %}>{{ n | seats }}</option>
+    {% endfor %}
+  </select>
+{% endmacro %}

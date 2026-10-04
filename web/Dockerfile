@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Таймаут чтения у pip по умолчанию 15 секунд: на медленном канале
+    # крупные пакеты не докачиваются и сборка падает на ровном месте.
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
+    # Количество процессов uvicorn; каждый держит свой event loop.
+    WEB_CONCURRENCY=2
+
+WORKDIR /opt/app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY src/ .
+
+RUN useradd --no-create-home --shell /usr/sbin/nologin app
+USER app
+
+EXPOSE 8000
+
+# Страницы и статика: статику отдаёт сам сервис, её мало и она кешируется браузером.
+STOPSIGNAL SIGTERM
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

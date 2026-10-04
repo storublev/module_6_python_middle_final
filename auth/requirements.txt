@@ -1,0 +1,17 @@
+alembic==1.20.0
+asyncpg==0.31.0
+authlib==1.8.0
+fastapi==0.141.1
+httpx2==2.13.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-sdk==1.44.0
+pwdlib[argon2]==0.3.1
+pydantic-settings==2.15.0
+pydantic==2.13.5
+pyjwt==2.14.0
+redis==8.1.0
+sentry-sdk[fastapi]==2.70.0
+sqlalchemy[asyncio]==2.0.53
+typer==0.27.2
+uvicorn[standard]==0.53.0

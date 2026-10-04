@@ -1,0 +1,104 @@
+# Изолированное окружение функциональных тестов сервиса авторизации:
+# PostgreSQL, Redis, миграции, сервис и контейнер с тестами.
+#
+#   docker compose -f auth/tests/functional/docker-compose.yml up --build \
+#       --abort-on-container-exit --exit-code-from tests
+#
+# Порты сервиса, PostgreSQL и Redis проброшены на localhost, чтобы запускать
+# тесты локально, из IDE, с отладчиком.
+name: auth-functional-tests
+
+x-auth-env: &auth-env
+  AUTH_POSTGRES_HOST: postgres
+  AUTH_POSTGRES_PORT: 5432
+  AUTH_POSTGRES_DB: auth
+  AUTH_POSTGRES_USER: auth
+  AUTH_POSTGRES_PASSWORD: auth-tests
+  AUTH_REDIS_HOST: redis
+  AUTH_REDIS_PORT: 6379
+  # Ключ только для тестов: тесты подписывают им истёкшие токены.
+  AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+  # Небольшие лимиты попыток, чтобы тесты упирались в них за несколько
+  # запросов. Каждый тест начинается с пустого Redis, поэтому остальные
+  # тесты в лимиты не попадают. Те же значения — в tests/functional/settings.py.
+  AUTH_LOGIN_ATTEMPTS_PER_IP: 10
+  AUTH_LOGIN_ATTEMPTS_PER_ACCOUNT: 5
+  AUTH_SIGNUP_ATTEMPTS_PER_IP: 5
+  AUTH_PASSWORD_CHECK_ATTEMPTS_PER_ACCOUNT: 2
+  AUTH_PASSWORD_CHECK_ATTEMPTS_PER_IP: 3
+  AUTH_MAX_SESSIONS_PER_USER: 5
+  # Фоновый повтор сброса кеша прав — раз в секунду, чтобы тест не ждал долго.
+  AUTH_ACCESS_INVALIDATION_INTERVAL: 1
+  # Ключи-заглушки: настоящего поставщика в тестах нет, но с ними включаются
+  # его эндпоинты — проверяется всё, что видно снаружи до ухода к поставщику.
+  # Обмен кода на данные пользователя проверяют модульные тесты.
+  AUTH_OAUTH_YANDEX_CLIENT_ID: functional-tests-client-id
+  AUTH_OAUTH_YANDEX_CLIENT_SECRET: functional-tests-client-secret
+  AUTH_OAUTH_REDIRECT_BASE_URL: http://auth:8000
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth-tests
+    ports:
+      - "${TEST_POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U auth -d auth"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "${TEST_REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  auth:
+    # Тестируется тот же образ, что уходит в работу. Миграции применяются
+    # перед запуском сервиса, а не отдельным контейнером, как в рабочем
+    # окружении: --abort-on-container-exit остановил бы всё окружение, как
+    # только завершится контейнер с миграциями.
+    build: ../..
+    image: movies-auth
+    environment:
+      <<: *auth-env
+      WEB_CONCURRENCY: 2
+    # Адрес клиента uvicorn берёт из X-Forwarded-For, как рабочий образ за
+    # nginx: так тесты отправляют запросы «с разных IP».
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"]
+    ports:
+      - "${TEST_AUTH_PORT:-8001}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/auth/api/openapi.json')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    build:
+      context: ../..
+      dockerfile: tests/functional/Dockerfile
+    environment:
+      SERVICE_URL: http://auth:8000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+    depends_on:
+      auth:
+        condition: service_healthy

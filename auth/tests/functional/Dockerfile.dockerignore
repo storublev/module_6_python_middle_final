@@ -1,0 +1,7 @@
+# Свой список для образа тестов: общий auth/.dockerignore исключает tests.
+.env
+**/__pycache__
+**/*.pyc
+src
+migrations
+docs

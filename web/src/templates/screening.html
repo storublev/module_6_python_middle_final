@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import poster, seats_select %}
+{% block title %}{{ screening.film_title }} — {{ screening.starts_at | when }}{% endblock %}
+{% macro stars_form(target_id, label) %}
+  <form action="/screenings/{{ screening.id }}/rate" method="post" class="rate-form">
+    <input type="hidden" name="target_id" value="{{ target_id }}">
+    <span class="muted">{{ label }}</span>
+    <span class="stars-input">
+      {% for n in range(5, 0, -1) %}
+        <input type="radio" id="s{{ target_id }}-{{ n }}" name="score" value="{{ n }}" {% if n == 5 %}checked{% endif %}>
+        <label for="s{{ target_id }}-{{ n }}" title="{{ n }}">★</label>
+      {% endfor %}
+    </span>
+    <input type="text" name="comment" maxlength="1000" placeholder="Комментарий (необязательно)">
+    <button class="btn btn--small" type="submit">Оценить</button>
+  </form>
+{% endmacro %}
+{% block content %}
+  <section class="film-hero film-hero--compact">
+    <a class="film-hero__poster" href="/films/{{ screening.film_id }}">{{ poster(screening.film_title, screening.film_poster, 'poster--medium') }}</a>
+    <div class="film-hero__info">
+      <div class="muted">Совместный просмотр</div>
+      <h1 class="film-hero__title"><a href="/films/{{ screening.film_id }}">{{ screening.film_title }}</a></h1>
+      <dl class="facts">
+        <dt>Когда</dt><dd>{{ screening.starts_at | when }}</dd>
+        <dt>Где</dt><dd>{{ screening.place }}<br><span class="muted">{{ screening.address }}</span></dd>
+        <dt>Хост</dt><dd><a href="/hosts/{{ screening.host_id }}">{{ screening.host_name }}</a></dd>
+        <dt>Места</dt><dd>
+          {% if screening.status == 'cancelled' %}<span class="badge badge--bad">Показ отменён</span>
+          {% else %}занято {{ screening.seats_taken }} из {{ screening.capacity }} · свободно {{ screening.seats_left | seats }}{% endif %}
+        </dd>
+      </dl>
+      {% if screening.description %}<p>{{ screening.description }}</p>{% endif %}
+    </div>
+  </section>
+
+  {% set open = screening.status == 'scheduled' and not started %}
+
+  {% if is_host %}
+    <section class="panel">
+      <h2>Ваш показ</h2>
+      {% if open %}
+        <div class="actions">
+          <a class="btn btn--ghost" href="/screenings/{{ screening.id }}/edit">Изменить</a>
+          <form action="/screenings/{{ screening.id }}/cancel" method="post" onsubmit="return confirm('Отменить показ? Гости получат письмо.')">
+            <button class="btn btn--danger" type="submit">Отменить показ</button>
+          </form>
+        </div>
+      {% endif %}
+      <h3>Гости</h3>
+      {% for g in guests %}
+        <div class="guest">
+          <div><strong>{{ g.booking.guest_name }}</strong> · {{ g.booking.seats | seats }} <span class="muted">· {{ g.rating | rating }}</span></div>
+          {% if started and screening.status == 'scheduled' %}
+            {% if g.booking.guest_id in rated %}<span class="muted">оценка поставлена</span>
+            {% else %}{{ stars_form(g.booking.guest_id, 'Как гость?') }}{% endif %}
+          {% endif %}
+        </div>
+      {% else %}
+        <p class="muted">Пока никто не забронировал.</p>
+      {% endfor %}
+    </section>
+  {% elif viewer and mine %}
+    <section class="panel">
+      <h2>Ваша бронь: {{ mine.seats | seats }}</h2>
+      {% if open %}
+        <div class="actions">
+          <form action="/bookings/{{ mine.id }}/seats" method="post" class="inline-form">
+            <input type="hidden" name="screening_id" value="{{ screening.id }}">
+            {{ seats_select('seats', [mine.seats + screening.seats_left, 10] | min, mine.seats) }}
+            <button class="btn btn--ghost" type="submit">Изменить число мест</button>
+          </form>
+          <form action="/bookings/{{ mine.id }}/cancel" method="post" onsubmit="return confirm('Отменить бронь?')">
+            <input type="hidden" name="screening_id" value="{{ screening.id }}">
+            <button class="btn btn--danger" type="submit">Отменить бронь</button>
+          </form>
+        </div>
+      {% elif started and screening.status == 'scheduled' %}
+        {% if screening.host_id in rated %}<p class="muted">Спасибо, вы оценили хоста.</p>
+        {% else %}{{ stars_form(screening.host_id, 'Как прошёл показ у ' ~ screening.host_name ~ '?') }}{% endif %}
+      {% endif %}
+    </section>
+  {% elif open %}
+    <section class="panel">
+      {% if screening.seats_left == 0 %}
+        <p>Все места заняты. <a href="/films/{{ screening.film_id }}#tickets">Другие показы фильма</a></p>
+      {% elif viewer %}
+        <form action="/screenings/{{ screening.id }}/book" method="post" class="inline-form">
+          {{ seats_select('seats', [screening.seats_left, 10] | min) }}
+          <button class="btn" type="submit">Забронировать</button>
+        </form>
+      {% else %}
+        <a class="btn" href="/login?next=/screenings/{{ screening.id }}">Войти и забронировать</a>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

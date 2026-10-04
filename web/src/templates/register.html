@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}Регистрация{% endblock %}
+{% block content %}
+  <section class="auth">
+    <h1>Регистрация</h1>
+    <form method="post" action="/register" class="form">
+      <label>Логин <input type="text" name="login" required autocomplete="username" maxlength="150"></label>
+      <label>Пароль <span class="muted small">от 8 символов</span>
+        <input type="password" name="password" required minlength="8" autocomplete="new-password" maxlength="128">
+      </label>
+      <label>Имя <span class="muted small">его увидят хосты и гости</span>
+        <input type="text" name="first_name" maxlength="64" autocomplete="given-name">
+      </label>
+      <label>Почта <span class="muted small">для писем о бронях</span>
+        <input type="email" name="email" maxlength="254" autocomplete="email">
+      </label>
+      <button class="btn" type="submit">Создать аккаунт</button>
+    </form>
+  </section>
+{% endblock %}

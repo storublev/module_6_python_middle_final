@@ -1,0 +1,157 @@
+# Наблюдаемость: ELK для логов и Sentry для ошибок.
+#
+#   docker compose -f deploy/observability/docker-compose.yml up -d          # ELK
+#   docker compose -f deploy/observability/docker-compose.yml --profile sentry up -d
+#
+# Отдельный файл, а не сервисы в общем docker-compose.yml: наблюдаемость живёт
+# дольше и перезапускается реже, чем сервисы кинотеатра, и поднимать ELK на
+# каждый прогон тестов незачем.
+#
+name: cinema-observability
+
+services:
+  # ВАЖНО: это отдельный Elasticsearch, не тот, в котором лежит каталог
+  # фильмов Async API. Урок предупреждает об этом прямо: логи и полнотекстовый
+  # поиск сервиса нельзя держать в одном кластере — всплеск логов утащит за
+  # собой поиск по фильмам.
+  elasticsearch-logs:
+    image: elasticsearch:8.10.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      # Одна нода без реплик: это учебный стенд, а не хранилище логов прода.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "${LOGS_ELASTIC_PORT:-9201}:9200"
+    volumes:
+      - logs_elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  logstash:
+    image: logstash:8.10.2
+    depends_on:
+      elasticsearch-logs:
+        condition: service_healthy
+    environment:
+      # Встроенный мониторинг шлёт данные в ES и здесь только мешает.
+      XPACK_MONITORING_ENABLED: "false"
+      ES_HOST: "elasticsearch-logs:9200"
+    ports:
+      # 5044/udp — для gelf-драйвера Docker, 5045/tcp — для Beats.
+      - "${LOGSTASH_GELF_PORT:-5044}:5044/udp"
+      - "${LOGSTASH_BEATS_PORT:-5045}:5045"
+    volumes:
+      - ./logstash.conf:/config/logstash.conf:ro
+    command: logstash -f /config/logstash.conf
+
+  kibana:
+    image: kibana:8.10.2
+    depends_on:
+      elasticsearch-logs:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch-logs:9200
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+
+  # Beats вместо второго logstash рядом с каждым сервисом: logstash тяжёл
+  # (JVM плюс разбор сообщений), а filebeat только читает файл и отправляет.
+  filebeat:
+    image: elastic/filebeat:8.10.2
+    # root нужен, чтобы читать файлы журналов Docker: они принадлежат root
+    # и лежат вне контейнера filebeat.
+    user: root
+    # Свой конфиг filebeat пускает в работу, только если его не может
+    # переписать кто угодно; смонтированный файл принадлежит хосту, поэтому
+    # проверку владельца отключаем явно.
+    command: ["--strict.perms=false"]
+    depends_on:
+      - logstash
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # Журнал nginx в JSON — из общего тома основного стека.
+      - nginx_logs:/var/log/nginx:ro
+      # stdout остальных сервисов: их складывает сюда json-file драйвер Docker.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Состояние сборщика: без него после перезапуска он перечитает всё заново.
+      - filebeat_data:/usr/share/filebeat/data
+
+  # --- Приёмник ошибок, совместимый с Sentry ------------------------------
+  # Поднимается профилем glitchtip. Почему не сам Sentry: его официальный
+  # отдельный образ заморожен на 9.1.2 (2019 год, Python 2, только amd64) и
+  # тянет за собой PostgreSQL 9.6 с Redis 5, а официальный self-hosted требует
+  # 4 ядра, 16 ГБ памяти и ещё 16 ГБ подкачки — на ноутбуке вместе с остальным
+  # стеком это не живёт. Разбор вариантов — в README рядом.
+  #
+  # GlitchTip говорит на том же протоколе и понимает тот же sentry-sdk:
+  # в сервисах не меняется ни строчки, меняется только DSN.
+  glitchtip-postgres:
+    image: postgres:16-alpine
+    profiles: ["glitchtip"]
+    environment:
+      POSTGRES_USER: ${GLITCHTIP_DB_USER:-glitchtip}
+      POSTGRES_PASSWORD: ${GLITCHTIP_DB_PASSWORD:-glitchtip}
+      POSTGRES_DB: ${GLITCHTIP_DB_NAME:-glitchtip}
+    volumes:
+      - glitchtip_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GLITCHTIP_DB_USER:-glitchtip}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  glitchtip-redis:
+    image: redis:7.4-alpine
+    profiles: ["glitchtip"]
+
+  glitchtip-web:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+    environment: &glitchtip-env
+      DATABASE_URL: postgres://${GLITCHTIP_DB_USER:-glitchtip}:${GLITCHTIP_DB_PASSWORD:-glitchtip}@glitchtip-postgres:5432/${GLITCHTIP_DB_NAME:-glitchtip}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-local-stand-secret-key-for-glitchtip}
+      PORT: 8000
+      # Регистрация открыта: стенд локальный, первого пользователя заводим сами.
+      ENABLE_OPEN_USER_REGISTRATION: "true"
+      GLITCHTIP_DOMAIN: http://localhost:${GLITCHTIP_PORT:-9001}
+    ports:
+      - "${GLITCHTIP_PORT:-9001}:8000"
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      - glitchtip-web
+    environment: *glitchtip-env
+    command: ./bin/run-celery-with-beat.sh
+
+  glitchtip-migrate:
+    image: glitchtip/glitchtip:6.2.6
+    profiles: ["glitchtip"]
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+    environment: *glitchtip-env
+    command: ./manage.py migrate
+    restart: "no"
+
+volumes:
+  logs_elasticsearch_data:
+  glitchtip_postgres_data:
+  filebeat_data:
+  # Том с логами nginx создаёт основной стек кинотеатра; здесь он подключается
+  # как внешний, поэтому имя у него фиксированное (см. docker-compose.yml в
+  # корне). Если основной стек ещё не поднимался, тома нет — и этот стек не
+  # запустится, пока он не появится.
+  nginx_logs:
+    external: true
+    name: cinema_nginx_logs

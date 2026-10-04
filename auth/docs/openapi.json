@@ -1,0 +1,4182 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "auth",
+    "summary": "Сервис авторизации онлайн-кинотеатра",
+    "description": "\nРегистрация, вход и управление доступом пользователей онлайн-кинотеатра.\n\n**Токены.** Вход выдаёт пару JWT: короткоживущий access-токен (передаётся в\nзаголовке `Authorization: Bearer <token>`) и одноразовый refresh-токен для\nполучения новой пары. Каждый вход — отдельная сессия; выход закрывает\nсессию, и её токены перестают действовать сразу, а не по истечении срока.\n\n**Ошибки** возвращаются как `{\"code\": \"...\", \"detail\": \"...\"}`. По `code`\nклиент решает, что делать дальше:\n\n* 401 `token_expired` — срок access-токена истёк: обновите пару токенов;\n* 401 `token_invalid` — токен повреждён, подделан (неверная подпись) или\n  другого типа: войдите заново;\n* 401 `token_revoked` — сессия закрыта (выход, смена пароля, повторное\n  использование refresh-токена): войдите заново;\n* 401 `not_authenticated` — токен не передан;\n* 403 — токен в порядке, но не хватает прав или неверен текущий пароль;\n* 404 — нет пользователя или роли, 409 — логин или имя роли заняты;\n* 422 — запрос не прошёл проверку (формат FastAPI: список ошибок в `detail`);\n* 429 `too_many_requests` — исчерпан лимит попыток входа или регистрации:\n  повторите через `Retry-After` секунд;\n* 503 `service_unavailable` — хранилище временно недоступно, повторите позже.\n\n**Права.** Роль — набор прав вида `films.subscription`. Суперпользователю\nразрешено всё, анонимному пользователю — только то, что правом не\nограничено. Управлять ролями может обладатель права `access.manage`.\n",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/auth/api/v1/signup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Регистрация",
+        "description": "Создаёт пользователя. Логин приводится к нижнему регистру и должен быть свободен. Число регистраций с одного IP ограничено: сверх лимита — 429 с заголовком Retry-After.",
+        "operationId": "signup_auth_api_v1_signup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`login_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "login_taken": {
+                    "summary": "Login is already taken",
+                    "value": {
+                      "code": "login_taken",
+                      "detail": "Login is already taken"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Вход",
+        "description": "Обменивает логин и пароль на пару токенов и записывает вход в историю. Каждый вход открывает отдельную сессию: так входят с разных устройств. Число попыток ограничено для IP и для логина (успешный вход обнуляет счётчик логина): сверх лимита — 429 с заголовком Retry-After, пароль при этом не проверяется.",
+        "operationId": "login_auth_api_v1_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPairSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_credentials`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "invalid_credentials": {
+                    "summary": "Invalid login or password",
+                    "value": {
+                      "code": "invalid_credentials",
+                      "detail": "Invalid login or password"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/token/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Обновление токенов",
+        "description": "Обменивает refresh-токен на новую пару. refresh-токен одноразовый: если предъявить уже использованный, сессия закроется — его мог перехватить злоумышленник.",
+        "operationId": "refresh_auth_api_v1_token_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPairSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Выход",
+        "description": "Закрывает текущую сессию: её access- и refresh-токены перестают действовать.",
+        "operationId": "logout_auth_api_v1_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/logout/others": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Выход из остальных сессий",
+        "description": "Закрывает все сессии пользователя, кроме текущей: на других устройствах придётся войти заново.",
+        "operationId": "logout_others_auth_api_v1_logout_others_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Данные пользователя",
+        "operationId": "me_auth_api_v1_users_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/profile": {
+      "patch": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Контакты и имя",
+        "description": "Меняет почту, имя, фамилию и часовой пояс — то, из чего сервис уведомлений собирает письмо. Присылаются только изменяемые поля; пустая строка очищает поле. Часовой пояс задаётся именем из базы IANA (`Europe/Moscow`): по нему решается, в какое время суток писать, поэтому неизвестное имя отклоняется сразу.",
+        "operationId": "change_profile_auth_api_v1_users_me_profile_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileUpdateSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`unknown_timezone`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "unknown_timezone": {
+                    "summary": "Unknown IANA timezone name",
+                    "value": {
+                      "code": "unknown_timezone",
+                      "detail": "Unknown IANA timezone name"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/login": {
+      "patch": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Смена логина",
+        "description": "Меняет логин. Смену подтверждает текущий пароль. Число проверок пароля ограничено для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After, и пароль при этом не проверяется.",
+        "operationId": "change_login_auth_api_v1_users_me_login_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeLoginSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`wrong_password`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "wrong_password": {
+                    "summary": "Current password is incorrect",
+                    "value": {
+                      "code": "wrong_password",
+                      "detail": "Current password is incorrect"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`login_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "login_taken": {
+                    "summary": "Login is already taken",
+                    "value": {
+                      "code": "login_taken",
+                      "detail": "Login is already taken"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/password": {
+      "put": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Смена пароля",
+        "description": "Меняет пароль, подтверждённый текущим, и закрывает все сессии, кроме текущей: они перестают действовать сразу. Если в этот момент недоступно хранилище сессий, пароль всё равно сменится, а войти заново придётся и на текущем устройстве. Число проверок текущего пароля ограничено для учётной записи и для IP: сверх лимита — 429 с заголовком Retry-After.",
+        "operationId": "change_password_auth_api_v1_users_me_password_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`wrong_password`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "wrong_password": {
+                    "summary": "Current password is incorrect",
+                    "value": {
+                      "code": "wrong_password",
+                      "detail": "Current password is incorrect"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`password_already_set`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "password_already_set": {
+                    "summary": "Current password is required to change an existing password",
+                    "value": {
+                      "code": "password_already_set",
+                      "detail": "Current password is required to change an existing password"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_requests`",
+            "headers": {
+              "Retry-After": {
+                "description": "Через сколько секунд можно повторить попытку",
+                "schema": {
+                  "type": "integer",
+                  "example": 60
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "too_many_requests": {
+                    "summary": "Too many attempts, retry later",
+                    "value": {
+                      "code": "too_many_requests",
+                      "detail": "Too many attempts, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/social-accounts": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Связанные аккаунты соцсетей",
+        "description": "Аккаунты соцсетей, через которые можно войти в эту учётную запись.",
+        "operationId": "social_accounts_auth_api_v1_users_me_social_accounts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SocialAccountSchema"
+                  },
+                  "type": "array",
+                  "title": "Response Social Accounts Auth Api V1 Users Me Social Accounts Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/users/me/social-accounts/{provider}": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Открепление аккаунта соцсети",
+        "description": "Отвязывает аккаунт: войти через эту соцсеть больше нельзя. Последний способ войти открепить нельзя — сначала задайте пароль или привяжите другую соцсеть, иначе доступ к учётной записи будет потерян.",
+        "operationId": "unlink_social_account_auth_api_v1_users_me_social_accounts__provider__delete",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`social_account_not_linked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "social_account_not_linked": {
+                    "summary": "No account of this social provider is linked",
+                    "value": {
+                      "code": "social_account_not_linked",
+                      "detail": "No account of this social provider is linked"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`last_login_method`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "last_login_method": {
+                    "summary": "Set a password or link another social account before unlinking this one",
+                    "value": {
+                      "code": "last_login_method",
+                      "detail": "Set a password or link another social account before unlinking this one"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/users/me/login-history": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "История входов",
+        "description": "Входы в аккаунт от новых к старым, постранично.",
+        "operationId": "login_history_auth_api_v1_users_me_login_history_get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page_number",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Номер страницы, начиная с 1",
+              "default": 1,
+              "title": "Page Number"
+            },
+            "description": "Номер страницы, начиная с 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Записей на странице",
+              "default": 50,
+              "title": "Page Size"
+            },
+            "description": "Записей на странице"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LoginRecordSchema"
+                  },
+                  "title": "Response Login History Auth Api V1 Users Me Login History Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/roles": {
+      "get": {
+        "tags": [
+          "roles"
+        ],
+        "summary": "Список ролей",
+        "operationId": "list_roles_auth_api_v1_roles_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RoleSchema"
+                  },
+                  "type": "array",
+                  "title": "Response List Roles Auth Api V1 Roles Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "roles"
+        ],
+        "summary": "Создание роли",
+        "operationId": "create_role_auth_api_v1_roles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleCreateSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`role_name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "examples": {
+                  "role_name_taken": {
+                    "summary": "Role with this name already exists",
+                    "value": {
+                      "code": "role_name_taken",
+                      "detail": "Role with this name already exists"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "accessToken": []
+          }
+        ]
+      }
+    },
+    "/auth/api/v1/roles/{role_id}": {
+      "get": {
+        "tags": [
+          "roles"
+        ],
+        "summary": "Роль",
+        "operationId": "get_role_auth_api_v1_roles__role_id__get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Role Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`role_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "role_not_found": {
+                    "summary": "Role not found",
+                    "value": {
+                      "code": "role_not_found",
+                      "detail": "Role not found"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "roles"
+        ],
+        "summary": "Изменение роли",
+        "description": "Меняет переданные поля. Новые права действуют сразу у всех пользователей с этой ролью.",
+        "operationId": "update_role_auth_api_v1_roles__role_id__patch",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Role Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleUpdateSchema"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`role_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "role_not_found": {
+                    "summary": "Role not found",
+                    "value": {
+                      "code": "role_not_found",
+                      "detail": "Role not found"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`role_name_taken`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "role_name_taken": {
+                    "summary": "Role with this name already exists",
+                    "value": {
+                      "code": "role_name_taken",
+                      "detail": "Role with this name already exists"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "roles"
+        ],
+        "summary": "Удаление роли",
+        "description": "Удаляет роль и отбирает её у всех пользователей.",
+        "operationId": "delete_role_auth_api_v1_roles__role_id__delete",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Role Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`role_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "role_not_found": {
+                    "summary": "Role not found",
+                    "value": {
+                      "code": "role_not_found",
+                      "detail": "Role not found"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/access/check": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Проверка права",
+        "description": "Есть ли у пользователя из access-токена право. Токен необязателен: без него проверяется анонимный пользователь, у которого прав нет — ему доступно лишь то, что правом не ограничено. Суперпользователю разрешено всё. Права берутся из кеша, изменения ролей сбрасывают его сразу. Если в момент изменения хранилище кеша было недоступно, кеш сбросит фоновый повтор через несколько секунд; для действий, где отзыв права должен действовать без задержки, передайте fresh=true — права будут прочитаны из базы.",
+        "operationId": "check_access_auth_api_v1_access_check_get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "permission",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+              "description": "Право",
+              "examples": [
+                "films.subscription"
+              ],
+              "title": "Permission"
+            },
+            "description": "Право"
+          },
+          {
+            "name": "fresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Проверить по актуальным правам из базы, минуя кеш",
+              "default": false,
+              "title": "Fresh"
+            },
+            "description": "Проверить по актуальным правам из базы, минуя кеш"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessCheckSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/users/{user_id}/roles": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Роли пользователя",
+        "operationId": "user_roles_auth_api_v1_users__user_id__roles_get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoleSchema"
+                  },
+                  "title": "Response User Roles Auth Api V1 Users  User Id  Roles Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`user_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "user_not_found": {
+                    "summary": "User not found",
+                    "value": {
+                      "code": "user_not_found",
+                      "detail": "User not found"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/users/{user_id}/roles/{role_id}": {
+      "put": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Назначение роли",
+        "description": "Назначает роль пользователю. Повторное назначение ничего не меняет. Права действуют сразу.",
+        "operationId": "assign_role_auth_api_v1_users__user_id__roles__role_id__put",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Role Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`user_not_found`, `role_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "user_not_found": {
+                    "summary": "User not found",
+                    "value": {
+                      "code": "user_not_found",
+                      "detail": "User not found"
+                    }
+                  },
+                  "role_not_found": {
+                    "summary": "Role not found",
+                    "value": {
+                      "code": "role_not_found",
+                      "detail": "Role not found"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Отзыв роли",
+        "operationId": "revoke_role_auth_api_v1_users__user_id__roles__role_id__delete",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Role Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`not_authenticated`, `token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "Authorization header with a bearer access token is required",
+                    "value": {
+                      "code": "not_authenticated",
+                      "detail": "Authorization header with a bearer access token is required"
+                    }
+                  },
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`permission_denied`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "permission_denied": {
+                    "summary": "Not enough permissions",
+                    "value": {
+                      "code": "permission_denied",
+                      "detail": "Not enough permissions"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`user_not_found`, `role_not_found`, `role_not_assigned`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "user_not_found": {
+                    "summary": "User not found",
+                    "value": {
+                      "code": "user_not_found",
+                      "detail": "User not found"
+                    }
+                  },
+                  "role_not_found": {
+                    "summary": "Role not found",
+                    "value": {
+                      "code": "role_not_found",
+                      "detail": "Role not found"
+                    }
+                  },
+                  "role_not_assigned": {
+                    "summary": "User does not have this role",
+                    "value": {
+                      "code": "role_not_assigned",
+                      "detail": "User does not have this role"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/oauth/providers": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Доступные соцсети",
+        "description": "Поставщики, через которых можно войти. Список зависит от настроек: поставщик без ключей приложения в него не попадает.",
+        "operationId": "providers_auth_api_v1_oauth_providers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderSchema"
+                  },
+                  "type": "array",
+                  "title": "Response Providers Auth Api V1 Oauth Providers Get"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                },
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/oauth/{provider}/login": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Вход через соцсеть",
+        "description": "Перенаправляет к поставщику. После согласия пользователя тот вернёт его на callback, и сервис выдаст пару токенов. С access-токеном в заголовке вместо входа выполняется привязка аккаунта соцсети к текущему пользователю: завершить её может только тот же вход, пока он действует.",
+        "operationId": "oauth_login_auth_api_v1_oauth__provider__login_get",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "307": {
+            "description": "Переход на страницу входа поставщика",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`provider_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "provider_not_found": {
+                    "summary": "Unknown social provider or it is not configured",
+                    "value": {
+                      "code": "provider_not_found",
+                      "detail": "Unknown social provider or it is not configured"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`token_expired`, `token_invalid`, `token_revoked`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "token_expired": {
+                    "summary": "Token has expired",
+                    "value": {
+                      "code": "token_expired",
+                      "detail": "Token has expired"
+                    }
+                  },
+                  "token_invalid": {
+                    "summary": "Token is malformed or its signature is invalid",
+                    "value": {
+                      "code": "token_invalid",
+                      "detail": "Token is malformed or its signature is invalid"
+                    }
+                  },
+                  "token_revoked": {
+                    "summary": "Session has been terminated, log in again",
+                    "value": {
+                      "code": "token_revoked",
+                      "detail": "Session has been terminated, log in again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/oauth/{provider}/callback": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Возврат от соцсети",
+        "description": "Меняет код поставщика на пару токенов. Если вход начинали с access-токеном, аккаунт привязывается к текущему пользователю, и токены не выдаются; привязка не состоится, если к этому времени тот вход закончился — сессию закрыли или сменили пароль. Первый вход через соцсеть заводит учётную запись без пароля: задать его можно в личном кабинете.",
+        "operationId": "oauth_callback_auth_api_v1_oauth__provider__callback_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Одноразовый код от поставщика",
+              "default": "",
+              "title": "Code"
+            },
+            "description": "Одноразовый код от поставщика"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Значение, с которым начинали вход",
+              "default": "",
+              "title": "State"
+            },
+            "description": "Значение, с которым начинали вход"
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Причина отказа, если поставщик его вернул",
+              "title": "Error"
+            },
+            "description": "Причина отказа, если поставщик его вернул"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialLoginSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`oauth_provider_unavailable`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "oauth_provider_unavailable": {
+                    "summary": "Social provider is unavailable, try again later",
+                    "value": {
+                      "code": "oauth_provider_unavailable",
+                      "detail": "Social provider is unavailable, try again later"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`oauth_state_invalid`, `oauth_rejected`, `social_link_expired`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "oauth_state_invalid": {
+                    "summary": "Login through the social provider has expired, start again",
+                    "value": {
+                      "code": "oauth_state_invalid",
+                      "detail": "Login through the social provider has expired, start again"
+                    }
+                  },
+                  "oauth_rejected": {
+                    "summary": "Social provider did not confirm the login, start again",
+                    "value": {
+                      "code": "oauth_rejected",
+                      "detail": "Social provider did not confirm the login, start again"
+                    }
+                  },
+                  "social_link_expired": {
+                    "summary": "The session that started linking is no longer valid, log in and start again",
+                    "value": {
+                      "code": "social_link_expired",
+                      "detail": "The session that started linking is no longer valid, log in and start again"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`social_account_taken`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "social_account_taken": {
+                    "summary": "This social account is already linked to another user",
+                    "value": {
+                      "code": "social_account_taken",
+                      "detail": "This social account is already linked to another user"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`provider_not_found`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "provider_not_found": {
+                    "summary": "Unknown social provider or it is not configured",
+                    "value": {
+                      "code": "provider_not_found",
+                      "detail": "Unknown social provider or it is not configured"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/api/v1/users/contacts": {
+      "post": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "Контакты пользователей пачкой",
+        "description": "Отдаёт почту, имя и часовой пояс перечисленных пользователей одним запросом. Ненайденные идентификаторы в ответе отсутствуют, порядок ответа не совпадает с порядком запроса — сопоставляйте по `id`. За один раз можно спросить не больше 1000 пользователей.",
+        "operationId": "contacts_auth_api_v1_users_contacts_post",
+        "parameters": [
+          {
+            "name": "X-Service-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Общий секрет служебного доступа",
+              "title": "X-Service-Token"
+            },
+            "description": "Общий секрет служебного доступа"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactsRequestSchema"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContactSchema"
+                  },
+                  "title": "Response Contacts Auth Api V1 Users Contacts Post"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`service_token_invalid`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "service_token_invalid": {
+                    "summary": "Valid X-Service-Token header is required",
+                    "value": {
+                      "code": "service_token_invalid",
+                      "detail": "Valid X-Service-Token header is required"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "directory"
+        ],
+        "summary": "Обход всех пользователей с почтой",
+        "description": "Страница контактов по возрастанию идентификатора — для рассылки одинакового письма всем. Листание по ключу, а не по смещению: на миллионах записей `OFFSET` перечитывал бы всё предыдущее. Пользователи без почты пропускаются.",
+        "operationId": "contacts_page_auth_api_v1_users_contacts_get",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Идентификатор последнего пользователя прошлой страницы; в первом запросе не указывается",
+              "title": "After"
+            },
+            "description": "Идентификатор последнего пользователя прошлой страницы; в первом запросе не указывается"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "Размер страницы",
+              "default": 500,
+              "title": "Limit"
+            },
+            "description": "Размер страницы"
+          },
+          {
+            "name": "X-Service-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Общий секрет служебного доступа",
+              "title": "X-Service-Token"
+            },
+            "description": "Общий секрет служебного доступа"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactsPageSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL или Redis временно недоступны",
+            "content": {
+              "application/json": {
+                "example": {
+                  "code": "service_unavailable",
+                  "detail": "Service temporarily unavailable, retry later"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`service_token_invalid`",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "service_token_invalid": {
+                    "summary": "Valid X-Service-Token header is required",
+                    "value": {
+                      "code": "service_token_invalid",
+                      "detail": "Valid X-Service-Token header is required"
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccessCheckSchema": {
+        "properties": {
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id",
+            "description": "Пользователь из токена; null — анонимный запрос"
+          },
+          "permission": {
+            "type": "string",
+            "title": "Permission",
+            "description": "Проверенное право",
+            "examples": [
+              "films.subscription"
+            ]
+          },
+          "allowed": {
+            "type": "boolean",
+            "title": "Allowed",
+            "description": "Есть ли у пользователя это право"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "permission",
+          "allowed"
+        ],
+        "title": "AccessCheckSchema",
+        "description": "Результат проверки права."
+      },
+      "ChangeLoginSchema": {
+        "properties": {
+          "new_login": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_.@+-]+$",
+            "title": "New Login",
+            "description": "Логин: латиница, цифры и символы _.@+-, регистр не учитывается",
+            "examples": [
+              "neo"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "description": "Текущий пароль",
+            "examples": [
+              "followtherabbit"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "new_login",
+          "password"
+        ],
+        "title": "ChangeLoginSchema",
+        "description": "Смена логина."
+      },
+      "ChangePasswordSchema": {
+        "properties": {
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "description": "Текущий пароль",
+                "examples": [
+                  "followtherabbit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password",
+            "description": "Текущий пароль; не нужен, только если пароля ещё нет"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "New Password",
+            "description": "Пароль, от 8 до 128 символов",
+            "examples": [
+              "followtherabbit"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "new_password"
+        ],
+        "title": "ChangePasswordSchema",
+        "description": "Смена пароля.\n\nТекущий пароль не передаётся в одном случае: у пользователя, заведённого\nвходом через соцсеть, пароля ещё нет, и он задаёт первый."
+      },
+      "ContactSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор пользователя"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login",
+            "description": "Логин",
+            "examples": [
+              "neo"
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name",
+            "description": "Имя",
+            "examples": [
+              "Томас"
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name",
+            "description": "Фамилия",
+            "examples": [
+              "Андерсон"
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone",
+            "description": "Часовой пояс IANA",
+            "examples": [
+              "Europe/Moscow"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "login",
+          "email",
+          "first_name",
+          "last_name",
+          "timezone"
+        ],
+        "title": "ContactSchema",
+        "description": "Контакты пользователя для сервиса уведомлений."
+      },
+      "ContactsPageSchema": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContactSchema"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Контакты по возрастанию идентификатора"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After",
+            "description": "Что передать в параметре after за следующей страницей; null — страниц больше нет"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_after"
+        ],
+        "title": "ContactsPageSchema",
+        "description": "Страница контактов при обходе всех пользователей."
+      },
+      "ContactsRequestSchema": {
+        "properties": {
+          "user_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "User Ids",
+            "description": "Идентификаторы пользователей, не больше 1000 за запрос"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_ids"
+        ],
+        "title": "ContactsRequestSchema",
+        "description": "Запрос контактов пачкой."
+      },
+      "ErrorSchema": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "Код ошибки для программ",
+            "examples": [
+              "token_expired"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "Описание для человека",
+            "examples": [
+              "Access token has expired"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "ErrorSchema",
+        "description": "Ошибка."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LoginRecordSchema": {
+        "properties": {
+          "user_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent",
+            "description": "User-Agent устройства",
+            "examples": [
+              "Mozilla/5.0 (Macintosh)"
+            ]
+          },
+          "ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip",
+            "description": "IP-адрес",
+            "examples": [
+              "203.0.113.7"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Время входа"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_agent",
+          "ip",
+          "created_at"
+        ],
+        "title": "LoginRecordSchema",
+        "description": "Вход в аккаунт."
+      },
+      "LoginSchema": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Login",
+            "description": "Логин",
+            "examples": [
+              "neo"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "description": "Текущий пароль",
+            "examples": [
+              "followtherabbit"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "login",
+          "password"
+        ],
+        "title": "LoginSchema",
+        "description": "Вход по логину и паролю."
+      },
+      "ProfileSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login",
+            "description": "Логин",
+            "examples": [
+              "neo"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Когда зарегистрирован"
+          },
+          "is_superuser": {
+            "type": "boolean",
+            "title": "Is Superuser",
+            "description": "Суперпользователю разрешено всё"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/RoleShortSchema"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "Роли пользователя"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта для уведомлений",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name",
+            "description": "Имя",
+            "examples": [
+              "Томас"
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name",
+            "description": "Фамилия",
+            "examples": [
+              "Андерсон"
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone",
+            "description": "Часовой пояс IANA",
+            "examples": [
+              "Europe/Moscow"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "login",
+          "created_at",
+          "is_superuser",
+          "roles"
+        ],
+        "title": "ProfileSchema",
+        "description": "Данные пользователя в личном кабинете."
+      },
+      "ProfileUpdateSchema": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 254,
+                "description": "Почта для уведомлений; пустая строка очищает поле",
+                "examples": [
+                  "neo@example.com"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Пустая строка очищает поле",
+                "examples": [
+                  "Томас"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Пустая строка очищает поле",
+                "examples": [
+                  "Томас"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "description": "Часовой пояс IANA; пустая строка очищает поле",
+                "examples": [
+                  "Europe/Moscow"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "type": "object",
+        "title": "ProfileUpdateSchema",
+        "description": "Изменение контактов и имени.\n\nПрисланы только те поля, которые нужно поменять. Пустая строка очищает\nполе — так его можно убрать, не изобретая отдельного эндпоинта."
+      },
+      "ProviderSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Имя поставщика в адресах",
+            "examples": [
+              "yandex"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Название для человека",
+            "examples": [
+              "Яндекс ID"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "title"
+        ],
+        "title": "ProviderSchema",
+        "description": "Соцсеть, через которую можно войти."
+      },
+      "RefreshSchema": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Refresh Token",
+            "description": "refresh-токен из ответа на вход или прошлое обновление"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshSchema",
+        "description": "Обмен refresh-токена на новую пару токенов."
+      },
+      "RoleCreateSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 2,
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "title": "Name",
+            "description": "Уникальное имя: латиница в нижнем регистре, цифры, _ и -",
+            "examples": [
+              "subscribers"
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Описание"
+          },
+          "permissions": {
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+              "examples": [
+                "films.subscription"
+              ]
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Permissions",
+            "description": "Права роли",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "RoleCreateSchema",
+        "description": "Новая роль."
+      },
+      "RoleSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Имя роли",
+            "examples": [
+              "subscribers"
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Описание",
+            "examples": [
+              "Подписчики: фильмы по подписке"
+            ]
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Permissions",
+            "description": "Права роли",
+            "examples": [
+              [
+                "films.subscription"
+              ]
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Когда создана"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Когда изменена"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "permissions",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RoleSchema",
+        "description": "Роль и её права."
+      },
+      "RoleShortSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Имя роли",
+            "examples": [
+              "subscribers"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "RoleShortSchema",
+        "description": "Роль пользователя."
+      },
+      "RoleUpdateSchema": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 2,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Новое имя",
+            "examples": [
+              "subscribers"
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Новое описание"
+          },
+          "permissions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+                  "examples": [
+                    "films.subscription"
+                  ]
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permissions",
+            "description": "Новый список прав целиком"
+          }
+        },
+        "type": "object",
+        "title": "RoleUpdateSchema",
+        "description": "Изменение роли: меняются только переданные поля."
+      },
+      "SignupSchema": {
+        "properties": {
+          "login": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_.@+-]+$",
+            "title": "Login",
+            "description": "Логин: латиница, цифры и символы _.@+-, регистр не учитывается",
+            "examples": [
+              "neo"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Password",
+            "description": "Пароль, от 8 до 128 символов",
+            "examples": [
+              "followtherabbit"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "login",
+          "password"
+        ],
+        "title": "SignupSchema",
+        "description": "Регистрация."
+      },
+      "SocialAccountSchema": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Имя поставщика",
+            "examples": [
+              "yandex"
+            ]
+          },
+          "social_id": {
+            "type": "string",
+            "title": "Social Id",
+            "description": "Идентификатор аккаунта у поставщика",
+            "examples": [
+              "1234567890"
+            ]
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name",
+            "description": "Имя владельца в соцсети",
+            "examples": [
+              "Нео"
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Почта в соцсети",
+            "examples": [
+              "neo@example.com"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Когда аккаунт привязан"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "social_id",
+          "display_name",
+          "email",
+          "created_at"
+        ],
+        "title": "SocialAccountSchema",
+        "description": "Аккаунт в соцсети, привязанный к учётной записи."
+      },
+      "SocialLoginSchema": {
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenPairSchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Пара токенов; null — аккаунт привязан к текущему пользователю"
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SocialAccountSchema"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Привязанный аккаунт; null — это был вход"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created",
+            "description": "Учётная запись заведена этим входом"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tokens",
+          "account",
+          "created"
+        ],
+        "title": "SocialLoginSchema",
+        "description": "Итог возврата от поставщика: вход или привязка аккаунта."
+      },
+      "TokenPairSchema": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token",
+            "description": "JWT для доступа к API, живёт недолго"
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token",
+            "description": "JWT для получения новой пары, одноразовый"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "description": "Тип токена для заголовка Authorization",
+            "default": "bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "Через сколько секунд истечёт access-токен",
+            "examples": [
+              900
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_in"
+        ],
+        "title": "TokenPairSchema",
+        "description": "Пара токенов. access-токен передаётся в заголовке `Authorization: Bearer <token>`."
+      },
+      "UserSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Идентификатор"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login",
+            "description": "Логин",
+            "examples": [
+              "neo"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Когда зарегистрирован"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "login",
+          "created_at"
+        ],
+        "title": "UserSchema",
+        "description": "Пользователь."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "accessToken": {
+        "type": "http",
+        "description": "access-токен из ответа на вход или обновление токенов",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Регистрация, вход, обновление токенов и выход."
+    },
+    {
+      "name": "profile",
+      "description": "Личный кабинет: данные, смена логина и пароля, история входов."
+    },
+    {
+      "name": "roles",
+      "description": "Управление ролями. Нужно право `access.manage`."
+    },
+    {
+      "name": "access",
+      "description": "Назначение ролей пользователям и проверка прав."
+    },
+    {
+      "name": "oauth",
+      "description": "Вход через соцсети: сторона потребителя OAuth 2.0."
+    },
+    {
+      "name": "directory",
+      "description": "Служебный справочник контактов для сервиса уведомлений. Доступ по заголовку `X-Service-Token`; пока секрет не задан, доступа нет ни у кого."
+    }
+  ]
+}

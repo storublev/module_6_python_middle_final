@@ -1,0 +1,618 @@
+# Переменные из .env попадают во все контейнеры. Для отсутствующих в нём
+# переменных действуют значения по умолчанию из environment (${VAR:-default}),
+# которые перекрывают env_file. Без значений по умолчанию только секреты
+# сервиса авторизации: compose не запустится, пока они не заданы в .env.
+x-env-file: &env-file
+  - path: .env
+    required: false
+
+# Настройки сервиса авторизации: у него своя база и свой Redis.
+x-auth-env: &auth-env
+  AUTH_POSTGRES_HOST: auth-postgres
+  AUTH_POSTGRES_PORT: 5432
+  AUTH_POSTGRES_DB: ${AUTH_POSTGRES_DB:-auth}
+  AUTH_POSTGRES_USER: ${AUTH_POSTGRES_USER:-auth}
+  AUTH_POSTGRES_PASSWORD: ${AUTH_POSTGRES_PASSWORD:?задайте AUTH_POSTGRES_PASSWORD в .env}
+  AUTH_REDIS_HOST: auth-redis
+  AUTH_REDIS_PORT: 6379
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  AUTH_LOG_LEVEL: ${AUTH_LOG_LEVEL:-INFO}
+  # Служебный доступ к справочнику контактов: им пользуется сервис
+  # уведомлений, чтобы собрать письмо по одному user_id.
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  # Вход через соцсети. Поставщик включается, только если заданы обе его
+  # переменные; без них его эндпоинты отвечают 404, а сервис работает как прежде.
+  AUTH_OAUTH_YANDEX_CLIENT_ID: ${AUTH_OAUTH_YANDEX_CLIENT_ID:-}
+  AUTH_OAUTH_YANDEX_CLIENT_SECRET: ${AUTH_OAUTH_YANDEX_CLIENT_SECRET:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_ID: ${AUTH_OAUTH_GOOGLE_CLIENT_ID:-}
+  AUTH_OAUTH_GOOGLE_CLIENT_SECRET: ${AUTH_OAUTH_GOOGLE_CLIENT_SECRET:-}
+  # Адрес возврата собирается отсюда; он же прописывается у поставщика.
+  AUTH_OAUTH_REDIRECT_BASE_URL: ${AUTH_OAUTH_REDIRECT_BASE_URL:-http://localhost}
+  # Куда уходят спаны трассировки. Пустое значение выключает трассировку.
+  AUTH_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  AUTH_SENTRY_DSN: ${SENTRY_DSN:-}
+  AUTH_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
+# Настройки админки. База у неё общая с ETL — это тот же
+# каталог фильмов; пароли сотрудников хранит сервис авторизации.
+x-admin-env: &admin-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?задайте DJANGO_SECRET_KEY в .env}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost,http://127.0.0.1}
+  DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+  DJANGO_POSTGRES_HOST: postgres
+  DJANGO_POSTGRES_PORT: 5432
+  DJANGO_POSTGRES_DB: ${POSTGRES_DB:-movies_database}
+  DJANGO_POSTGRES_USER: ${POSTGRES_USER:-app}
+  DJANGO_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
+  DJANGO_AUTH_API_URL: http://auth:8000
+  # Страницы рассылок ходят в сервис уведомлений служебным секретом:
+  # своего пользователя в нём у админки нет.
+  DJANGO_NOTIFY_API_URL: http://notify-api:8000
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  DJANGO_STATIC_ROOT: /opt/app/staticfiles
+
+# Настройки сервиса уведомлений. Секреты общие с сервисом авторизации: ключ
+# подписи токенов — потому что подпись проверяется тем же секретом, которым
+# выпущена, а служебный токен — потому что им сервис ходит в справочник
+# контактов, а админка и другие сервисы ходят в него самого.
+x-notify-env: &notify-env
+  NOTIFY_POSTGRES_HOST: notify-postgres
+  NOTIFY_POSTGRES_PORT: 5432
+  NOTIFY_POSTGRES_DB: ${NOTIFY_POSTGRES_DB:-notifications}
+  NOTIFY_POSTGRES_USER: ${NOTIFY_POSTGRES_USER:-notifications}
+  NOTIFY_POSTGRES_PASSWORD: ${NOTIFY_POSTGRES_PASSWORD:?задайте NOTIFY_POSTGRES_PASSWORD в .env}
+  NOTIFY_RABBIT_URL: amqp://${RABBIT_USER:-notify}:${RABBIT_PASSWORD:?задайте RABBIT_PASSWORD в .env}@rabbitmq:5672/
+  NOTIFY_LOG_LEVEL: ${NOTIFY_LOG_LEVEL:-INFO}
+  NOTIFY_AUTH_URL: http://auth:8000
+  NOTIFY_WEBSOCKET_URL: http://notify-ws:8000
+  NOTIFY_PUBLIC_BASE_URL: ${NOTIFY_PUBLIC_BASE_URL:-http://localhost}
+  # Почтовый сервер. По умолчанию — приёмник Mailpit в этом же стеке: на нём
+  # видно, что именно ушло бы зрителю, а настоящую почту в учебном стенде
+  # рассылать незачем. Для реального сервера достаточно сменить эти переменные.
+  NOTIFY_SMTP_HOST: ${NOTIFY_SMTP_HOST:-mailpit}
+  NOTIFY_SMTP_PORT: ${NOTIFY_SMTP_PORT:-1025}
+  NOTIFY_SMTP_USE_TLS: ${NOTIFY_SMTP_USE_TLS:-false}
+  NOTIFY_SMTP_USER: ${NOTIFY_SMTP_USER:-}
+  NOTIFY_SMTP_PASSWORD: ${NOTIFY_SMTP_PASSWORD:-}
+  NOTIFY_SMTP_FROM: ${NOTIFY_SMTP_FROM:-Practix <noreply@practix.local>}
+  NOTIFY_RETRY_DELAY: ${NOTIFY_RETRY_DELAY:-60}
+  NOTIFY_QUIET_HOURS_START: ${NOTIFY_QUIET_HOURS_START:-21}
+  NOTIFY_QUIET_HOURS_END: ${NOTIFY_QUIET_HOURS_END:-9}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  NOTIFY_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  NOTIFY_SENTRY_DSN: ${SENTRY_DSN:-}
+  NOTIFY_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
+# Настройки сервиса бронирования. Секреты общие с сервисом авторизации: ключ
+# подписи — чтобы проверять токены на месте, служебный токен — чтобы ходить в
+# справочник имён и в API уведомлений (ADR-23 в docs/diploma/architecture.md).
+x-booking-env: &booking-env
+  BOOKING_POSTGRES_HOST: booking-postgres
+  BOOKING_POSTGRES_PORT: 5432
+  BOOKING_POSTGRES_DB: ${BOOKING_POSTGRES_DB:-booking}
+  BOOKING_POSTGRES_USER: ${BOOKING_POSTGRES_USER:-booking}
+  BOOKING_POSTGRES_PASSWORD: ${BOOKING_POSTGRES_PASSWORD:?задайте BOOKING_POSTGRES_PASSWORD в .env}
+  BOOKING_CATALOG_URL: http://api:8000
+  BOOKING_AUTH_URL: http://auth:8000
+  BOOKING_NOTIFY_URL: http://notify-api:8000
+  BOOKING_PUBLIC_BASE_URL: ${BOOKING_PUBLIC_BASE_URL:-http://localhost}
+  BOOKING_LOG_LEVEL: ${BOOKING_LOG_LEVEL:-INFO}
+  AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+  AUTH_SERVICE_TOKEN: ${AUTH_SERVICE_TOKEN:?задайте AUTH_SERVICE_TOKEN в .env}
+  BOOKING_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+  # В трассировку попадает каждый десятый запрос: полная трассировка съедает
+  # четверть пропускной способности (docs/diploma/load/).
+  BOOKING_OTLP_SAMPLE_RATIO: ${OTLP_SAMPLE_RATIO:-0.1}
+  BOOKING_SENTRY_DSN: ${SENTRY_DSN:-}
+  BOOKING_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+
+services:
+  postgres:
+    # Та же версия, что у базы сервиса авторизации: одна версия PostgreSQL на
+    # стек. Админке нужна не ниже 14 — столько требует Django 5.2.
+    image: postgres:16-alpine
+    env_file: *env-file
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-movies_database}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Дамп каталога: фильмы, жанры, персоны, данные Кинопоиска и картинки
+      # обложек (схема content). Разворачивается только в пустой том, по
+      # алфавиту: сначала тип фильма из схемы public, затем сам дамп.
+      - ./etl/sql/initdb/00_types.sql:/docker-entrypoint-initdb.d/00_types.sql:ro
+      - ./etl/dump.sql.gz:/docker-entrypoint-initdb.d/10_dump.sql.gz:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  etl:
+    build: ./etl
+    env_file: *env-file
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-movies_database}
+      DB_USER: ${POSTGRES_USER:-app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-123qwe}
+      ELASTIC_HOST: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  elasticsearch:
+    image: elasticsearch:8.5.3
+    env_file: *env-file
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms512m -Xmx512m}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    env_file: *env-file
+    # Redis здесь только кеш: персистентность не нужна, при нехватке памяти
+    # вытесняются давно не использованные ключи.
+    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file: *env-file
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-movies}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Адреса зависят от сети compose, поэтому заданы здесь, а не в .env.
+      ELASTIC_HOST: elasticsearch
+      ELASTIC_PORT: 9200
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AUTH_API_URL: http://auth:8000
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+      CACHE_EXPIRE_IN_SECONDS: ${CACHE_EXPIRE_IN_SECONDS:-300}
+      WEB_CONCURRENCY: ${API_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Права на подписочные фильмы спрашиваются у сервиса авторизации. Ждать
+      # его готовности удобно, но не обязательно: откажи он позже, выдача
+      # деградирует до публичных фильмов, а не упадёт.
+      auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Собирает спаны всех сервисов и показывает по ним дерево запроса. Версия
+  # all-in-one держит трейсы в памяти: для разработки этого хватает, а
+  # отдельные agent, collector и хранилище не нужны.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Веб-интерфейс: http://localhost:16686
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    restart: unless-stopped
+
+  # Сервис авторизации хранит персональные данные, поэтому его база отделена
+  # от базы фильмов и наружу не открыта.
+  auth-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${AUTH_POSTGRES_DB:-auth}
+      POSTGRES_USER: ${AUTH_POSTGRES_USER:-auth}
+      POSTGRES_PASSWORD: ${AUTH_POSTGRES_PASSWORD:?задайте AUTH_POSTGRES_PASSWORD в .env}
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  auth-redis:
+    image: redis:7.4-alpine
+    # Сессии пользователей и кеш прав. В отличие от кеша API, вытеснять ключи
+    # нельзя — пропали бы сессии, а журнал AOF сохраняет их при перезапуске.
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction
+    volumes:
+      - auth_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Одноразовый контейнер: применяет миграции и завершается. Сервис стартует
+  # после него, а реплики сервиса не применяют миграции наперегонки.
+  auth-migrations:
+    build: ./auth
+    image: movies-auth
+    environment: *auth-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  auth:
+    build: ./auth
+    image: movies-auth
+    environment:
+      <<: *auth-env
+      WEB_CONCURRENCY: ${AUTH_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      auth-migrations:
+        condition: service_completed_successfully
+      auth-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/auth/api/openapi.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Одноразовый контейнер админки: заводит свои таблицы (сотрудники, сессии,
+  # журнал действий) в схеме public базы фильмов и выкладывает статику в том,
+  # из которого её раздаёт nginx. Каталог (схема content) создаётся дампом ETL,
+  # и Django его не мигрирует.
+  django-admin-migrations:
+    build: ./admin_panel
+    image: movies-admin
+    environment: *admin-env
+    command: >
+      sh -c "python manage.py migrate --no-input &&
+             python manage.py collectstatic --no-input --clear"
+    volumes:
+      - admin_static:/opt/app/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  django-admin:
+    build: ./admin_panel
+    image: movies-admin
+    environment:
+      <<: *admin-env
+      WEB_CONCURRENCY: ${ADMIN_WORKERS:-2}
+    expose:
+      - 8000
+    depends_on:
+      django-admin-migrations:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Сервис уведомлений ──────────────────────────────────────────────────
+  # Пять процессов из одного образа: API, три воркера конвейера и генератор
+  # событий, плюс websocket-шлюз. Разделение не декоративное: у сборщика узкое
+  # место — чужие сервисы, у отправителя — почтовый сервер, и масштабируются
+  # они независимо (ADR-10 в docs/architecture/notifications.md).
+  notify-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${NOTIFY_POSTGRES_DB:-notifications}
+      POSTGRES_USER: ${NOTIFY_POSTGRES_USER:-notifications}
+      POSTGRES_PASSWORD: ${NOTIFY_POSTGRES_PASSWORD:?задайте NOTIFY_POSTGRES_PASSWORD в .env}
+    volumes:
+      - notify_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFY_POSTGRES_USER:-notifications}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER:-notify}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:?задайте RABBIT_PASSWORD в .env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      # Панель управления брокером: по ней видно длину очередей и возраст
+      # самого старого сообщения — единственную метрику, по которой понятно,
+      # что рассылка встала.
+      - "${RABBIT_UI_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # Приёмник почты для стенда: письма никуда не уходят, но их видно целиком.
+  # Настоящий SMTP подключается сменой NOTIFY_SMTP_* — код при этом не меняется.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    restart: unless-stopped
+
+  notify-migrations:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      notify-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  notify-api:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      WEB_CONCURRENCY: ${NOTIFY_WORKERS:-2}
+    expose:
+      - 8000
+    # RabbitMQ API не нужен: события ставятся в очередь через outbox в базе,
+    # и API принимает их, даже когда брокер лежит.
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/notify/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  notify-planner:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: plan
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-render:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: render
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-sender:
+    build: ./notifications
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: send
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Ретранслятор outbox: переносит задания из базы в RabbitMQ. Экземпляров
+  # может быть несколько — задания разбираются через SKIP LOCKED.
+  notify-relay:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "relay.py"]
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-scheduler:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "scheduler.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notify-ws:
+    build: ./notifications
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "ws.py"]
+    expose:
+      - 8000
+    depends_on:
+      notify-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ── Бронирование билетов (дипломный проект) ─────────────────────────────
+  # База, одноразовые миграции, API и ретранслятор outbox из одного образа.
+  # Своя база — потому что у брони свой жизненный цикл и своя цена ошибки
+  # (ADR-19, ADR-20 в docs/diploma/architecture.md).
+  booking-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${BOOKING_POSTGRES_DB:-booking}
+      POSTGRES_USER: ${BOOKING_POSTGRES_USER:-booking}
+      POSTGRES_PASSWORD: ${BOOKING_POSTGRES_PASSWORD:?задайте BOOKING_POSTGRES_PASSWORD в .env}
+    volumes:
+      - booking_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  booking-migrations:
+    build: ./booking
+    image: movies-booking
+    environment: *booking-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      booking-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  booking-api:
+    build: ./booking
+    image: movies-booking
+    environment:
+      <<: *booking-env
+      # Четыре процесса: сервис упирается в процессор (сериализация JSON,
+      # pydantic), а не в базу — замер scripts/load_check.py.
+      WEB_CONCURRENCY: ${BOOKING_WORKERS:-4}
+    expose:
+      - 8000
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/booking/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Переносит события о бронях в API уведомлений. Сервис уведомлений лежит —
+  # события ждут в базе бронирования и уходят после его подъёма (НФТ-4).
+  booking-relay:
+    build: ./booking
+    image: movies-booking
+    environment: *booking-env
+    command: ["python", "relay.py"]
+    depends_on:
+      booking-migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Интерфейс кинотеатра: каталог с обложками, карточка фильма, бронирование.
+  # Ходит во внутренние API напрямую по сети compose, мимо nginx.
+  web:
+    build: ./web
+    image: movies-web
+    environment:
+      WEB_CATALOG_URL: http://api:8000
+      WEB_BOOKING_URL: http://booking-api:8000
+      WEB_AUTH_URL: http://auth:8000
+      WEB_LOG_LEVEL: ${WEB_LOG_LEVEL:-INFO}
+      WEB_COOKIE_SECURE: ${WEB_COOKIE_SECURE:-false}
+      AUTH_JWT_SECRET_KEY: ${AUTH_JWT_SECRET_KEY:?задайте AUTH_JWT_SECRET_KEY в .env}
+      WEB_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      WEB_OTLP_SAMPLE_RATIO: ${OTLP_SAMPLE_RATIO:-0.1}
+      WEB_SENTRY_DSN: ${SENTRY_DSN:-}
+      WEB_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-local}
+      # Четыре процесса: рендер страниц — работа процессора.
+      WEB_CONCURRENCY: ${WEB_WORKERS:-4}
+    expose:
+      - 8000
+    depends_on:
+      api:
+        condition: service_started
+      booking-api:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    env_file: *env-file
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # Статику админки отдаёт nginx, а не Django: так gunicorn занят только
+      # страницами, а браузер получает файлы с длинным сроком хранения.
+      - admin_static:/usr/share/nginx/html/static:ro
+      # Журнал доступа в JSON: отсюда его забирает filebeat и везёт в ELK
+      # (deploy/observability/). Том общий с тем стеком, поэтому у него
+      # фиксированное имя.
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      - api
+      - auth
+      - django-admin
+      - notify-api
+      - notify-ws
+      - booking-api
+      - web
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  # Имя фиксировано: этот том подключает к себе и стек наблюдаемости
+  # (deploy/observability/docker-compose.yml), а имена по умолчанию у разных
+  # проектов compose разные.
+  nginx_logs:
+    name: cinema_nginx_logs
+  elasticsearch_data:
+  auth_postgres_data:
+  auth_redis_data:
+  admin_static:
+  notify_postgres_data:
+  rabbitmq_data:
+  booking_postgres_data:

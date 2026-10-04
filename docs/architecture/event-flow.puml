@@ -1,0 +1,105 @@
+@startuml event-flow
+' Дополнительная диаграмма к схеме TO BE: путь одного события от клика до
+' аналитического запроса. На схеме уровня 2 видно, кто с кем связан, но не
+' видно, где событие может потеряться и что происходит при сбое, — а именно
+' это в сборе событий и есть главное.
+title Путь события: от клика до аналитического запроса
+
+skinparam responseMessageBelowArrow true
+
+actor "Зритель" as viewer
+participant "Клиентское\nприложение" as client
+participant "Шлюз\nnginx" as nginx
+participant "Сервис сбора\nсобытий" as ugc
+queue "Kafka\nugc.events" as kafka
+participant "ETL\nсобытий" as etl
+database "ClickHouse" as ch
+actor "Аналитик" as analyst
+
+viewer -> client : кликает по карточке фильма
+activate client
+client -> client : кладёт событие в локальную очередь
+note right of client
+  События копятся и уходят пачкой:
+  не чаще раза в 10 секунд или
+  по 20 накопленных событий.
+  Так 4 200 событий в секунду
+  превращаются в 420 запросов.
+end note
+
+client -> nginx : POST /ugc/api/v1/events\nAuthorization: Bearer <access>\n[20 событий]
+activate nginx
+nginx -> ugc : тот же запрос + X-Request-Id
+activate ugc
+
+ugc -> ugc : проверяет подпись и срок access-токена\nобщим секретом с сервисом авторизации
+note right of ugc
+  Сетевого вызова в сервис авторизации нет:
+  на 420 запросов в секунду он стал бы
+  узким местом, а для аналитики хватает
+  подписи и срока жизни токена.
+end note
+
+ugc -> ugc : проверяет контракт каждого события
+ugc -> kafka : produce (ключ — session_id), acks=all
+activate kafka
+kafka --> ugc : подтверждение записи в реплики
+deactivate kafka
+ugc --> nginx : 202 Accepted\n{"accepted": 19, "rejected": 1}
+deactivate ugc
+nginx --> client : 202 Accepted
+deactivate nginx
+deactivate client
+
+== Сбои на этом участке ==
+
+alt Kafka недоступна
+    ugc -> kafka : produce
+    kafka --> ugc : ошибка после повторов
+    ugc --> nginx : 503 Service Unavailable
+    note right of ugc
+      Клиент не удаляет события из своей
+      очереди и повторит их позже:
+      потеря укладывается в допустимые 0,1%.
+    end note
+end
+
+== Перенос в аналитическое хранилище ==
+
+loop непрерывно
+    etl -> kafka : poll (группа потребителей ugc-etl)
+    activate etl
+    kafka --> etl : пачка событий
+    etl -> etl : разбирает JSON, приводит типы
+    etl -> ch : INSERT пачкой до 10 000 строк
+    activate ch
+    ch --> etl : ok
+    deactivate ch
+    etl -> kafka : commit смещений
+    note right of etl
+      Смещения коммитятся только после
+      успешной вставки: падение ETL между
+      вставкой и коммитом приведёт к
+      повтору пачки, а не к её потере
+      (at-least-once).
+    end note
+    deactivate etl
+end
+
+alt ClickHouse недоступен
+    etl -> ch : INSERT
+    ch --> etl : ошибка
+    etl -> etl : повторы с экспоненциальной паузой,\nдальше — прерыватель
+    note right of etl
+      Смещения не коммитятся, чтение из Kafka
+      приостанавливается. События ждут в
+      брокере (хранение 7 суток) и доезжают,
+      когда хранилище вернётся.
+    end note
+end
+
+analyst -> ch : SELECT ... GROUP BY film_id
+activate ch
+ch --> analyst : агрегат не дольше 10 секунд
+deactivate ch
+@enduml

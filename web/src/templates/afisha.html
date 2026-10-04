@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import screening_row %}
+{% block title %}Афиша показов{% endblock %}
+{% block content %}
+  <h1>Афиша совместных показов</h1>
+  <p class="muted">Ближайшие показы всех хостов. Хотите свой? Откройте фильм и нажмите «Организовать показ».</p>
+  {% for s in screenings['items'] %}{{ screening_row(s) }}{% else %}<p class="empty">Пока ничего не запланировано.</p>{% endfor %}
+  <nav class="pager">
+    {% if page > 1 %}<a class="btn btn--ghost" href="?page={{ page - 1 }}">← Назад</a>{% endif %}
+    {% if page * screenings.page_size < screenings.total %}<a class="btn btn--ghost" href="?page={{ page + 1 }}">Дальше →</a>{% endif %}
+  </nav>
+{% endblock %}

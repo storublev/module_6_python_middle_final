@@ -1,0 +1,52 @@
+# Лёгкий сборщик логов рядом с сервисами: читает файлы и отправляет в logstash.
+#
+# Два источника. Журнал nginx — файл в общем томе; логи сервисов — файлы
+# json-file драйвера Docker, куда попадает их stdout. Сами сервисы ничего про
+# ELK не знают и просто пишут в stdout — в этом и смысл сборщика.
+filebeat.inputs:
+  - type: filestream
+    id: nginx
+    enabled: true
+    paths:
+      - /var/log/nginx/access.json
+    parsers:
+      # Строки уже в JSON (log_format json в nginx.conf), разбирать их
+      # регулярными выражениями не нужно.
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+    fields_under_root: true
+    fields:
+      source_type: nginx
+
+  - type: container
+    id: services
+    enabled: true
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      - add_docker_metadata:
+          host: unix:///var/run/docker.sock
+      # Логи инфраструктуры — СУБД, брокера, самого ELK — в общий индекс не
+      # берём. Читать их некому, а объёмом они забивают индекс: СУБД и брокер
+      # пишут запись на каждое открытие и закрытие соединения, и за несколько
+      # минут набирают больше строк, чем все сервисы вместе.
+      - drop_event:
+          when:
+            regexp:
+              container.name: '(postgres|redis|rabbitmq|mailpit|elasticsearch|kibana|logstash|filebeat|jaeger|sentry)'
+      # stdout сервисов — тоже JSON (core/logger.py), поэтому раскладываем его
+      # по полям: иначе в Kibana была бы одна строка вместо level и request_id.
+      - decode_json_fields:
+          fields: ["message"]
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+
+output.logstash:
+  enabled: true
+  hosts: ["logstash:5045"]
+
+# Сам filebeat пишет о себе в stdout контейнера, а не в файл.
+logging.to_files: false

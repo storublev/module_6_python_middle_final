@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import screening_row %}
+{% block title %}{{ host.name or 'Хост' }}{% endblock %}
+{% block content %}
+  <section class="profile">
+    <div class="avatar" style="--hue: {{ (host.name or host_id) | hue }}">{{ (host.name or '?')[0] }}</div>
+    <div>
+      <h1>{{ host.name or 'Хост' }}</h1>
+      <div>Как хост: <strong>{{ host.as_host | rating }}</strong></div>
+      <div class="muted">Как гость: {{ host.as_guest | rating }}</div>
+    </div>
+  </section>
+  <h2>Будущие показы</h2>
+  {% for s in screenings['items'] %}{{ screening_row(s, show_host=false) }}{% else %}<p class="muted">Сейчас ничего не запланировано.</p>{% endfor %}
+  <h2>Отзывы гостей</h2>
+  {% for r in reviews['items'] %}
+    <blockquote class="review">
+      <div><span class="star">{{ '★' * r.score }}</span><span class="muted">{{ '★' * (5 - r.score) }}</span> · {{ r.author_name }} <span class="muted">· {{ r.created_at | when }}</span></div>
+      {% if r.comment %}<p>{{ r.comment }}</p>{% endif %}
+    </blockquote>
+  {% else %}
+    <p class="muted">Отзывов пока нет.</p>
+  {% endfor %}
+{% endblock %}

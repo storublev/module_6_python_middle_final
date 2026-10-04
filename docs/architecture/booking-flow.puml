@@ -1,0 +1,51 @@
+@startuml booking-flow
+' Путь брони от кнопки в карточке фильма до письма хосту. Главное здесь —
+' где именно держится гарантия «не больше мест, чем есть»: в одном условном
+' UPDATE внутри транзакции, а не в проверке кода.
+skinparam backgroundColor #ffffff
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 240
+
+title Бронь: выбор хоста, даты и мест
+
+actor "Гость" as guest
+participant "Интерфейс\n(web)" as web
+participant "Async API" as api
+participant "API бронирования" as booking
+database "PostgreSQL\nbooking" as pg
+participant "Ретранслятор\noutbox" as relay
+participant "Сервис\nуведомлений" as notify
+
+guest -> web : GET /films/{id}
+par параллельно
+    web -> api : GET /api/v1/films/{id}
+    web -> booking : GET /films/{id}/hosts
+end
+web --> guest : карточка: обложка, состав, хосты с рейтингом
+
+guest -> web : выбирает хоста
+web -> booking : GET /screenings?film_id&host_id
+web --> guest : даты и время, свободные места
+
+guest -> web : POST /screenings/{id}/book (seats=2)
+web -> booking : POST /screenings/{id}/bookings\nAuthorization: Bearer <access>
+booking -> booking : подпись токена — на месте
+booking -> pg : BEGIN
+booking -> pg : UPDATE screenings SET seats_taken = seats_taken + 2\nWHERE id = … AND status = 'scheduled' AND starts_at > now()\nAND seats_taken + 2 <= capacity RETURNING …
+note right of pg
+  Два гостя на последние места:
+  второй UPDATE ждёт блокировку строки,
+  перепроверяет условие на свежей версии
+  и не находит строку → 409 not_enough_seats
+end note
+booking -> pg : INSERT bookings (уникальна активная бронь гостя)
+booking -> pg : INSERT outbox × 2 (хосту и гостю)
+booking -> pg : COMMIT
+booking --> web : 201 Booking
+web --> guest : 303 → «Мои брони»
+
+relay -> pg : SELECT … FOR UPDATE SKIP LOCKED
+relay -> notify : POST /notify/api/v1/events\nevent_id = id строки outbox
+notify --> relay : 202 accepted
+relay -> pg : DELETE outbox
+@enduml

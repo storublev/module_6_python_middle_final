@@ -1,0 +1,158 @@
+# Изолированное окружение функциональных тестов: API, Elasticsearch, Redis,
+# сервис авторизации со своими хранилищами и контейнер с тестами. Данные тесты
+# создают сами, ETL и база фильмов не нужны.
+#
+#   docker compose -f tests/functional/docker-compose.yml up --build \
+#       --abort-on-container-exit --exit-code-from tests
+#
+# Сервис авторизации здесь настоящий, а не заглушка: так проверяется, что
+# доступ к подписочным фильмам работает по его реальному контракту. Поведение
+# API при его недоступности проверяют модульные тесты — там сбои
+# воспроизводятся точнее, чем гашением контейнера.
+#
+# Порты API, Elasticsearch, Redis и сервиса авторизации проброшены на
+# localhost, чтобы запускать тесты и сервис локально, из IDE, с отладчиком.
+name: movies-api-functional-tests
+
+x-auth-env: &auth-env
+  AUTH_POSTGRES_HOST: auth-postgres
+  AUTH_POSTGRES_PORT: 5432
+  AUTH_POSTGRES_DB: auth
+  AUTH_POSTGRES_USER: auth
+  AUTH_POSTGRES_PASSWORD: auth-tests
+  AUTH_REDIS_HOST: auth-redis
+  AUTH_REDIS_PORT: 6379
+  # Ключ только для тестов.
+  AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+  # Тесты много раз подряд входят одними и теми же учётными записями —
+  # лимиты попыток здесь только мешали бы.
+  AUTH_LOGIN_ATTEMPTS_PER_IP: 1000
+  AUTH_LOGIN_ATTEMPTS_PER_ACCOUNT: 1000
+  AUTH_SIGNUP_ATTEMPTS_PER_IP: 1000
+
+services:
+  elasticsearch:
+    image: elasticsearch:8.5.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "${TEST_ELASTIC_PORT:-9200}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "${TEST_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  auth-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: auth-tests
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  auth-redis:
+    image: redis:7.4-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  auth:
+    # Тот же образ, что уходит в работу. Миграции и суперпользователь заводятся
+    # перед запуском сервиса, а не отдельными контейнерами, как в рабочем
+    # окружении: --abort-on-container-exit остановил бы всё окружение, как
+    # только одноразовый контейнер завершится. Суперпользователь нужен затем,
+    # что роли назначает обладатель права access.manage: под ним тесты выдают
+    # подписку. Повторный запуск на уже заполненной базе не должен падать,
+    # поэтому занятый логин здесь не ошибка.
+    build: ../../auth
+    image: movies-auth
+    environment:
+      <<: *auth-env
+      AUTH_SUPERUSER_PASSWORD: functional-tests-admin
+      WEB_CONCURRENCY: 1
+    command:
+      - sh
+      - -c
+      - alembic upgrade head
+        && (python cli.py createsuperuser --login admin || true)
+        && exec uvicorn main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "${TEST_AUTH_PORT:-8001}:8000"
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+      auth-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/auth/api/openapi.json')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  api:
+    # Тестируется тот же образ, что уходит в работу: Dockerfile из корня проекта.
+    build: ../..
+    image: movies-api
+    environment:
+      ELASTIC_HOST: elasticsearch
+      ELASTIC_PORT: 9200
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AUTH_API_URL: http://auth:8000
+      CACHE_EXPIRE_IN_SECONDS: 300
+      WEB_CONCURRENCY: 2
+    ports:
+      - "${TEST_API_PORT:-8000}:8000"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/openapi.json')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    build:
+      context: ../..
+      dockerfile: tests/functional/Dockerfile
+    environment:
+      ELASTIC_URL: http://elasticsearch:9200
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SERVICE_URL: http://api:8000
+      AUTH_URL: http://auth:8000
+      AUTH_SUPERUSER_LOGIN: admin
+      AUTH_SUPERUSER_PASSWORD: functional-tests-admin
+    depends_on:
+      api:
+        condition: service_healthy

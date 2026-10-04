@@ -1,0 +1,75 @@
+@startuml c4-container-to-be
+' Схема TO BE: та же система после восьмого спринта.
+' Цветом выделено то, ради чего спринт и затевается: зелёное — новое,
+' оранжевое — существующее, но изменённое. Всё остальное не трогаем.
+!include <C4/C4_Container>
+
+title Онлайн-кинотеатр — TO BE (C4, уровень 2): сбор пользовательских действий
+
+AddElementTag("new", $bgColor="#1f7a3d", $fontColor="#ffffff", $borderColor="#0f4423", $legendText="Новый элемент")
+AddElementTag("changed", $bgColor="#b35c00", $fontColor="#ffffff", $borderColor="#7a3f00", $legendText="Изменённый элемент")
+AddRelTag("new", $textColor="#1f7a3d", $lineColor="#1f7a3d", $legendText="Новое взаимодействие")
+
+Person(viewer, "Зритель", "Смотрит фильмы и ищет их в каталоге; его действия и собирает новый сервис")
+Person(staff, "Редактор каталога", "Ведёт фильмы, жанры и персоны в админке")
+Person(analyst, "Аналитик и маркетолог", "Считает по событиям популярность жанров и причины недосмотров", $tags="new")
+
+System_Ext(social, "Яндекс ID / Google", "Внешние поставщики OAuth 2.0")
+
+System_Boundary(cinema, "Онлайн-кинотеатр") {
+    Container(nginx, "Шлюз", "nginx 1.27", "Добавлен маршрут /ugc/ в сервис сбора событий; остальное без изменений", $tags="changed")
+
+    Container(api, "Async API", "Python 3.12, FastAPI, uvicorn", "Отдаёт фильмы, жанры и персоны; события через него не идут")
+    ContainerDb(redis_cache, "Кеш каталога", "Redis 7, LRU", "Ответы API")
+    ContainerDb(elastic, "Поисковый индекс", "Elasticsearch 8.5", "Индексы movies, genres, persons")
+
+    Container(ugc, "Сервис сбора событий", "Python 3.12, Flask, gunicorn + gevent", "Принимает пачки кликов, просмотров страниц и кастомных событий, проверяет токен и кладёт события в брокер", $tags="new")
+    ContainerQueue(kafka, "Брокер событий", "Apache Kafka 3.9, KRaft", "Топик ugc.events: 12 партиций, ключ — id сессии просмотра, хранение 7 дней", $tags="new")
+    Container(ugc_etl, "ETL событий", "Python 3.12, kafka-python", "Непрерывно переносит события в аналитическое хранилище пачками; переживает сбои источника и приёмника, следит за своей памятью", $tags="new")
+    ContainerDb(clickhouse, "Аналитическое хранилище", "ClickHouse 25, MergeTree", "События за три года; агрегаты по фильмам, жанрам и досмотрам", $tags="new")
+
+    Container(auth, "Сервис авторизации", "Python 3.12, FastAPI, uvicorn", "Регистрация, вход, JWT-пара, сессии, роли и права")
+    ContainerDb(auth_pg, "База авторизации", "PostgreSQL 16, схема auth", "Пользователи, роли, история входов, связанные аккаунты")
+    ContainerDb(auth_redis, "Сессии и кеш прав", "Redis 7, AOF, noeviction", "Действующие сессии и наборы прав")
+
+    Container(admin, "Админка каталога", "Python 3.12, Django 5.2, gunicorn", "Редактирование каталога")
+    ContainerDb(pg_movies, "База каталога", "PostgreSQL 16, схема content", "Фильмы, жанры, персоны")
+    Container(etl, "ETL каталога", "Python 3.12", "PostgreSQL → Elasticsearch")
+
+    Container(jaeger, "Сбор трассировки", "Jaeger all-in-one, OTLP", "Спаны всех сервисов, в том числе сбора событий")
+}
+
+Rel(viewer, nginx, "Каталог, вход и отправка событий о своих действиях", "HTTPS/JSON")
+Rel(staff, nginx, "Работа с каталогом", "HTTPS")
+Rel(analyst, clickhouse, "Аналитические запросы", "SQL/HTTP", $tags="new")
+
+Rel(nginx, api, "/api/", "HTTP")
+Rel(nginx, auth, "/auth/", "HTTP")
+Rel(nginx, admin, "/admin/", "HTTP")
+Rel(nginx, ugc, "/ugc/", "HTTP", $tags="new")
+
+Rel(api, elastic, "Читает каталог", "HTTP")
+Rel(api, redis_cache, "Кеширует ответы", "RESP")
+Rel(api, auth, "Проверяет право films.subscription", "HTTP/JSON")
+
+Rel(ugc, kafka, "Пишет события пачками, acks=all", "Kafka protocol", $tags="new")
+Rel(ugc, auth, "Доверяет выпущенным им access-токенам: подпись проверяется на месте общим секретом", "без сетевого вызова", $tags="new")
+Rel(ugc_etl, kafka, "Читает группой потребителей, коммитит смещения после записи", "Kafka protocol", $tags="new")
+Rel(ugc_etl, clickhouse, "Вставляет пачками по 10 000 строк", "HTTP", $tags="new")
+Rel(ugc, jaeger, "Спаны", "OTLP/HTTP", $tags="new")
+
+Rel(auth, auth_pg, "Пользователи, роли, история входов", "asyncpg")
+Rel(auth, auth_redis, "Сессии и кеш прав", "RESP")
+Rel(auth, social, "Обмен кода на токены, профиль", "HTTPS/OAuth 2.0")
+
+Rel(admin, pg_movies, "Читает и правит каталог", "psycopg")
+Rel(admin, auth, "Вход сотрудника и проверка права admin.access", "HTTP/JSON")
+
+Rel(etl, pg_movies, "Забирает изменения", "psycopg")
+Rel(etl, elastic, "Загружает документы", "HTTP")
+
+Rel(api, jaeger, "Спаны", "OTLP/HTTP")
+Rel(auth, jaeger, "Спаны", "OTLP/HTTP")
+
+SHOW_LEGEND()
+@enduml

@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import poster %}
+{% block title %}{{ 'Изменить показ' if screening else 'Новый показ' }}{% endblock %}
+{% block content %}
+  <section class="film-hero film-hero--compact">
+    <div class="film-hero__poster">{{ poster(film.title, film.poster_url, 'poster--medium') }}</div>
+    <div class="film-hero__info">
+      <h1>{{ 'Изменить показ' if screening else 'Организовать показ' }}</h1>
+      <p class="muted">«{{ film.title }}». Гости найдут вас в карточке фильма и забронируют места — больше, чем вы укажете, забронировать не получится.</p>
+      <form method="post" action="{{ '/screenings/' ~ screening.id ~ '/edit' if screening else '/screenings' }}" class="form">
+        {% if not screening %}<input type="hidden" name="film_id" value="{{ film.uuid }}">{% endif %}
+        <label>Дата и время <span class="muted small">(по Москве)</span>
+          <input type="datetime-local" name="starts_at" required value="{{ screening.starts_at | input_value if screening else '' }}">
+        </label>
+        <label>Где собираемся
+          <input type="text" name="place" required maxlength="255" placeholder="Кинотеатр «Октябрь», зал 3" value="{{ screening.place if screening else '' }}">
+        </label>
+        <label>Адрес
+          <input type="text" name="address" required maxlength="512" placeholder="Москва, Новый Арбат, 24" value="{{ screening.address if screening else '' }}">
+        </label>
+        <label>Сколько мест
+          <input type="number" name="capacity" required min="{{ screening.seats_taken if screening and screening.seats_taken else 1 }}" max="50" value="{{ screening.capacity if screening else 6 }}">
+        </label>
+        <label>Что ещё знать гостям
+          <textarea name="description" maxlength="2000" rows="3" placeholder="После фильма — обсуждение в кафе">{{ screening.description or '' if screening else '' }}</textarea>
+        </label>
+        <button class="btn" type="submit">{{ 'Сохранить' if screening else 'Создать показ' }}</button>
+      </form>
+    </div>
+  </section>
+{% endblock %}

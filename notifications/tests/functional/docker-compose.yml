@@ -1,0 +1,257 @@
+# Изолированное окружение функциональных тестов сервиса уведомлений.
+#
+#   docker compose -f notifications/tests/functional/docker-compose.yml up --build \
+#       --abort-on-container-exit --exit-code-from tests
+#
+# Здесь поднимается **настоящий** сервис авторизации, а не заглушка: воркер
+# ходит в его справочник контактов за адресом и именем, и именно этот стык
+# чаще всего и ломается. Заглушка проверяла бы наши ожидания, а не чужой API.
+#
+# Почта уходит в Mailpit: у него есть HTTP-API, поэтому тест читает письмо
+# целиком — тему, тело, адрес, — а не верит журналу отправителя.
+#
+# Порты проброшены на localhost, чтобы запускать тесты локально, из IDE.
+name: notifications-functional-tests
+
+x-notify-env: &notify-env
+  NOTIFY_POSTGRES_HOST: notify-postgres
+  NOTIFY_POSTGRES_DB: notifications
+  NOTIFY_POSTGRES_USER: notifications
+  NOTIFY_POSTGRES_PASSWORD: functional-tests
+  NOTIFY_RABBIT_URL: amqp://notify:functional-tests@rabbitmq:5672/
+  NOTIFY_AUTH_URL: http://auth:8000
+  NOTIFY_WEBSOCKET_URL: http://notify-ws:8000
+  NOTIFY_SMTP_HOST: mailpit
+  NOTIFY_SMTP_PORT: 1025
+  NOTIFY_SMTP_FROM: Practix <noreply@practix.local>
+  # Темп отправки не ограничиваем: на стенде ждать между письмами незачем.
+  NOTIFY_SMTP_RATE_PER_SECOND: 0
+  # Окно тишины выключено: с 0 до 0 тихого времени не существует. Иначе тесты
+  # проходили бы днём и падали ночью, а это худший вид нестабильного теста.
+  NOTIFY_QUIET_HOURS_START: 0
+  NOTIFY_QUIET_HOURS_END: 0
+  # Короткая пауза повтора: тест не должен ждать минуту, чтобы увидеть, что
+  # сообщение вернулось из отложенной очереди.
+  NOTIFY_RETRY_DELAY: 3
+  NOTIFY_PUBLIC_BASE_URL: http://notify-api:8000
+  # Маленькая пачка, чтобы упереться в неё на нескольких получателях.
+  NOTIFY_BATCH_SIZE: 2
+  AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+  AUTH_SERVICE_TOKEN: functional-tests-service-token
+
+x-auth-env: &auth-env
+  AUTH_POSTGRES_HOST: auth-postgres
+  AUTH_POSTGRES_DB: auth
+  AUTH_POSTGRES_USER: auth
+  AUTH_POSTGRES_PASSWORD: functional-tests
+  AUTH_REDIS_HOST: auth-redis
+  AUTH_JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+  AUTH_SERVICE_TOKEN: functional-tests-service-token
+  # Идентификатор запроса ставит nginx, а здесь его нет: без этого сервис
+  # авторизации отклонял бы все запросы тестов.
+  AUTH_REQUIRE_REQUEST_ID: "false"
+  # Пределы попыток подняты: все тесты приходят с одного адреса, и штатный
+  # предел регистраций срабатывает на десятке зрителей. Сами пределы
+  # проверяются функциональными тестами сервиса авторизации, а не здесь.
+  AUTH_SIGNUP_ATTEMPTS_PER_IP: "10000"
+  AUTH_LOGIN_ATTEMPTS_PER_IP: "10000"
+  AUTH_PASSWORD_CHECK_ATTEMPTS_PER_IP: "10000"
+
+services:
+  notify-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: notifications
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: functional-tests
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: notify
+      RABBITMQ_DEFAULT_PASS: functional-tests
+    ports:
+      - "${TEST_RABBIT_UI_PORT:-15673}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "${TEST_MAILPIT_PORT:-8026}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  auth-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: functional-tests
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  auth-redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  auth:
+    build: ../../../auth
+    image: movies-auth
+    environment: *auth-env
+    # Миграции — в команде запуска, по той же причине, что и у сервиса
+    # уведомлений: одноразовый контейнер остановил бы всё окружение.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"
+    ports:
+      - "${TEST_AUTH_PORT:-8004}:8000"
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+      auth-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/auth/api/openapi.json')"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  notify-api:
+    # Тестируется тот же образ, что уходит в работу.
+    build: ../..
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      # Идентификатор запроса ставит nginx, а его в этом окружении нет.
+      NOTIFY_REQUIRE_REQUEST_ID: "false"
+    # Миграции применяются в команде запуска, а не отдельным контейнером.
+    # Причина в `--abort-on-container-exit`: он останавливает всё окружение,
+    # как только завершается ЛЮБОЙ контейнер, — в том числе одноразовый,
+    # успешно отработавший контейнер миграций. Тесты при этом не успевают
+    # даже начаться.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"
+    ports:
+      - "${TEST_NOTIFY_PORT:-8005}:8000"
+    depends_on:
+      notify-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/notify/api/v1/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+  notify-planner:
+    build: ../..
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: plan
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Ретранслятор outbox: API в брокер не пишет, события в очередь переносит он.
+  notify-relay:
+    build: ../..
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "relay.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notify-render:
+    build: ../..
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: render
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+
+  notify-sender:
+    build: ../..
+    image: movies-notify
+    environment:
+      <<: *notify-env
+      NOTIFY_WORKER_ROLE: send
+    command: ["python", "worker.py"]
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  notify-ws:
+    build: ../..
+    image: movies-notify
+    environment: *notify-env
+    command: ["python", "ws.py"]
+    ports:
+      - "${TEST_NOTIFY_WS_PORT:-8006}:8000"
+    depends_on:
+      notify-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+  tests:
+    build:
+      context: ../..
+      dockerfile: tests/functional/Dockerfile
+    environment:
+      SERVICE_URL: http://notify-api:8000
+      WS_URL: ws://notify-ws:8000
+      AUTH_URL: http://auth:8000
+      MAILPIT_URL: http://mailpit:8025
+      RABBIT_UI_URL: http://notify:functional-tests@rabbitmq:15672
+      SERVICE_TOKEN: functional-tests-service-token
+      JWT_SECRET_KEY: functional-tests-secret-key-of-32-bytes
+      BATCH_SIZE: 2
+    depends_on:
+      notify-api:
+        condition: service_healthy
+      notify-ws:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy

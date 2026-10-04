@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% from 'macros.html' import film_tile %}
+{% block title %}{% if q %}Поиск «{{ q }}»{% else %}Фильмы{% endif %}{% endblock %}
+{% block content %}
+  <section class="hero-strip">
+    <h1>{% if q %}Поиск: «{{ q }}»{% else %}Смотрите вместе{% endif %}</h1>
+    {% if not q %}<p class="muted">Выберите фильм, найдите хоста и забронируйте места на совместный просмотр.</p>{% endif %}
+  </section>
+  {% if genres and not q %}
+    <nav class="chips" aria-label="Жанры">
+      <a class="chip {% if not genre %}chip--on{% endif %}" href="/">Все</a>
+      {% for g in genres %}
+        <a class="chip {% if genre == g.uuid %}chip--on{% endif %}" href="/?genre={{ g.uuid }}">{{ g.name }}</a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+  {% if films %}
+    <div class="grid">
+      {% for film in films %}{{ film_tile(film) }}{% endfor %}
+    </div>
+  {% else %}
+    <p class="empty">Ничего не нашлось.</p>
+  {% endif %}
+  <nav class="pager">
+    {% set base = '?' ~ ('q=' ~ q | urlencode ~ '&' if q else '') ~ ('genre=' ~ genre ~ '&' if genre else '') %}
+    {% if page > 1 %}<a class="btn btn--ghost" href="{{ base }}page={{ page - 1 }}">← Назад</a>{% endif %}
+    <span class="muted">Страница {{ page }}</span>
+    {% if has_next %}<a class="btn btn--ghost" href="{{ base }}page={{ page + 1 }}">Дальше →</a>{% endif %}
+  </nav>
+{% endblock %}

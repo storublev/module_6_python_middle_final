@@ -1,0 +1,42 @@
+from http import HTTPStatus
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException
+
+from api.dependencies import GenreServiceDep
+from api.v1.params import PaginationDep
+from api.v1.schemas import GenreSchema, error_response
+from models.genre import Genre
+
+router = APIRouter()
+
+GENRE_NOT_FOUND = 'genre not found'
+
+
+@router.get(
+    '',
+    response_model=list[GenreSchema],
+    summary='Список жанров',
+    description='Жанры в алфавитном порядке.',
+)
+async def genre_list(
+    pagination: PaginationDep,
+    genre_service: GenreServiceDep,
+) -> list[Genre]:
+    return await genre_service.get_list(pagination)
+
+
+@router.get(
+    '/{genre_id}',
+    response_model=GenreSchema,
+    summary='Данные по жанру',
+    responses={HTTPStatus.NOT_FOUND: error_response(GENRE_NOT_FOUND)},
+)
+async def genre_details(
+    genre_id: UUID,
+    genre_service: GenreServiceDep,
+) -> Genre:
+    genre = await genre_service.get_by_id(genre_id)
+    if not genre:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=GENRE_NOT_FOUND)
+    return genre
