@@ -88,10 +88,14 @@ async def film_card(
     selected = None
     if host and hosts:
         selected = next((offer for offer in hosts['items'] if offer['host_id'] == str(host)), None)
+    bookable = film.get('type') == BOOKABLE_TYPE
     return render(
         request, 'film.html',
         film=film,
-        bookable=film.get('type') == BOOKABLE_TYPE,
+        bookable=bookable,
+        # Блок брони открыт сразу, когда выбор уже идёт (выбран хост или
+        # вернулась ошибка брони), и у сериала — объяснить, почему билетов нет.
+        tickets_open=bool(host) or 'error' in request.query_params or not bookable,
         hosts=hosts,
         selected=selected,
         dates=dates,

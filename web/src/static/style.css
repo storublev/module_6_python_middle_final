@@ -107,7 +107,12 @@ h2 { margin-top: 2.2rem; }
 .facts dd { margin: 0; }
 
 /* Бронирование */
-.tickets { margin-top: 2rem; }
+.tickets { margin-top: 2rem; display: none; }
+/* Блок брони открывается кнопкой «Купить билет» (якорь #tickets) или сразу,
+   если выбор хоста уже идёт. Без JavaScript: работает и в строгом браузере. */
+.tickets:target, .tickets--open { display: block; }
+.tickets:target { animation: tickets-open .25s ease-out; scroll-margin-top: 4.5rem; }
+@keyframes tickets-open { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 .tickets h2 { border-left: 4px solid var(--accent); padding-left: .7rem; }
 .step { display: flex; gap: .6rem; align-items: center; }
 .step__n { background: var(--accent); color: var(--accent-text); border-radius: 50%; width: 1.8rem; height: 1.8rem; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; }

@@ -39,11 +39,14 @@
         {{ people('Сценарий', film.writers) }}
         {{ people('В ролях', film.actors) }}
       </div>
-      {% if bookable %}<a class="btn" href="#tickets">🎟 Купить билет</a>{% endif %}
+      {% if bookable %}<a class="btn" href="#tickets" aria-controls="tickets">🎟 Купить билет</a>{% endif %}
     </div>
   </section>
 
-  <section class="tickets" id="tickets">
+  {# Блок брони скрыт, пока зритель не нажал «Купить билет» (CSS :target).
+     Открыт сразу, если выбор уже идёт: выбран хост, пришла ошибка брони, а
+     у сериала — чтобы было видно, почему билетов нет. #}
+  <section class="tickets {{ 'tickets--open' if tickets_open else '' }}" id="tickets">
     <h2>Билеты на совместный просмотр</h2>
     {% if not bookable %}
       <p class="muted">Билеты продаются только на полнометражные фильмы, а это сериал — его смотрят дома.</p>

@@ -163,3 +163,15 @@ def test_catalog_tile_shows_russian_and_original_title(stand: Stand):
 
     assert 'Звёздные войны' in text and 'tile__original">Star Wars' in text
     assert f'src="/posters/{FILM_ID}.jpg"' in text
+
+
+def test_tickets_block_is_hidden_until_buy_is_pressed(stand: Stand):
+    """Блок брони скрыт, пока не нажата «Купить билет» (якорь #tickets), и открыт, если хост уже выбран."""
+    closed = stand.client.get(f'/films/{FILM_ID}').text
+    with_host = stand.client.get(f'/films/{FILM_ID}', params={'host': HOST_ID}).text
+    after_error = stand.client.get(f'/films/{FILM_ID}', params={'error': 'not_enough_seats'}).text
+
+    assert 'href="#tickets"' in closed
+    assert 'class="tickets " id="tickets"' in closed
+    assert 'class="tickets tickets--open" id="tickets"' in with_host
+    assert 'class="tickets tickets--open" id="tickets"' in after_error
