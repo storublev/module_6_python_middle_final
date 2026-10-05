@@ -13,6 +13,12 @@
 Если места не заняты, сервис отдельным чтением выясняет, почему именно, —
 чтобы ответить точным кодом: показа нет, он начался или отменён, мест мало.
 Исследование вариантов — docs/diploma/research.md, решение — ADR-21.
+
+**Порядок блокировок — всегда сначала показ, затем бронь.** Так же блокирует
+отмена показа (показ, затем все его брони). Если бы изменение брони брало
+строки в обратном порядке, одновременные отмена показа хостом и изменение
+брони гостем ждали бы друг друга, и PostgreSQL прерывал бы одну из транзакций
+как взаимную блокировку.
 """
 
 from collections.abc import Callable
@@ -109,14 +115,14 @@ class BookingService:
         """Меняет число мест в брони: добирает недостающие или возвращает лишние."""
         self._check_seats(seats)
         async with self._uow.transaction():
-            booking = await self._own_active(guest_id, booking_id)
+            screening, booking = await self._lock_own_active(guest_id, booking_id)
             delta = seats - booking.seats
             if delta == 0:
                 raise NothingToChangeError(f'Booking already has {seats} seats')
             if delta > 0:
                 screening = await self._take(booking.screening_id, delta)
             else:
-                screening = await self._open_screening(booking.screening_id)
+                self._ensure_open(screening)
                 await self._screenings.release_seats(booking.screening_id, -delta)
                 screening = screening.model_copy(update={'seats_taken': screening.seats_taken + delta})
             changed = await self._bookings.change_seats(booking_id, seats)
@@ -126,8 +132,8 @@ class BookingService:
     async def cancel(self, guest_id: UUID, booking_id: UUID) -> Booking:
         """Отменяет бронь до начала показа и возвращает места."""
         async with self._uow.transaction():
-            booking = await self._own_active(guest_id, booking_id)
-            screening = await self._open_screening(booking.screening_id)
+            screening, booking = await self._lock_own_active(guest_id, booking_id)
+            self._ensure_open(screening)
             await self._screenings.release_seats(booking.screening_id, booking.seats)
             cancelled = await self._bookings.cancel(booking_id)
             freed = screening.model_copy(update={'seats_taken': screening.seats_taken - booking.seats})
@@ -167,13 +173,31 @@ class BookingService:
         screening = await self._screenings.get(screening_id)
         if screening is None:
             raise ScreeningNotFoundError
-        if not screening.is_open(self._clock()):
-            raise ScreeningClosedError
+        self._ensure_open(screening)
         return screening
 
-    async def _own_active(self, guest_id: UUID, booking_id: UUID) -> Booking:
-        # Строка брони блокируется: два одновременных изменения одной брони
-        # (двойной клик) не сдвинут счётчик дважды.
+    def _ensure_open(self, screening: Screening) -> None:
+        if not screening.is_open(self._clock()):
+            raise ScreeningClosedError
+
+    async def _lock_own_active(self, guest_id: UUID, booking_id: UUID) -> tuple[Screening, Booking]:
+        """Блокирует показ брони, затем саму бронь, и проверяет бронь уже под блокировкой.
+
+        Первое чтение брони — без блокировки: оно нужно только затем, чтобы
+        узнать её показ. Всё, на чём строится решение (владелец, состояние),
+        перепроверяется после блокировки: пока транзакция ждала строку показа,
+        бронь могли отменить вместе с показом. Блокировка брони нужна и сама
+        по себе: два одновременных изменения одной брони (двойной клик) не
+        сдвинут счётчик дважды.
+        """
+        found = await self._bookings.get(booking_id)
+        if found is None:
+            raise BookingNotFoundError
+        if found.guest_id != guest_id:
+            raise NotBookingOwnerError
+        screening = await self._screenings.get(found.screening_id, lock=True)
+        if screening is None:
+            raise ScreeningNotFoundError
         booking = await self._bookings.get(booking_id, lock=True)
         if booking is None:
             raise BookingNotFoundError
@@ -181,7 +205,7 @@ class BookingService:
             raise NotBookingOwnerError
         if booking.status is BookingStatus.CANCELLED:
             raise BookingCancelledError
-        return booking
+        return screening, booking
 
     def _check_seats(self, seats: int) -> None:
         if not 1 <= seats <= self._max_seats:

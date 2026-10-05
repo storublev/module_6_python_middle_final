@@ -41,6 +41,39 @@ def test_concurrent_guests_never_oversell(host: Viewer):
     assert (shown['seats_taken'], shown['seats_left']) == (5, 0)
 
 
+def test_host_cancel_and_guest_changes_do_not_deadlock(host: Viewer):
+    """Хост отменяет показ, а гости в ту же секунду меняют и отменяют брони — без 5xx и взаимных блокировок.
+
+    Раньше изменение брони блокировало бронь, затем показ, а отмена показа —
+    показ, затем брони: PostgreSQL прерывал одну из транзакций как deadlock.
+    Раундов несколько, гостей по шесть: гонку нужно поймать, а не надеяться
+    на неё. После отмены показа ни одна бронь не остаётся активной.
+    """
+    guests = [register(f'Гонщик{n}', 'Тестовый') for n in range(6)]
+    for _ in range(8):
+        screening = new_screening(host, capacity=30)
+        bookings = [book(viewer, screening, 2).json() for viewer in guests]
+
+        def guest_action(pair: tuple[Viewer, dict]) -> requests.Response:
+            viewer, booking = pair
+            if guests.index(viewer) % 2:
+                return call('POST', f'/bookings/{booking["id"]}/cancel', viewer)
+            return call('PATCH', f'/bookings/{booking["id"]}', viewer, json={'seats': 3})
+
+        with ThreadPoolExecutor(max_workers=len(guests) + 1) as pool:
+            host_future = pool.submit(call, 'POST', f'/screenings/{screening["id"]}/cancel', host)
+            guest_responses = list(pool.map(guest_action, zip(guests, bookings, strict=True)))
+        host_response = host_future.result()
+
+        assert host_response.status_code == 200, host_response.text
+        for response in guest_responses:
+            assert response.status_code in (200, 409), response.text
+            if response.status_code == 409:
+                assert response.json()['code'] in ('booking_cancelled', 'screening_closed')
+        for viewer in guests:
+            assert call('GET', f'/screenings/{screening["id"]}/bookings/mine', viewer).status_code == 404
+
+
 @pytest.mark.parametrize(
     'seats, status, code',
     [

@@ -161,6 +161,9 @@ class ScreeningService:
     async def cancel(self, host_id: UUID, screening_id: UUID) -> Screening:
         """Отменяет показ и все его брони, пишет гостям."""
         async with self._uow.transaction():
+            # Порядок блокировок тот же, что у изменения брони: показ, затем
+            # брони (cancel_all). Обратный порядок у одной из операций давал бы
+            # взаимную блокировку при одновременных действиях хоста и гостя.
             screening = await self._owned_open(host_id, screening_id)
             await self._screenings.cancel(screening_id)
             cancelled = await self._bookings.cancel_all(screening_id)
