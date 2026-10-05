@@ -155,6 +155,36 @@ printf '%s' "$page" | grep -q 'Купить билет' && ok 'в карточк
 status=$(code -X POST "$BASE/booking/api/v1/screenings/$SCREENING/cancel" "${AUTH[@]}")
 [ "$status" = 200 ] && ok 'показ проверки отменён и убран из карточки фильма' || bad "отмена показа: $status"
 
+echo '5. Предел частоты записи в бронировании'
+# По 40 одновременных запросов на каждый адрес записи, без токена: сервис
+# ответил бы 401, но nginx обязан отсечь поток раньше — предел 5 в секунду с
+# запасом 20. Между адресами — пауза, чтобы запас восстановился и каждый адрес
+# проверялся сам по себе, а не на остатке предыдущего.
+flood() {  # метод адрес → сколько ответов 429
+    seq 40 | xargs -P 40 -I{} curl -s -o /dev/null -w '%{http_code}\n' -X "$1" "$BASE$2" \
+        -H 'Content-Type: application/json' -d '{}' | grep -c '^429$'
+}
+ANY=00000000-0000-4000-8000-000000000000
+for target in \
+    "POST /booking/api/v1/screenings" \
+    "PATCH /booking/api/v1/screenings/$ANY" \
+    "POST /booking/api/v1/screenings/$ANY/cancel" \
+    "POST /booking/api/v1/screenings/$ANY/bookings" \
+    "PATCH /booking/api/v1/bookings/$ANY" \
+    "POST /booking/api/v1/bookings/$ANY/cancel" \
+    "POST /booking/api/v1/screenings/$ANY/ratings"; do
+    sleep 5
+    limited=$(flood ${target% *} "${target#* }")
+    [ "$limited" -gt 0 ] && ok "$target: $limited из 40 → 429" || bad "$target: предел не сработал"
+done
+sleep 5
+limited=$(seq 40 | xargs -P 40 -I{} curl -s -o /dev/null -w '%{http_code}\n' "$BASE/booking/api/v1/screenings" \
+    | grep -c '^429$')
+[ "$limited" = 0 ] && ok 'чтение показов пределом не ограничено' || bad "чтение получило 429: $limited"
+body=$(for _ in $(seq 30); do curl -s -X POST "$BASE/booking/api/v1/screenings" -d '{}'; echo; done | grep -m1 too_many)
+printf '%s' "$body" | grep -q '"code": "too_many_requests"' \
+    && ok '429 — в формате ошибок сервиса' || bad "тело 429: $body"
+
 echo
 [ "$FAILED" = 0 ] && echo 'ИТОГ: стенд работает' || echo 'ИТОГ: есть ошибки'
 echo "зритель проверки: $LOGIN"
