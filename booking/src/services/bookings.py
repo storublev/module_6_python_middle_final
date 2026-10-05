@@ -88,6 +88,13 @@ class BookingService:
             NotEnoughSeatsError: свободных мест меньше, чем просят.
         """
         self._check_seats(seats)
+        # Имя — до первого обращения к базе. Сессия базы берёт соединение из
+        # пула на первом же запросе и держит его до конца транзакции; спроси
+        # мы справочник после чтения показа, медленный сервис авторизации
+        # держал бы соединения занятыми, и при наплыве броней пул кончился бы
+        # даже для чтения показов. Все условия брони (показ открыт, мест
+        # хватает, второй брони нет) база перепроверяет в транзакции записи.
+        guest_name = await self._names.name_of(guest_id)
         screening = await self._screenings.get(screening_id)
         if screening is None:
             raise ScreeningNotFoundError
@@ -97,9 +104,6 @@ class BookingService:
         # гостя защищает уникальный индекс ниже.
         if await self._bookings.active_of(screening_id, guest_id) is not None:
             raise AlreadyBookedError
-        # Имя — до транзакции: поход в чужой сервис не должен держать
-        # блокировку строки показа, за которой стоят другие гости.
-        guest_name = await self._names.name_of(guest_id)
         async with self._uow.transaction():
             taken = await self._take(screening_id, seats)
             try:

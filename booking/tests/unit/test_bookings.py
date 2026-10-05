@@ -340,3 +340,34 @@ async def test_booking_is_rechecked_after_screening_lock(world: World, monkeypat
     with pytest.raises(BookingCancelledError):
         await action
     assert world.db.screenings[screening.id].seats_taken == 2
+
+
+def journal_calls(monkeypatch, journal: list[str], *targets: tuple[object, str, str]) -> None:
+    """Подменяет методы так, чтобы каждый вызов оставлял запись в журнале."""
+    for owner, method, label in targets:
+        original = getattr(owner, method)
+
+        async def logged(*args, _original=original, _label=label, **kwargs):
+            journal.append(_label)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, method, logged)
+
+
+async def test_guest_name_is_asked_before_database(world: World, monkeypatch):
+    """Справочник имён спрашивается до первого запроса к базе: медленный Auth не держит соединения пула."""
+    screening = await world.screening(capacity=4)
+    journal: list[str] = []
+    journal_calls(
+        monkeypatch, journal,
+        (world.people, 'names', 'auth'),
+        (world.bookings._screenings, 'get', 'db'),  # noqa: SLF001
+        (world.bookings._screenings, 'take_seats', 'db'),  # noqa: SLF001
+        (world.bookings._bookings, 'active_of', 'db'),  # noqa: SLF001
+        (world.bookings._bookings, 'add', 'db'),  # noqa: SLF001
+    )
+
+    await world.bookings.book(GUEST, screening.id, 1)
+
+    assert journal[0] == 'auth'
+    assert journal.count('auth') == 1
