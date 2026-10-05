@@ -30,15 +30,12 @@
 
 ```bash
 cp .env.example .env          # задайте секреты, как описано в разделе «Запуск» ниже
-docker compose up -d --build  # весь стек; каталог с обложками и данными Кинопоиска — из etl/dump.sql.gz
+docker compose up -d --build  # весь стек; каталог с обложками — из etl/dump.sql.gz
 python3 scripts/seed_demo.py  # хосты, показы и брони для демонстрации
 ```
 
 * **Обложки** редактор загружает файлом в карточке фильма в админке
   (http://localhost/admin/) — картинка сразу ложится в базу каталога.
-* **Обновить данные Кинопоиска** (нужен ключ kinopoiskapiunofficial.tech, 500
-  запросов в сутки; уже готовое лежит в дампе):
-  `docker compose exec -e KINOPOISK_API_KEY=... etl python scripts/fetch_kinopoisk.py`.
 * **Интерфейс:** http://localhost/ — вход для демонстрации `demo-neo` (хост) или
   `demo-guest-1` (гость), пароль `demo-password-2026`; можно и зарегистрироваться.
 * API бронирования: http://localhost/booking/api/openapi
@@ -51,10 +48,10 @@ python3 scripts/seed_demo.py  # хосты, показы и брони для д
 Тесты диплома:
 
 ```bash
-cd booking/tests/unit && python -m pytest        # 95 unit-тестов бронирования
-cd web/tests/unit && python -m pytest            # 46 тестов интерфейса
+cd booking/tests/unit && python -m pytest        # 128 unit-тестов бронирования
+cd web/tests/unit && python -m pytest            # 47 тестов интерфейса
 docker compose -f booking/tests/functional/docker-compose.yml up --build \
-    --abort-on-container-exit --exit-code-from tests   # 29 функциональных
+    --abort-on-container-exit --exit-code-from tests   # 32 функциональных
 ```
 
 ## Кинотеатр, на котором построен диплом
@@ -216,8 +213,8 @@ curl -s -X POST http://localhost/auth/api/v1/signup -H 'Content-Type: applicatio
     -d '{"login":"editor","password":"editor-password"}'
 ```
 
-Команды назначения роли и отзыва доступа — в
-[admin_panel/README.md](admin_panel/README.md#как-завести-сотрудника).
+Роль `staff` назначает суперпользователь через API сервиса авторизации:
+`PUT /auth/api/v1/users/{user_id}/roles/{role_id}` (http://localhost/auth/api/openapi).
 
 ### Локальный запуск без Docker
 
@@ -230,7 +227,7 @@ ELASTIC_HOST=localhost REDIS_HOST=localhost python main.py   # http://localhost:
 
 ## Функциональные тесты Async API
 
-Тесты сервиса авторизации описаны в [auth/README.md](auth/README.md#тесты).
+Тесты сервиса авторизации описаны в [auth/README.md](auth/README.md).
 
 Тесты проверяют API снаружи, через HTTP: сами наполняют Elasticsearch, шлют
 запросы и сверяют ответы. Код приложения они не импортируют, схемы индексов —
@@ -304,7 +301,7 @@ pytest tests/unit
 
 Модульные тесты админки (бэкенд аутентификации, клиент сервиса авторизации,
 прерыватель, перепроверка доступа) — в
-[admin_panel/README.md](admin_panel/README.md#тесты).
+[admin_panel/README.md](admin_panel/README.md).
 
 ## Эндпоинты Async API
 
@@ -456,10 +453,10 @@ Redis на другой кеш не меняет поведения API при �
 
 ## Переменные окружения
 
-Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/README.md](auth/README.md#переменные-окружения),
-админки (с префиксом `DJANGO_`) — в [admin_panel/README.md](admin_panel/README.md#переменные-окружения),
-бронирования (с префиксом `BOOKING_`) — в [booking/README.md](booking/README.md#настройки),
-интерфейса (`WEB_`) — в [web/README.md](web/README.md#настройки).
+Переменные сервиса авторизации (с префиксом `AUTH_`) — в [auth/src/core/config.py](auth/src/core/config.py),
+админки (с префиксом `DJANGO_`) — в [admin_panel/config/settings.py](admin_panel/config/settings.py),
+бронирования (с префиксом `BOOKING_`) — в [booking/src/core/config.py](booking/src/core/config.py),
+интерфейса (`WEB_`) — в [web/src/core/config.py](web/src/core/config.py).
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
