@@ -14,6 +14,7 @@ from api.security import get_verifier
 from main import app
 from tests.unit import SECRET_KEY
 from tests.unit.conftest import GUEST, HOST, MOVIE, SERIES, World
+from tests.unit.fakes import FakeSessions
 
 PREFIX = '/booking/api/v1'
 HEADERS = {'X-Request-Id': 'unit-test'}
@@ -33,8 +34,14 @@ def auth(user_id) -> dict[str, str]:
 
 
 @pytest.fixture
-def api(world: World):
+def sessions() -> FakeSessions:
+    return FakeSessions()
+
+
+@pytest.fixture
+def api(world: World, sessions: FakeSessions):
     app.state.verifier = get_verifier()
+    app.state.sessions = sessions
     app.dependency_overrides = {
         get_screening_service: lambda: world.screenings,
         get_booking_service: lambda: world.bookings,
@@ -123,6 +130,66 @@ def test_changes_require_access_token(api: TestClient, world: World, headers, co
     assert response.headers['WWW-Authenticate'].startswith('Bearer')
 
 
+def write_requests(api: TestClient, world: World) -> dict:
+    """Все операции записи сервиса: (метод, адрес, тело) на настоящих показе и брони."""
+    screening_id = api.post(f'{PREFIX}/screenings', json=screening_body(world), headers=auth(HOST)).json()['id']
+    booking_id = api.post(
+        f'{PREFIX}/screenings/{screening_id}/bookings', json={'seats': 1}, headers=auth(GUEST),
+    ).json()['id']
+    return {
+        'create-screening': ('POST', f'{PREFIX}/screenings', screening_body(world)),
+        'update-screening': ('PATCH', f'{PREFIX}/screenings/{screening_id}', {'capacity': 3}),
+        'cancel-screening': ('POST', f'{PREFIX}/screenings/{screening_id}/cancel', None),
+        'book': ('POST', f'{PREFIX}/screenings/{screening_id}/bookings', {'seats': 1}),
+        'change-booking': ('PATCH', f'{PREFIX}/bookings/{booking_id}', {'seats': 2}),
+        'cancel-booking': ('POST', f'{PREFIX}/bookings/{booking_id}/cancel', None),
+        'rate': ('POST', f'{PREFIX}/screenings/{screening_id}/ratings', {'target_id': str(HOST), 'score': 5}),
+    }
+
+
+WRITES = (
+    'create-screening', 'update-screening', 'cancel-screening', 'book', 'change-booking', 'cancel-booking', 'rate',
+)
+
+
+@pytest.mark.parametrize('operation', WRITES)
+def test_write_with_closed_session_is_401(api: TestClient, world: World, sessions: FakeSessions, operation):
+    """После выхода или смены пароля старый, ещё не истёкший токен ничего не меняет: 401 token_revoked."""
+    method, url, body = write_requests(api, world)[operation]
+    headers = auth(GUEST)
+    sessions.closed.add(headers['Authorization'])
+    before = world.db.state()
+
+    response = api.request(method, url, json=body, headers=headers)
+
+    assert (response.status_code, response.json()['code']) == (HTTPStatus.UNAUTHORIZED, 'token_revoked')
+    assert response.headers['WWW-Authenticate'].startswith('Bearer')
+    assert world.db.state() == before
+
+
+@pytest.mark.parametrize('operation', WRITES)
+def test_write_without_auth_answer_is_503(api: TestClient, world: World, sessions: FakeSessions, operation):
+    """Сервис авторизации не ответил — запись отклоняется 503: действие, которое нельзя подтвердить, не выполняется."""
+    method, url, body = write_requests(api, world)[operation]
+    sessions.available = False
+    before = world.db.state()
+
+    response = api.request(method, url, json=body, headers=auth(GUEST))
+
+    assert (response.status_code, response.json()['code']) == (HTTPStatus.SERVICE_UNAVAILABLE, 'service_unavailable')
+    assert world.db.state() == before
+
+
+def test_reading_checks_token_locally(api: TestClient, world: World, sessions: FakeSessions):
+    """Чтение кабинета в сервис авторизации не ходит: страницы не ждут его и не падают вместе с ним."""
+    sessions.available = False
+
+    response = api.get(f'{PREFIX}/me/bookings', headers=auth(GUEST))
+
+    assert response.status_code == HTTPStatus.OK
+    assert sessions.checked == []
+
+
 def test_reading_needs_no_token(api: TestClient):
     """Читать показы и рейтинги можно без входа."""
     assert api.get(f'{PREFIX}/screenings', headers=HEADERS).status_code == HTTPStatus.OK
@@ -152,3 +219,4 @@ def test_openapi_documents_error_codes(api: TestClient):
 
     assert {'401', '403', '404', '409', '400', '503'} <= set(responses)
     assert 'not_enough_seats' in responses['409']['content']['application/json']['examples']
+    assert 'token_revoked' in responses['401']['content']['application/json']['examples']

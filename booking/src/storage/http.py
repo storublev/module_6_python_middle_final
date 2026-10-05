@@ -26,7 +26,14 @@ import httpx
 from core.request_id import HEADER as REQUEST_ID_HEADER
 from core.request_id import get_request_id
 from models.domain import Film
-from storage.base import Catalog, EventRejectedError, NotificationGateway, People, StorageUnavailableError
+from storage.base import (
+    Catalog,
+    EventRejectedError,
+    NotificationGateway,
+    People,
+    Sessions,
+    StorageUnavailableError,
+)
 from storage.resilience import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -106,6 +113,26 @@ class HttpPeople(HttpService, People):
         if response.is_error:
             raise StorageUnavailableError(f'Справочник контактов отказал: {response.status_code}')
         return {UUID(item['id']): display_name(item) for item in response.json()}
+
+
+class HttpSessions(HttpService, Sessions):
+    """Живость сессии входа: тот же `GET /users/me`, которым админка проверяет вход сотрудника.
+
+    Сервис авторизации сверяет токен с сессией в Redis и с версией учётных
+    данных в PostgreSQL: закрытая выходом или сменой пароля сессия даёт 401.
+    """
+
+    name = 'Сервис авторизации'
+    ME_PATH = '/auth/api/v1/users/me'
+
+    async def is_active(self, authorization: str) -> bool:
+        response = await self._request('GET', self.ME_PATH, headers={'Authorization': authorization})
+        if response.status_code == httpx.codes.UNAUTHORIZED:
+            return False
+        if response.is_error:
+            # Остальные 4xx — сломан наш запрос, а не сессия зрителя.
+            raise StorageUnavailableError(f'{self.name} отказал: {response.status_code}')
+        return True
 
 
 def display_name(contact: dict[str, Any]) -> str:

@@ -212,6 +212,21 @@ class People(ABC):
         """Имена для показа на страницах. Кого нет в справочнике — того нет в ответе."""
 
 
+class Sessions(ABC):
+    """Сессии входа — сервис авторизации."""
+
+    @abstractmethod
+    async def is_active(self, authorization: str) -> bool:
+        """Жива ли сессия, к которой выпущен access-токен.
+
+        False — сессия закрыта выходом, сменой пароля или «выйти на остальных
+        устройствах», хотя подпись и срок токена ещё в порядке.
+
+        Raises:
+            StorageUnavailableError: сервис авторизации не ответил.
+        """
+
+
 class NotificationGateway(ABC):
     """Сервис уведомлений."""
 

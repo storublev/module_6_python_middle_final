@@ -1,12 +1,18 @@
 """Опознание зрителя по access-токену сервиса авторизации.
 
 Токен проверяется на месте: подпись тем же секретом, которым выпущена, срок
-действия и тип. Сетевого вызова в сервис авторизации нет — по той же причине,
-что и в остальных сервисах кинотеатра (ADR-4): ходить в Auth на каждый запрос
-значило бы сделать его узким местом и точкой отказа.
+действия и тип. На чтение этого достаточно, и в сервис авторизации чтение не
+ходит — по той же причине, что и в остальных сервисах кинотеатра (ADR-4):
+страницы каталога и кабинета не должны ждать Auth и падать вместе с ним.
 
-Токен нужен для всего, что меняет состояние: создать показ, забронировать,
-оценить. Читать показы и рейтинги можно без входа.
+**Запись проверяется строже** (`ActiveUser`): создать, изменить и отменить
+показ, забронировать, изменить и отменить бронь, оценить. Подпись остаётся
+верной до конца срока токена (до 15 минут) и после выхода или смены пароля, а
+украденным токеном за эти минуты можно отменить чужой показ или чужую бронь.
+Поэтому перед записью сессия сверяется с сервисом авторизации. Записей на
+порядок меньше, чем чтений, и лишний запрос в Auth им по карману. Сервис
+авторизации не ответил — запись отклоняется с 503: выпустить действие от
+имени, которое нельзя подтвердить, хуже, чем попросить повторить позже.
 
 Всё знание о формате токена собрано здесь. Когда подпись сменится на
 асимметричную (RS256), менять придётся только этот модуль.
@@ -21,7 +27,8 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.config import Settings, settings
-from services.errors import NotAuthenticatedError, TokenExpiredError, TokenInvalidError
+from services.errors import NotAuthenticatedError, TokenExpiredError, TokenInvalidError, TokenRevokedError
+from storage.base import Sessions
 
 # Те же обязательные поля, что выпускает сервис авторизации. Требовать их явно
 # нужно, чтобы токен без `exp` не оказался вечным.
@@ -120,6 +127,23 @@ def current_user(
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(current_user)]
+
+
+async def active_user(request: Request, user: CurrentUser) -> AuthenticatedUser:
+    """Зависимость для записи: токен верен **и** его сессия не закрыта.
+
+    Raises:
+        TokenRevokedError: сессия закрыта выходом или сменой пароля.
+        StorageUnavailableError: сервис авторизации не ответил (API отдаст 503).
+    """
+    sessions: Sessions = request.app.state.sessions
+    # Заголовок уже проверен в current_user: он есть и он нужного формата.
+    if not await sessions.is_active(request.headers['Authorization']):
+        raise TokenRevokedError
+    return user
+
+
+ActiveUser = Annotated[AuthenticatedUser, Depends(active_user)]
 
 
 def optional_authorization(request: Request) -> str | None:

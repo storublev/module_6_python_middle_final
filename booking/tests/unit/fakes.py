@@ -45,6 +45,7 @@ from storage.base import (
     People,
     RatingRepository,
     ScreeningRepository,
+    Sessions,
     StorageUnavailableError,
     UnitOfWork,
 )
@@ -352,6 +353,21 @@ class FakePeople(People):
         if not self.available:
             raise StorageUnavailableError('Сервис авторизации недоступен')
         return {user_id: self.known[user_id] for user_id in user_ids if user_id in self.known}
+
+
+class FakeSessions(Sessions):
+    """Сессии сервиса авторизации: закрытые — по заголовку Authorization."""
+
+    def __init__(self) -> None:
+        self.closed: set[str] = set()
+        self.available = True
+        self.checked: list[str] = []
+
+    async def is_active(self, authorization: str) -> bool:
+        self.checked.append(authorization)
+        if not self.available:
+            raise StorageUnavailableError('Сервис авторизации недоступен')
+        return authorization not in self.closed
 
 
 class FakeGateway(NotificationGateway):

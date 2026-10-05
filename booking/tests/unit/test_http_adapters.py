@@ -8,7 +8,7 @@ import pytest
 
 from core.request_id import set_request_id
 from storage.base import EventRejectedError, StorageUnavailableError
-from storage.http import HttpCatalog, HttpNotifications, HttpPeople, display_name
+from storage.http import HttpCatalog, HttpNotifications, HttpPeople, HttpSessions, display_name
 from storage.resilience import CircuitBreaker
 
 FILM_ID = uuid4()
@@ -85,6 +85,26 @@ async def test_people_sends_service_token_and_builds_names():
 
     assert names == {first: 'Томас Андерсон', second: 'trinity'}
     assert (seen['token'], len(seen['body']['user_ids'])) == ('secret', 2)
+
+
+@pytest.mark.parametrize('status, active', [(200, True), (401, False)])
+async def test_sessions_ask_auth_with_viewer_token(status, active):
+    """Живость сессии — ответ сервиса авторизации на токен зрителя: 401 значит «сессия закрыта»."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(path=request.url.path, authorization=request.headers['authorization'])
+        return httpx.Response(status, json={})
+
+    assert await HttpSessions(client(handler)).is_active('Bearer abc') is active
+    assert seen == {'path': '/auth/api/v1/users/me', 'authorization': 'Bearer abc'}
+
+
+@pytest.mark.parametrize('status', [403, 500, 503])
+async def test_sessions_other_answers_are_outage(status):
+    """Любой другой ответ — не «сессия закрыта», а сбой: запись получит 503, а не ложный 401."""
+    with pytest.raises(StorageUnavailableError):
+        await HttpSessions(client(lambda _: httpx.Response(status, json={}))).is_active('Bearer abc')
 
 
 def test_display_name_with_only_last_name():

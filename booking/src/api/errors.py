@@ -29,6 +29,7 @@ from services.errors import (
     ServiceError,
     TokenExpiredError,
     TokenInvalidError,
+    TokenRevokedError,
 )
 from storage.base import StorageUnavailableError
 
@@ -41,6 +42,7 @@ STATUSES: dict[type[ServiceError], HTTPStatus] = {
     NotAuthenticatedError: HTTPStatus.UNAUTHORIZED,
     TokenExpiredError: HTTPStatus.UNAUTHORIZED,
     TokenInvalidError: HTTPStatus.UNAUTHORIZED,
+    TokenRevokedError: HTTPStatus.UNAUTHORIZED,
     ForbiddenError: HTTPStatus.FORBIDDEN,
     NotFoundError: HTTPStatus.NOT_FOUND,
     ConflictError: HTTPStatus.CONFLICT,
@@ -52,6 +54,8 @@ SERVICE_UNAVAILABLE_DETAIL = 'Service temporarily unavailable, retry later'
 
 # Ошибки проверки токена — у всех эндпоинтов, где он нужен.
 TOKEN_ERRORS = (NotAuthenticatedError, TokenExpiredError, TokenInvalidError)
+# У записи вдобавок сессия сверяется с сервисом авторизации.
+WRITE_TOKEN_ERRORS = (*TOKEN_ERRORS, TokenRevokedError)
 
 
 class ErrorSchema(BaseModel):
@@ -121,11 +125,11 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
     """Ответ на ошибку бизнес-логики."""
     error = exc if isinstance(exc, ServiceError) else ServiceError()
     headers = None
-    if isinstance(error, TOKEN_ERRORS):
+    if isinstance(error, WRITE_TOKEN_ERRORS):
         # RFC 6750: на 401 сервер сообщает схему аутентификации, а для
         # недействительного токена — ещё и причину.
         header = SCHEME
-        if isinstance(error, (TokenExpiredError, TokenInvalidError)):
+        if isinstance(error, (TokenExpiredError, TokenInvalidError, TokenRevokedError)):
             header = f'{SCHEME} error="invalid_token", error_description="{error.message}"'
         headers = {'WWW-Authenticate': header}
     return JSONResponse(

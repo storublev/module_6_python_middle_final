@@ -5,8 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pytest
+import requests
 
-from tests.functional.conftest import Viewer, call, new_screening, register
+from tests.functional.conftest import AUTH_API, MOVIE_ID, Viewer, call, new_screening, register, starts_in
+from tests.functional.settings import settings
 
 
 def book(viewer: Viewer, screening: dict, seats: int = 1):
@@ -109,3 +111,31 @@ def test_my_booking_and_my_bookings(host: Viewer, guest: Viewer):
         (booking['id'], 'Star Wars'),
     ]
     assert call('GET', '/me/bookings').status_code == 401
+
+
+def test_old_token_after_logout_changes_nothing(host: Viewer, guest: Viewer):
+    """После выхода старый, ещё не истёкший access-токен не меняет ни бронь, ни показ: 401 token_revoked."""
+    screening = new_screening(host, capacity=4)
+    booking = book(guest, screening, 2).json()
+    for viewer in (host, guest):
+        requests.post(
+            f'{settings.auth_url}{AUTH_API}/logout', headers=viewer.headers, timeout=10,
+        ).raise_for_status()
+
+    attempts = {
+        'change-booking': call('PATCH', f'/bookings/{booking["id"]}', guest, json={'seats': 3}),
+        'cancel-booking': call('POST', f'/bookings/{booking["id"]}/cancel', guest),
+        'book': book(guest, new_screening(register('Морфеус', 'Хост'), capacity=2)),
+        'update-screening': call('PATCH', f'/screenings/{screening["id"]}', host, json={'capacity': 3}),
+        'cancel-screening': call('POST', f'/screenings/{screening["id"]}/cancel', host),
+        'create-screening': call('POST', '/screenings', host, json={
+            'film_id': MOVIE_ID, 'starts_at': starts_in(timedelta(days=2)), 'place': 'Зал', 'address': 'Арбат, 1',
+            'capacity': 2,
+        }),
+    }
+
+    assert {name: (r.status_code, r.json()['code']) for name, r in attempts.items()} == dict.fromkeys(
+        attempts, (401, 'token_revoked'),
+    )
+    shown = call('GET', f'/screenings/{screening["id"]}').json()
+    assert (shown['status'], shown['seats_taken']) == ('scheduled', 2)

@@ -33,6 +33,13 @@ class TokenInvalidError(ServiceError):
     message = 'Token is malformed or signed with a wrong key'
 
 
+class TokenRevokedError(ServiceError):
+    # Код тот же, что у сервиса авторизации: клиенту кинотеатра не нужно
+    # различать, кто из сервисов заметил закрытую сессию.
+    code = 'token_revoked'
+    message = 'Session has been terminated, log in again'
+
+
 # 403 — известно кто, но ему нельзя.
 
 class ForbiddenError(ServiceError):

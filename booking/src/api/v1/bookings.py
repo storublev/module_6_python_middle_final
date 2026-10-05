@@ -5,8 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter
 
 from api.dependencies import BookingServiceDep
-from api.errors import TOKEN_ERRORS, error_responses
-from api.security import CurrentUser
+from api.errors import WRITE_TOKEN_ERRORS, error_responses
+from api.security import ActiveUser
 from api.v1.schemas import BookingSchema, BookingUpdateSchema
 from models.domain import Booking
 from services.errors import (
@@ -29,12 +29,12 @@ router = APIRouter()
     description='Добирает недостающие места с той же гарантией, что и бронь, или возвращает лишние. '
                 'Только до начала показа.',
     responses=error_responses(
-        *TOKEN_ERRORS, NotBookingOwnerError, BookingNotFoundError, NotEnoughSeatsError, ScreeningClosedError,
+        *WRITE_TOKEN_ERRORS, NotBookingOwnerError, BookingNotFoundError, NotEnoughSeatsError, ScreeningClosedError,
         BookingCancelledError, SeatsOutOfRangeError, NothingToChangeError,
     ),
 )
 async def change_booking(
-    booking_id: UUID, body: BookingUpdateSchema, user: CurrentUser, service: BookingServiceDep,
+    booking_id: UUID, body: BookingUpdateSchema, user: ActiveUser, service: BookingServiceDep,
 ) -> Booking:
     return await service.change_seats(user.user_id, booking_id, body.seats)
 
@@ -45,8 +45,8 @@ async def change_booking(
     summary='Отменить бронь',
     description='Места возвращаются хосту, хост получает письмо. Только до начала показа.',
     responses=error_responses(
-        *TOKEN_ERRORS, NotBookingOwnerError, BookingNotFoundError, ScreeningClosedError, BookingCancelledError,
+        *WRITE_TOKEN_ERRORS, NotBookingOwnerError, BookingNotFoundError, ScreeningClosedError, BookingCancelledError,
     ),
 )
-async def cancel_booking(booking_id: UUID, user: CurrentUser, service: BookingServiceDep) -> Booking:
+async def cancel_booking(booking_id: UUID, user: ActiveUser, service: BookingServiceDep) -> Booking:
     return await service.cancel(user.user_id, booking_id)
