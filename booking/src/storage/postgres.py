@@ -37,6 +37,7 @@ from models.domain import (
     Rating,
     RatingDraft,
     RatingSummary,
+    RejectedEvent,
     Role,
     Screening,
     ScreeningChanges,
@@ -425,7 +426,7 @@ class PostgresOutbox(PostgresRepository, Outbox):
         # друг друга на одних и тех же строках.
         due = (
             select(OutboxRow.id)
-            .where(OutboxRow.available_at <= now)
+            .where(OutboxRow.available_at <= now, OutboxRow.rejected_at.is_(None))
             .order_by(OutboxRow.available_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -453,3 +454,31 @@ class PostgresOutbox(PostgresRepository, Outbox):
                 update(OutboxRow).where(OutboxRow.id == message_id).values(available_at=at, last_error=error[:1000]),
             )
             await self.session.commit()
+
+    async def reject(self, message_id: UUID, at: datetime, error: str) -> None:
+        async with self._errors():
+            await self.session.execute(
+                update(OutboxRow).where(OutboxRow.id == message_id).values(rejected_at=at, last_error=error[:1000]),
+            )
+            await self.session.commit()
+
+    async def rejected(self, limit: int) -> list[RejectedEvent]:
+        query = (
+            select(OutboxRow)
+            .where(OutboxRow.rejected_at.is_not(None))
+            .order_by(OutboxRow.rejected_at, OutboxRow.id)
+            .limit(limit)
+        )
+        async with self._errors():
+            rows = (await self.session.scalars(query)).all()
+        return [RejectedEvent.model_validate(row) for row in rows]
+
+    async def requeue(self, message_ids: Sequence[UUID] | None, now: datetime) -> int:
+        query = update(OutboxRow).where(OutboxRow.rejected_at.is_not(None))
+        if message_ids is not None:
+            query = query.where(OutboxRow.id.in_(message_ids))
+        query = query.values(rejected_at=None, available_at=now).returning(OutboxRow.id)
+        async with self._errors():
+            requeued = len((await self.session.scalars(query)).all())
+            await self.session.commit()
+        return requeued

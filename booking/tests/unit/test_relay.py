@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 from models.domain import OutboxDraft
-from services.relay import OutboxRelay
+from services.relay import OutboxRelay, RejectedEvents
 from storage.base import EventRejectedError, StorageUnavailableError
 from tests.unit.fakes import Database, FakeGateway, FakeOutbox
 
@@ -45,14 +45,61 @@ async def test_unavailable_service_postpones_events():
     assert (entry.available_at, entry.attempts, entry.last_error) == (NOW + RETRY, 1, 'connection refused')
 
 
-async def test_rejected_event_is_dropped():
-    """Отказ по существу (4xx) повтором не лечится: событие снимается, остальные идут дальше."""
+async def test_rejected_event_is_kept_with_reason():
+    """Отказ по существу (4xx) повтором не лечится, но событие не теряется: оно отложено с причиной отказа."""
     outbox, gateway = await outbox_with(2), FakeGateway()
     gateway.failure = EventRejectedError('422: template not found')
 
     sent = await OutboxRelay(outbox, gateway, 10, LEASE, RETRY).relay_once(NOW)
 
-    assert (sent, outbox.db.outbox) == (0, {})
+    assert sent == 0
+    assert len(outbox.db.outbox) == 2
+    assert {(e.rejected_at, e.last_error) for e in outbox.db.outbox.values()} == {(NOW, '422: template not found')}
+
+
+async def test_rejected_event_is_not_sent_again_by_itself():
+    """Отклонённое событие обычная отправка больше не берёт — даже когда сервис уведомлений уже здоров."""
+    outbox, gateway = await outbox_with(1), FakeGateway()
+    gateway.failure = EventRejectedError('422: bad format')
+    relay = OutboxRelay(outbox, gateway, 10, LEASE, RETRY)
+    await relay.relay_once(NOW)
+    gateway.failure = None
+
+    sent = await relay.relay_once(NOW + timedelta(hours=1))
+
+    assert (sent, gateway.sent) == (0, [])
+
+
+async def test_requeue_after_fix_sends_with_same_event_id():
+    """После исправления событие возвращают в очередь — оно уходит с прежним event_id и удаляется."""
+    outbox, gateway = await outbox_with(2), FakeGateway()
+    gateway.failure = EventRejectedError('422: template not found')
+    relay = OutboxRelay(outbox, gateway, 10, LEASE, RETRY)
+    await relay.relay_once(NOW)
+    ids = set(outbox.db.outbox)
+    gateway.failure = None
+    events = RejectedEvents(outbox)
+
+    listed = await events.list(10)
+    requeued = await events.requeue(now=NOW + timedelta(minutes=5))
+    sent = await relay.relay_once(NOW + timedelta(minutes=5))
+
+    assert ({event.id for event in listed}, listed[0].last_error) == (ids, '422: template not found')
+    assert (requeued, sent, outbox.db.outbox) == (2, 2, {})
+    assert {event_id for event_id, _, _ in gateway.sent} == ids
+
+
+async def test_requeue_selected_events_only():
+    """Можно вернуть только выбранные события — остальные ждут своего исправления."""
+    outbox, gateway = await outbox_with(2), FakeGateway()
+    gateway.failure = EventRejectedError('422')
+    await OutboxRelay(outbox, gateway, 10, LEASE, RETRY).relay_once(NOW)
+    first, second = list(outbox.db.outbox)
+
+    requeued = await RejectedEvents(outbox).requeue([first], NOW)
+
+    assert requeued == 1
+    assert (outbox.db.outbox[first].rejected_at, outbox.db.outbox[second].rejected_at) == (None, NOW)
 
 
 async def test_batch_size_is_respected():

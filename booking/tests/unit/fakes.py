@@ -29,6 +29,7 @@ from models.domain import (
     Rating,
     RatingDraft,
     RatingSummary,
+    RejectedEvent,
     Role,
     Screening,
     ScreeningChanges,
@@ -59,6 +60,8 @@ class OutboxEntry:
     available_at: datetime
     attempts: int = 0
     last_error: str | None = None
+    rejected_at: datetime | None = None
+    created_at: datetime = field(default_factory=lambda: now())
 
 
 @dataclass
@@ -321,7 +324,10 @@ class FakeOutbox(Outbox):
             self.db.outbox[entry.id] = entry
 
     async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
-        due = sorted((e for e in self.db.outbox.values() if e.available_at <= now), key=lambda e: e.available_at)
+        due = sorted(
+            (e for e in self.db.outbox.values() if e.available_at <= now and e.rejected_at is None),
+            key=lambda e: e.available_at,
+        )
         claimed = []
         for entry in due[:limit]:
             entry.available_at = now + lease
@@ -337,6 +343,28 @@ class FakeOutbox(Outbox):
     async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
         entry = self.db.outbox[message_id]
         entry.available_at, entry.last_error = at, error
+
+    async def reject(self, message_id: UUID, at: datetime, error: str) -> None:
+        entry = self.db.outbox[message_id]
+        entry.rejected_at, entry.last_error = at, error
+
+    async def rejected(self, limit: int) -> list[RejectedEvent]:
+        entries = sorted((e for e in self.db.outbox.values() if e.rejected_at), key=lambda e: e.rejected_at)
+        return [
+            RejectedEvent(
+                id=e.id, payload=e.payload, attempts=e.attempts, last_error=e.last_error,
+                created_at=e.created_at, rejected_at=e.rejected_at,
+            )
+            for e in entries[:limit]
+        ]
+
+    async def requeue(self, message_ids: Sequence[UUID] | None, now: datetime) -> int:
+        requeued = 0
+        for entry in self.db.outbox.values():
+            if entry.rejected_at and (message_ids is None or entry.id in message_ids):
+                entry.rejected_at, entry.available_at = None, now
+                requeued += 1
+        return requeued
 
     @property
     def payloads(self) -> list[dict[str, Any]]:

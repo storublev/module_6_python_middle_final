@@ -229,3 +229,14 @@ class OutboxMessage(Model):
     payload: dict[str, Any]
     request_id: str
     attempts: int
+
+
+class RejectedEvent(Model):
+    """Событие, которое сервис уведомлений отверг: ждёт исправления и повтора."""
+
+    id: UUID
+    payload: dict[str, Any]
+    attempts: int
+    last_error: str | None
+    created_at: datetime
+    rejected_at: datetime
