@@ -291,3 +291,83 @@ async def test_my_booking_on_screening(world: World):
         await world.bookings.mine(OTHER_GUEST, screening.id)
     with pytest.raises(ScreeningNotFoundError):
         await world.bookings.mine(GUEST, uuid4())
+
+
+@pytest.mark.parametrize('operation', ['more-seats', 'fewer-seats', 'cancel-booking', 'cancel-screening'])
+async def test_screening_is_locked_before_booking(world: World, operation):
+    """Все операции берут строки в одном порядке — показ, затем бронь: иначе хост и гость сцепятся в deadlock."""
+    screening = await world.screening(capacity=6)
+    booking = await world.bookings.book(GUEST, screening.id, 2)
+    world.db.locks.clear()
+    run = {
+        'more-seats': lambda: world.bookings.change_seats(GUEST, booking.id, 3),
+        'fewer-seats': lambda: world.bookings.change_seats(GUEST, booking.id, 1),
+        'cancel-booking': lambda: world.bookings.cancel(GUEST, booking.id),
+        'cancel-screening': lambda: world.screenings.cancel(HOST, screening.id),
+    }
+
+    await run[operation]()
+
+    kinds = [kind for kind, _ in world.db.locks]
+    assert kinds[0] == 'screening'
+    assert 'booking' in kinds
+
+
+@pytest.mark.parametrize('operation', ['change', 'cancel'])
+async def test_booking_is_rechecked_after_screening_lock(world: World, monkeypatch, operation):
+    """Пока гость ждал блокировку показа, хост отменил показ с бронями — гость получает отказ, места не трогаются."""
+    screening = await world.screening(capacity=6)
+    booking = await world.bookings.book(GUEST, screening.id, 2)
+    repository = world.bookings._screenings  # noqa: SLF001 — подменяем ожидание блокировки
+    original_get = repository.get
+
+    host_done = []
+
+    async def get_after_host_cancelled(screening_id, *, lock=False):
+        if lock and not host_done:
+            # Блокировку получили только после того, как транзакция хоста
+            # отменила показ и все его брони и зафиксировалась.
+            host_done.append(True)
+            await world.screenings.cancel(HOST, screening_id)
+        return await original_get(screening_id, lock=lock)
+
+    monkeypatch.setattr(repository, 'get', get_after_host_cancelled)
+    action = (
+        world.bookings.change_seats(GUEST, booking.id, 3) if operation == 'change'
+        else world.bookings.cancel(GUEST, booking.id)
+    )
+
+    with pytest.raises(BookingCancelledError):
+        await action
+    assert world.db.screenings[screening.id].seats_taken == 2
+
+
+def journal_calls(monkeypatch, journal: list[str], *targets: tuple[object, str, str]) -> None:
+    """Подменяет методы так, чтобы каждый вызов оставлял запись в журнале."""
+    for owner, method, label in targets:
+        original = getattr(owner, method)
+
+        async def logged(*args, _original=original, _label=label, **kwargs):
+            journal.append(_label)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, method, logged)
+
+
+async def test_guest_name_is_asked_before_database(world: World, monkeypatch):
+    """Справочник имён спрашивается до первого запроса к базе: медленный Auth не держит соединения пула."""
+    screening = await world.screening(capacity=4)
+    journal: list[str] = []
+    journal_calls(
+        monkeypatch, journal,
+        (world.people, 'names', 'auth'),
+        (world.bookings._screenings, 'get', 'db'),  # noqa: SLF001
+        (world.bookings._screenings, 'take_seats', 'db'),  # noqa: SLF001
+        (world.bookings._bookings, 'active_of', 'db'),  # noqa: SLF001
+        (world.bookings._bookings, 'add', 'db'),  # noqa: SLF001
+    )
+
+    await world.bookings.book(GUEST, screening.id, 1)
+
+    assert journal[0] == 'auth'
+    assert journal.count('auth') == 1

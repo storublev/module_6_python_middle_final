@@ -61,8 +61,9 @@ FILMS_QUERY = """
 SELECT fw.id, fw.title, fw.type
 FROM content.film_work fw
 LEFT JOIN content.film_kinopoisk kp ON kp.film_id = fw.id
+LEFT JOIN content.film_poster fp ON fp.film_id = fw.id
 WHERE kp.film_id IS NULL
-ORDER BY fw.poster_url IS NULL DESC, COALESCE(fw.description, '') = '' DESC, fw.rating DESC NULLS LAST, fw.id
+ORDER BY fp.film_id IS NULL DESC, COALESCE(fw.description, '') = '' DESC, fw.rating DESC NULLS LAST, fw.id
 """
 ALL_TITLES_QUERY = "SELECT title FROM content.film_work"
 

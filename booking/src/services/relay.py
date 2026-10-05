@@ -11,11 +11,21 @@ API уведомлений и только потом удаляет.
 
 Сервис уведомлений лежит — событие откладывается на паузу повтора и ждёт в
 базе. Гость об этом не узнает: бронь уже сделана.
+
+Сервис уведомлений отверг событие по существу (4xx: нет шаблона, разошёлся
+формат после обновления одного из сервисов) — повтор сам по себе не поможет,
+но и удалять событие нельзя: в нём единственная копия данных письма о брони
+или отмене. Событие откладывается с причиной отказа (`rejected_at`), обычная
+отправка его больше не берёт, а после исправления его возвращают в очередь
+командой `python outbox_cli.py requeue` — с тем же event_id.
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
+from models.domain import RejectedEvent
 from storage.base import EventRejectedError, NotificationGateway, Outbox, StorageUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -48,11 +58,28 @@ class OutboxRelay:
                 )
                 break
             except EventRejectedError as error:
-                # Отказ по существу (нет шаблона, неверный формат) повтором не
-                # лечится: событие снимается, а ошибка уходит в журнал и Sentry —
-                # это дефект, который надо чинить в коде, а не ждать.
-                logger.error('Сервис уведомлений отверг событие: %s', error, extra={'event_id': str(message.id)})
-            else:
-                sent += 1
+                # Отказ по существу повтором не лечится — это дефект, который
+                # чинят в коде. Ошибка уходит в журнал и Sentry, а событие
+                # откладывается до исправления, а не теряется.
+                await self._outbox.reject(message.id, moment, str(error))
+                logger.error(
+                    'Сервис уведомлений отверг событие, оно отложено до исправления: %s', error,
+                    extra={'event_id': str(message.id)},
+                )
+                continue
+            sent += 1
             await self._outbox.done(message.id)
         return sent
+
+
+class RejectedEvents:
+    """Разбор отклонённых событий после исправления: посмотреть и вернуть в отправку."""
+
+    def __init__(self, outbox: Outbox) -> None:
+        self._outbox = outbox
+
+    async def list(self, limit: int) -> list[RejectedEvent]:
+        return await self._outbox.rejected(limit)
+
+    async def requeue(self, message_ids: Sequence[UUID] | None = None, now: datetime | None = None) -> int:
+        return await self._outbox.requeue(message_ids, now or datetime.now(UTC))

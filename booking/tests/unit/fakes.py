@@ -29,6 +29,7 @@ from models.domain import (
     Rating,
     RatingDraft,
     RatingSummary,
+    RejectedEvent,
     Role,
     Screening,
     ScreeningChanges,
@@ -45,6 +46,7 @@ from storage.base import (
     People,
     RatingRepository,
     ScreeningRepository,
+    Sessions,
     StorageUnavailableError,
     UnitOfWork,
 )
@@ -58,6 +60,8 @@ class OutboxEntry:
     available_at: datetime
     attempts: int = 0
     last_error: str | None = None
+    rejected_at: datetime | None = None
+    created_at: datetime = field(default_factory=lambda: now())
 
 
 @dataclass
@@ -70,6 +74,10 @@ class Database:
     outbox: dict[UUID, OutboxEntry] = field(default_factory=dict)
     commits: int = 0
     rollbacks: int = 0
+    # Строки, которые транзакция заблокировала, в порядке блокировки: явная
+    # блокировка (lock=True) и любое изменение строки. Порядок проверяют тесты
+    # взаимных блокировок: показ всегда раньше брони.
+    locks: list[tuple[str, UUID]] = field(default_factory=list)
     # Последнее зафиксированное состояние — общее для всех единиц работы над
     # этой базой, как общая для всех транзакций база в PostgreSQL.
     committed: dict[str, Any] = field(default_factory=dict)
@@ -132,6 +140,8 @@ class FakeScreeningRepository(ScreeningRepository):
         return screening
 
     async def get(self, screening_id: UUID, *, lock: bool = False) -> Screening | None:
+        if lock:
+            self.db.locks.append(('screening', screening_id))
         return self.db.screenings.get(screening_id)
 
     async def update(self, screening_id: UUID, changes: ScreeningChanges) -> Screening | None:
@@ -141,16 +151,19 @@ class FakeScreeningRepository(ScreeningRepository):
         return self._save(screening, **changes.model_dump(exclude_none=True))
 
     async def take_seats(self, screening_id: UUID, seats: int, now: datetime) -> Screening | None:
+        self.db.locks.append(('screening', screening_id))
         screening = self.db.screenings.get(screening_id)
         if screening is None or not screening.is_open(now) or screening.seats_left < seats:
             return None
         return self._save(screening, seats_taken=screening.seats_taken + seats)
 
     async def release_seats(self, screening_id: UUID, seats: int) -> None:
+        self.db.locks.append(('screening', screening_id))
         screening = self.db.screenings[screening_id]
         self._save(screening, seats_taken=screening.seats_taken - seats)
 
     async def cancel(self, screening_id: UUID) -> None:
+        self.db.locks.append(('screening', screening_id))
         self._save(self.db.screenings[screening_id], status=ScreeningStatus.CANCELLED)
 
     async def upcoming(
@@ -214,6 +227,8 @@ class FakeBookingRepository(BookingRepository):
         return booking
 
     async def get(self, booking_id: UUID, *, lock: bool = False) -> Booking | None:
+        if lock:
+            self.db.locks.append(('booking', booking_id))
         return self.db.bookings.get(booking_id)
 
     async def active_of(self, screening_id: UUID, guest_id: UUID) -> Booking | None:
@@ -259,6 +274,7 @@ class FakeBookingRepository(BookingRepository):
         return _page(views, page)
 
     def _save(self, booking_id: UUID, **values: Any) -> Booking:
+        self.db.locks.append(('booking', booking_id))
         updated = self.db.bookings[booking_id].model_copy(update={**values, 'updated_at': now()})
         self.db.bookings[booking_id] = updated
         return updated
@@ -308,7 +324,10 @@ class FakeOutbox(Outbox):
             self.db.outbox[entry.id] = entry
 
     async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
-        due = sorted((e for e in self.db.outbox.values() if e.available_at <= now), key=lambda e: e.available_at)
+        due = sorted(
+            (e for e in self.db.outbox.values() if e.available_at <= now and e.rejected_at is None),
+            key=lambda e: e.available_at,
+        )
         claimed = []
         for entry in due[:limit]:
             entry.available_at = now + lease
@@ -324,6 +343,28 @@ class FakeOutbox(Outbox):
     async def retry(self, message_id: UUID, at: datetime, error: str) -> None:
         entry = self.db.outbox[message_id]
         entry.available_at, entry.last_error = at, error
+
+    async def reject(self, message_id: UUID, at: datetime, error: str) -> None:
+        entry = self.db.outbox[message_id]
+        entry.rejected_at, entry.last_error = at, error
+
+    async def rejected(self, limit: int) -> list[RejectedEvent]:
+        entries = sorted((e for e in self.db.outbox.values() if e.rejected_at), key=lambda e: e.rejected_at)
+        return [
+            RejectedEvent(
+                id=e.id, payload=e.payload, attempts=e.attempts, last_error=e.last_error,
+                created_at=e.created_at, rejected_at=e.rejected_at,
+            )
+            for e in entries[:limit]
+        ]
+
+    async def requeue(self, message_ids: Sequence[UUID] | None, now: datetime) -> int:
+        requeued = 0
+        for entry in self.db.outbox.values():
+            if entry.rejected_at and (message_ids is None or entry.id in message_ids):
+                entry.rejected_at, entry.available_at = None, now
+                requeued += 1
+        return requeued
 
     @property
     def payloads(self) -> list[dict[str, Any]]:
@@ -352,6 +393,21 @@ class FakePeople(People):
         if not self.available:
             raise StorageUnavailableError('Сервис авторизации недоступен')
         return {user_id: self.known[user_id] for user_id in user_ids if user_id in self.known}
+
+
+class FakeSessions(Sessions):
+    """Сессии сервиса авторизации: закрытые — по заголовку Authorization."""
+
+    def __init__(self) -> None:
+        self.closed: set[str] = set()
+        self.available = True
+        self.checked: list[str] = []
+
+    async def is_active(self, authorization: str) -> bool:
+        self.checked.append(authorization)
+        if not self.available:
+            raise StorageUnavailableError('Сервис авторизации недоступен')
+        return authorization not in self.closed
 
 
 class FakeGateway(NotificationGateway):

@@ -13,6 +13,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Пределы имени согласованы с сервисом авторизации: там имя, фамилия и логин —
+# до 64 символов каждое (auth: `NameField`, `LOGIN_MAX_LENGTH`). Имя для
+# страниц и писем — «имя фамилия» через пробел, отсюда 64 + 1 + 64. Поменяет
+# Auth свои пределы — меняются эти константы и колонки имён миграцией.
+NAME_PART_MAX_LENGTH = 64
+DISPLAY_NAME_MAX_LENGTH = 2 * NAME_PART_MAX_LENGTH + 1
+
 
 class ScreeningStatus(str, Enum):
     SCHEDULED = 'scheduled'
@@ -229,3 +236,14 @@ class OutboxMessage(Model):
     payload: dict[str, Any]
     request_id: str
     attempts: int
+
+
+class RejectedEvent(Model):
+    """Событие, которое сервис уведомлений отверг: ждёт исправления и повтора."""
+
+    id: UUID
+    payload: dict[str, Any]
+    attempts: int
+    last_error: str | None
+    created_at: datetime
+    rejected_at: datetime

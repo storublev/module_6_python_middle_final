@@ -3,7 +3,7 @@
 import time
 from datetime import timedelta
 
-from tests.functional.conftest import Viewer, call, events, new_screening, soon_started, stub
+from tests.functional.conftest import Viewer, call, events, new_screening, register, soon_started, stub
 from tests.functional.settings import settings
 
 
@@ -55,6 +55,23 @@ def test_mutual_ratings_after_screening(host: Viewer, guest: Viewer, other: View
     )
     assert [(r['author_name'], r['comment']) for r in reviews['items']] == [('Тринити Ноль', 'Уютно')]
     assert [r['target_id'] for r in mine] == [host.user_id]
+
+
+def test_longest_allowed_names_are_stored_in_full():
+    """Имя и фамилия по 64 символа (предел Auth) — 129 символов: показ, бронь и оценка проходят, имя не обрезано."""
+    host = register('Х' * 64, 'Ост' * 21 + 'а')
+    guest = register('Г' * 64, 'Ость' * 16)
+    screening = soon_started(host, guest)
+
+    by_guest = call(
+        'POST', f'/screenings/{screening["id"]}/ratings', guest, json={'target_id': host.user_id, 'score': 5},
+    )
+    guests = call('GET', f'/screenings/{screening["id"]}/bookings', host).json()
+
+    assert len(host.name) == len(guest.name) == 129
+    assert screening['host_name'] == host.name
+    assert [entry['booking']['guest_name'] for entry in guests] == [guest.name]
+    assert (by_guest.status_code, by_guest.json()['author_name']) == (201, guest.name)
 
 
 def test_booking_events_reach_notifications(host: Viewer, guest: Viewer):

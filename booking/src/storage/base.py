@@ -34,6 +34,7 @@ from models.domain import (
     Period,
     Rating,
     RatingDraft,
+    RejectedEvent,
     Role,
     Screening,
     ScreeningChanges,
@@ -183,13 +184,29 @@ class Outbox(ABC):
 
     @abstractmethod
     async def claim(self, limit: int, lease: timedelta, now: datetime) -> list[OutboxMessage]:
-        """Забирает события, которым пора, и откладывает их на время аренды."""
+        """Забирает события, которым пора, и откладывает их на время аренды. Отклонённые не берёт."""
 
     @abstractmethod
     async def done(self, message_id: UUID) -> None: ...
 
     @abstractmethod
     async def retry(self, message_id: UUID, at: datetime, error: str) -> None: ...
+
+    @abstractmethod
+    async def reject(self, message_id: UUID, at: datetime, error: str) -> None:
+        """Откладывает событие, отвергнутое сервисом уведомлений, вместе с причиной — до исправления."""
+
+    @abstractmethod
+    async def rejected(self, limit: int) -> list[RejectedEvent]:
+        """Отклонённые события, старые первыми."""
+
+    @abstractmethod
+    async def requeue(self, message_ids: Sequence[UUID] | None, now: datetime) -> int:
+        """Возвращает отклонённые события в отправку (None — все). Возвращает их число.
+
+        Идентификатор строки не меняется — это event_id, и сервис уведомлений
+        узнает повтор, если событие всё-таки дошло до него в первый раз.
+        """
 
 
 class Catalog(ABC):
@@ -210,6 +227,21 @@ class People(ABC):
     @abstractmethod
     async def names(self, user_ids: Sequence[UUID]) -> dict[UUID, str]:
         """Имена для показа на страницах. Кого нет в справочнике — того нет в ответе."""
+
+
+class Sessions(ABC):
+    """Сессии входа — сервис авторизации."""
+
+    @abstractmethod
+    async def is_active(self, authorization: str) -> bool:
+        """Жива ли сессия, к которой выпущен access-токен.
+
+        False — сессия закрыта выходом, сменой пароля или «выйти на остальных
+        устройствах», хотя подпись и срок токена ещё в порядке.
+
+        Raises:
+            StorageUnavailableError: сервис авторизации не ответил.
+        """
 
 
 class NotificationGateway(ABC):

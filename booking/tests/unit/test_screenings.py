@@ -237,3 +237,24 @@ async def test_host_schedule_split_by_period(world: World):
 
     assert [s.id for s in upcoming.items] == [future.id]
     assert [s.id for s in history.items] == [past.id]
+
+
+async def test_neighbours_are_asked_before_database(world: World, monkeypatch):
+    """Каталог и справочник имён — до записи показа: ожидание соседей не держит соединение базы."""
+    journal: list[str] = []
+    for owner, method, label in (
+        (world.catalog, 'film', 'catalog'),
+        (world.people, 'names', 'auth'),
+        (world.screenings._screenings, 'add', 'db'),  # noqa: SLF001
+    ):
+        original = getattr(owner, method)
+
+        async def logged(*args, _original=original, _label=label, **kwargs):
+            journal.append(_label)
+            return await _original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, method, logged)
+
+    await world.screening()
+
+    assert journal == ['catalog', 'auth', 'db']

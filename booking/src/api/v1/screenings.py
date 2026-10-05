@@ -7,8 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from api.dependencies import BookingServiceDep, RatingServiceDep, ScreeningServiceDep
-from api.errors import TOKEN_ERRORS, error_responses
-from api.security import CurrentUser, optional_authorization
+from api.errors import TOKEN_ERRORS, WRITE_TOKEN_ERRORS, error_responses
+from api.security import ActiveUser, CurrentUser, optional_authorization
 from api.v1.schemas import (
     BookingCreateSchema,
     BookingSchema,
@@ -60,13 +60,13 @@ router = APIRouter()
         'и не дальше года вперёд.'
     ),
     responses=error_responses(
-        *TOKEN_ERRORS, StartsTooSoonError, StartsTooLateError, CapacityOutOfRangeError, FilmNotBookableError,
+        *WRITE_TOKEN_ERRORS, StartsTooSoonError, StartsTooLateError, CapacityOutOfRangeError, FilmNotBookableError,
         FilmNotFoundError,
     ),
 )
 async def create_screening(
     body: ScreeningCreateSchema,
-    user: CurrentUser,
+    user: ActiveUser,
     service: ScreeningServiceDep,
     authorization: Annotated[str | None, Depends(optional_authorization)],
 ) -> Screening:
@@ -107,13 +107,13 @@ async def get_screening(screening_id: UUID, service: ScreeningServiceDep) -> Scr
     description='Только хост и только до начала. Мест нельзя сделать меньше, чем забронировано. '
                 'О смене времени или места гости получают письмо.',
     responses=error_responses(
-        *TOKEN_ERRORS, NotScreeningHostError, ScreeningNotFoundError, ScreeningClosedError,
+        *WRITE_TOKEN_ERRORS, NotScreeningHostError, ScreeningNotFoundError, ScreeningClosedError,
         CapacityBelowBookedError, NothingToChangeError, StartsTooSoonError, StartsTooLateError,
         CapacityOutOfRangeError,
     ),
 )
 async def update_screening(
-    screening_id: UUID, body: ScreeningUpdateSchema, user: CurrentUser, service: ScreeningServiceDep,
+    screening_id: UUID, body: ScreeningUpdateSchema, user: ActiveUser, service: ScreeningServiceDep,
 ) -> Screening:
     changes = ScreeningChanges(**body.model_dump(exclude_unset=True))
     return await service.update(user.user_id, screening_id, changes)
@@ -124,9 +124,9 @@ async def update_screening(
     response_model=ScreeningSchema,
     summary='Отменить показ',
     description='Только хост и только до начала. Все брони отменяются, гости получают письмо.',
-    responses=error_responses(*TOKEN_ERRORS, NotScreeningHostError, ScreeningNotFoundError, ScreeningClosedError),
+    responses=error_responses(*WRITE_TOKEN_ERRORS, NotScreeningHostError, ScreeningNotFoundError, ScreeningClosedError),
 )
-async def cancel_screening(screening_id: UUID, user: CurrentUser, service: ScreeningServiceDep) -> Screening:
+async def cancel_screening(screening_id: UUID, user: ActiveUser, service: ScreeningServiceDep) -> Screening:
     return await service.cancel(user.user_id, screening_id)
 
 
@@ -163,12 +163,12 @@ async def my_booking(screening_id: UUID, user: CurrentUser, service: BookingServ
         'У гостя одна активная бронь на показ; чтобы взять больше мест, её меняют.'
     ),
     responses=error_responses(
-        *TOKEN_ERRORS, OwnScreeningError, ScreeningNotFoundError, NotEnoughSeatsError, ScreeningClosedError,
+        *WRITE_TOKEN_ERRORS, OwnScreeningError, ScreeningNotFoundError, NotEnoughSeatsError, ScreeningClosedError,
         AlreadyBookedError, SeatsOutOfRangeError,
     ),
 )
 async def book(
-    screening_id: UUID, body: BookingCreateSchema, user: CurrentUser, service: BookingServiceDep,
+    screening_id: UUID, body: BookingCreateSchema, user: ActiveUser, service: BookingServiceDep,
 ) -> Booking:
     return await service.book(user.user_id, screening_id, body.seats)
 
@@ -181,12 +181,12 @@ async def book(
     description='После начала показа гость с бронью оценивает хоста, хост — своих гостей. '
                 'Одна оценка на пару за показ.',
     responses=error_responses(
-        *TOKEN_ERRORS, NotParticipantError, ScreeningNotFoundError, RatingTooEarlyError, ScreeningCancelledError,
+        *WRITE_TOKEN_ERRORS, NotParticipantError, ScreeningNotFoundError, RatingTooEarlyError, ScreeningCancelledError,
         AlreadyRatedError, InvalidRatingTargetError,
     ),
 )
 async def rate(
-    screening_id: UUID, body: RatingCreateSchema, user: CurrentUser, service: RatingServiceDep,
+    screening_id: UUID, body: RatingCreateSchema, user: ActiveUser, service: RatingServiceDep,
 ) -> Rating:
     return await service.rate(user.user_id, screening_id, body.target_id, body.score, body.comment)
 

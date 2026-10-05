@@ -17,6 +17,15 @@ FastAPI · SQLAlchemy 2 (asyncpg) · Alembic · PostgreSQL 16 · httpx · PyJWT.
 * `booking-api` — HTTP API, документация — http://localhost/booking/api/openapi;
 * `booking-relay` — ретранслятор outbox: события о бронях → API уведомлений.
 
+## Вход и запись
+
+Читать показы и рейтинги можно без входа; кабинет читается с access-токеном,
+который проверяется на месте (подпись и срок). **Любая запись** перед
+выполнением сверяет сессию токена с сервисом авторизации (`GET /users/me`):
+после выхода или смены пароля старый токен получает 401 `token_revoked`, а без
+ответа Auth запись отклоняется с 503 (ADR-27). В nginx частота любой записи
+(`POST`, `PATCH` и т.д.) в `/booking/` ограничена 5 запросами в секунду с IP.
+
 ## Как держится гарантия мест
 
 Бронь — одна транзакция: условный `UPDATE screenings SET seats_taken =
@@ -26,6 +35,24 @@ outbox. Последний рубеж — `CHECK (seats_taken <= capacity)` в �
 Почему именно так — исследование [research/overbooking.py](research/overbooking.py)
 и [docs/diploma/research.md](../docs/diploma/research.md): проверка остатка в коде
 продала 277 мест из 10.
+
+Строки блокируются всегда в одном порядке — **показ, затем бронь** (изменение
+и отмена брони, отмена показа), иначе одновременные действия хоста и гостя
+сцеплялись бы во взаимной блокировке. Имя гостя из справочника Auth берётся до
+первого запроса к базе, чтобы ожидание соседа не держало соединение пула.
+
+## Отклонённые события
+
+Если сервис уведомлений отверг событие по существу (4xx), ретранслятор его не
+удаляет: событие остаётся в outbox с `rejected_at` и причиной отказа и больше
+не отправляется само. После исправления причины его возвращают в отправку с
+тем же `event_id`:
+
+```bash
+docker compose exec booking-relay python outbox_cli.py list
+docker compose exec booking-relay python outbox_cli.py requeue --all
+docker compose exec booking-relay python outbox_cli.py requeue --id <event_id>
+```
 
 ## Эндпоинты
 

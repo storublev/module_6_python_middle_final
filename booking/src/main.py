@@ -34,7 +34,7 @@ from core.sentry import configure_sentry
 from core.tracing import configure_tracing
 from services.errors import ServiceError
 from storage.base import StorageUnavailableError
-from storage.http import HttpCatalog, HttpPeople
+from storage.http import HttpCatalog, HttpPeople, HttpSessions
 
 dictConfig(LOGGING)
 logger = logging.getLogger(__name__)
@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     auth_client = httpx.AsyncClient(base_url=settings.auth_url, timeout=settings.auth_timeout)
     app.state.catalog = HttpCatalog(catalog_client)
     app.state.people = HttpPeople(auth_client, settings.service_token.get_secret_value())
+    # Свой прерыватель: справочник имён и проверка сессий отказывают по-разному
+    # (имя заменяется подписью «Зритель», а запись без проверки сессии — нет).
+    app.state.sessions = HttpSessions(auth_client)
     app.state.verifier = get_verifier(settings)
     logger.info('Сервис бронирования готов')
     try:
@@ -79,7 +82,9 @@ API_DESCRIPTION = """
 виден при выборе хоста.
 
 **Вход.** Читать показы и рейтинги можно без входа; всё остальное — с
-access-токеном сервиса авторизации (`POST /auth/api/v1/login`).
+access-токеном сервиса авторизации (`POST /auth/api/v1/login`). Перед любой
+записью сессия токена сверяется с сервисом авторизации: после выхода или смены
+пароля старый токен изменить ничего не может (401 `token_revoked`).
 
 **Ошибки** — в общем формате кинотеатра: `{"code": "...", "detail": "..."}`.
 """
