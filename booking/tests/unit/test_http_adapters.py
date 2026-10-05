@@ -7,8 +7,10 @@ import httpx
 import pytest
 
 from core.request_id import set_request_id
+from models.domain import DISPLAY_NAME_MAX_LENGTH
 from storage.base import EventRejectedError, StorageUnavailableError
 from storage.http import HttpCatalog, HttpNotifications, HttpPeople, HttpSessions, display_name
+from storage.orm import BookingRow, RatingRow, ScreeningRow
 from storage.resilience import CircuitBreaker
 
 FILM_ID = uuid4()
@@ -105,6 +107,25 @@ async def test_sessions_other_answers_are_outage(status):
     """Любой другой ответ — не «сессия закрыта», а сбой: запись получит 503, а не ложный 401."""
     with pytest.raises(StorageUnavailableError):
         await HttpSessions(client(lambda _: httpx.Response(status, json={}))).is_active('Bearer abc')
+
+
+def test_longest_allowed_name_fits_the_column():
+    """Имя и фамилия по 64 символа (предел Auth) дают 129 символов — ровно столько вмещает колонка имени."""
+    name = display_name({'login': 'neo', 'first_name': 'Я' * 64, 'last_name': 'Ф' * 64})
+
+    assert (len(name), name) == (DISPLAY_NAME_MAX_LENGTH, f'{"Я" * 64} {"Ф" * 64}')
+    assert {
+        ScreeningRow.__table__.c.host_name.type.length,
+        BookingRow.__table__.c.guest_name.type.length,
+        RatingRow.__table__.c.author_name.type.length,
+    } == {DISPLAY_NAME_MAX_LENGTH}
+
+
+def test_name_longer_than_agreed_is_cut_not_rejected():
+    """Если Auth поднимет пределы раньше миграции, имя обрезается, а бронь не падает ошибкой базы."""
+    name = display_name({'login': 'neo', 'first_name': 'Я' * 100, 'last_name': 'Ф' * 100})
+
+    assert len(name) == DISPLAY_NAME_MAX_LENGTH
 
 
 def test_display_name_with_only_last_name():

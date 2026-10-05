@@ -25,7 +25,7 @@ import httpx
 
 from core.request_id import HEADER as REQUEST_ID_HEADER
 from core.request_id import get_request_id
-from models.domain import Film
+from models.domain import DISPLAY_NAME_MAX_LENGTH, Film
 from storage.base import (
     Catalog,
     EventRejectedError,
@@ -136,9 +136,20 @@ class HttpSessions(HttpService, Sessions):
 
 
 def display_name(contact: dict[str, Any]) -> str:
-    """Имя и фамилия, если зритель их указал, иначе логин."""
+    """Имя и фамилия, если зритель их указал, иначе логин.
+
+    Длина по согласованным с Auth пределам укладывается в колонку имени.
+    Обрезка — страховка на случай, если Auth поднимет свои пределы раньше,
+    чем здесь пройдёт миграция: имя — подпись на странице, и отказывать из-за
+    неё в брони (ошибкой базы) нельзя.
+    """
     full = ' '.join(part for part in (contact.get('first_name'), contact.get('last_name')) if part)
-    return full or contact.get('login') or ''
+    name = full or contact.get('login') or ''
+    if len(name) > DISPLAY_NAME_MAX_LENGTH:
+        logger.warning(
+            'Имя длиннее %s символов обрезано: пределы Auth и бронирования разошлись', DISPLAY_NAME_MAX_LENGTH,
+        )
+    return name[:DISPLAY_NAME_MAX_LENGTH]
 
 
 class HttpNotifications(HttpService, NotificationGateway):

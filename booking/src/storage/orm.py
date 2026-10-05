@@ -28,6 +28,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from models.domain import DISPLAY_NAME_MAX_LENGTH
+
 SCHEMA = 'booking'
 
 # Имена ограничений задаются явно, чтобы миграции ссылались на них одинаково
@@ -73,7 +75,7 @@ class ScreeningRow(Timestamped, Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     host_id: Mapped[UUID]
-    host_name: Mapped[str] = mapped_column(String(128))
+    host_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_MAX_LENGTH))
     film_id: Mapped[UUID]
     film_title: Mapped[str] = mapped_column(String(255))
     film_poster: Mapped[str | None] = mapped_column(String(512))
@@ -105,7 +107,7 @@ class BookingRow(Timestamped, Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     screening_id: Mapped[UUID] = mapped_column(ForeignKey('screenings.id', ondelete='CASCADE'))
     guest_id: Mapped[UUID]
-    guest_name: Mapped[str] = mapped_column(String(128))
+    guest_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_MAX_LENGTH))
     seats: Mapped[int] = mapped_column(SmallInteger)
     status: Mapped[str] = mapped_column(String(16), server_default=text("'active'"))
 
@@ -124,7 +126,7 @@ class RatingRow(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     screening_id: Mapped[UUID] = mapped_column(ForeignKey('screenings.id', ondelete='CASCADE'))
     author_id: Mapped[UUID]
-    author_name: Mapped[str] = mapped_column(String(128))
+    author_name: Mapped[str] = mapped_column(String(DISPLAY_NAME_MAX_LENGTH))
     target_id: Mapped[UUID]
     target_role: Mapped[str] = mapped_column(String(16))
     score: Mapped[int] = mapped_column(SmallInteger)
